@@ -1,49 +1,27 @@
-import type { ActivityEntry } from "@/types/agent";
-
-interface ActivityLogProps {
-  entries: ActivityEntry[];
-}
-
-const iconMap = {
-  signal: { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-green)]",  char: "▲" },
-  scan:   { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-blue)]",   char: "◎" },
-  alert:  { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-amber)]",  char: "!" },
-  error:  { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-red)]",    char: "✕" },
+const subColorMap = {
+  green: "text-[var(--color-accent-green)]",
+  red:   "text-[var(--color-accent-red)]",
+  muted: "text-[var(--color-text-dim)]",
 };
 
-export function ActivityLog({ entries }: ActivityLogProps) {
-  return (
-    <div className="flex flex-col flex-1 overflow-hidden px-[18px] pb-[14px]">
-      <div className="flex justify-between items-center py-3 shrink-0">
-        <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.14em]">AGENT ACTIVITY</span>
-        <div className="flex items-center gap-[5px]">
-          <span className="inline-block w-[5px] h-[5px] rounded-full bg-[var(--color-accent-green)] animate-pulse-dot" />
-          <span className="text-[9px] text-[var(--color-text-muted)] tracking-[.08em]">Live</span>
-        </div>
-      </div>
+interface MetricTileProps {
+  label: string;
+  value: string;
+  sub?: string;
+  subColor?: keyof typeof subColorMap;
+  valueSize?: "default" | "sm";
+}
 
-      <div className="overflow-y-auto flex-1">
-        {entries.map((entry, i) => {
-          const icon = iconMap[entry.type] ?? iconMap.scan;
-          return (
-            <div key={i} className="flex gap-[10px] py-[7px] border-b border-[var(--color-border-subtle)] items-start">
-              <span className="text-[9px] text-[var(--color-text-dim)] whitespace-nowrap pt-[1px] min-w-[44px]">
-                {entry.time}
-              </span>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] shrink-0 mt-[1px] ${icon.cls}`}>
-                {icon.char}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-[9px] text-[var(--color-text-dim)] mb-[1px]">{entry.agent}</div>
-                <div
-                  className="text-[11px] text-[var(--color-text-secondary)] leading-[1.5]"
-                  dangerouslySetInnerHTML={{ __html: entry.message }}
-                />
-              </div>
-            </div>
-          );
-        })}
+export function MetricTile({ label, value, sub, subColor = "muted", valueSize = "default" }: MetricTileProps) {
+  return (
+    <div className="flex-1 bg-[var(--color-surface-panel)] px-4 py-3">
+      <div className="text-[8px] text-[var(--color-text-dim)] tracking-[.12em] mb-[6px] uppercase">{label}</div>
+      <div className={`font-light text-[var(--color-text-primary)] tracking-tight ${valueSize === "sm" ? "text-[16px] pt-1" : "text-[22px]"}`}>
+        {value}
       </div>
+      {sub && (
+        <div className={`text-[9px] mt-1 ${subColorMap[subColor]}`}>{sub}</div>
+      )}
     </div>
   );
 }
