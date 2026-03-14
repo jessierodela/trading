@@ -1,0 +1,60 @@
+import type { Alert } from "@/types/agent";
+
+export const ALERTS: Alert[] = [
+  {
+    symbol:     "NVDA",
+    type:       "buy",
+    message:    "RSI crossed above 35 from oversold. MACD histogram turning positive. Strong volume confirmation.",
+    agent:      "Momentum Scout",
+    confidence: 87,
+    time:       "2m ago",
+  },
+  {
+    symbol:     "BTC",
+    type:       "buy",
+    message:    "Price reclaimed 50-day MA with above-average volume. Bullish structure intact.",
+    agent:      "Crypto Ranger",
+    confidence: 79,
+    time:       "8m ago",
+  },
+  {
+    symbol:     "TSLA",
+    type:       "watch",
+    message:    "Forming ascending triangle near resistance. Watch for breakout above $252.",
+    agent:      "Breakout Watcher",
+    confidence: 64,
+    time:       "15m ago",
+  },
+  {
+    symbol:     "AAPL",
+    type:       "buy",
+    message:    "Golden cross forming on daily. 50MA crossed above 200MA for first time in 60 days.",
+    agent:      "Trend Follower",
+    confidence: 82,
+    time:       "23m ago",
+  },
+  {
+    symbol:     "ETH",
+    type:       "watch",
+    message:    "OBV trending up while price consolidates. Accumulation pattern possible.",
+    agent:      "Crypto Ranger",
+    confidence: 61,
+    time:       "41m ago",
+  },
+  {
+    symbol:     "SPY",
+    type:       "warn",
+    message:    "VIX spiked 8% intraday. Reducing confidence on open long signals.",
+    agent:      "Volatility Arbiter",
+    confidence: 45,
+    time:       "1h ago",
+  },
+  {
+    symbol:     "MSFT",
+    type:       "buy",
+    message:    "Bollinger squeeze detected. Price coiling near upper band. Breakout likely.",
+    agent:      "Breakout Watcher",
+    confidence: 73,
+    time:       "1h ago",
+  },
+];
