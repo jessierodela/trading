@@ -63,7 +63,7 @@ function momentumScout(
     const macd = ind.macd;
 
     if (rsi !== null && macd !== null) {
-      // RSI oversold bounce + MACD histogram confirming
+      // BUY — RSI oversold bounce + MACD histogram confirming momentum shift
       if (rsi < 35 && macd.valueMACDHist > 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "buy",
@@ -71,15 +71,25 @@ function momentumScout(
           confidence: rsi < 30 ? "high" : "medium",
         });
       }
-      // RSI overbought warning
-      else if (rsi > 70) {
+      // SELL — RSI overbought AND MACD histogram already negative (momentum fading)
+      // Requires both conditions so we don't sell into continuing strength.
+      // e.g. RSI 76 + MACD hist still positive = momentum intact, no sell yet.
+      else if (rsi > 70 && macd.valueMACDHist < 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "sell",
-          reason: `RSI overbought (${rsi.toFixed(1)})`,
+          reason: `RSI overbought (${rsi.toFixed(1)}) + MACD hist negative — momentum fading`,
           confidence: rsi > 80 ? "high" : "medium",
         });
       }
-      // MACD bullish crossover only (no RSI extreme)
+      // WATCH — RSI overbought but MACD still positive (strength intact, stay alert)
+      else if (rsi > 70 && macd.valueMACDHist > 0) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "watch",
+          reason: `RSI overbought (${rsi.toFixed(1)}) but MACD hist positive — monitor for reversal`,
+          confidence: "medium",
+        });
+      }
+      // WATCH — MACD bullish crossover in neutral RSI zone (35–70)
       else if (macd.valueMACDHist > 0 && macd.valueMACD > macd.valueMACDSignal) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "watch",
