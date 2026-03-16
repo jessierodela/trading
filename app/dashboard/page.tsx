@@ -10,6 +10,7 @@ import { SignalsPanel } from "@/components/layout/SignalsPanel";
 import { StatsBar }    from "@/components/dashboard/StatsBar";
 import { AgentGrid }   from "@/components/agents/AgentGrid";
 import { ActivityLog } from "@/components/dashboard/ActivityLog";
+import { AGENTS }      from "@/config/agents";
 import { ALERTS }      from "@/config/alerts";
 
 export default function DashboardPage() {
@@ -30,8 +31,7 @@ export default function DashboardPage() {
             {/* Agent cards */}
             <div className="border-b border-[var(--color-border-default)] px-[18px] py-[14px]">
               <p className="text-[9px] text-[var(--color-text-dim)] tracking-[.16em] mb-3">AGENTS</p>
-              {/* AgentGrid can stay static for now — live version is a future step */}
-              <AgentGrid />
+              <AgentGrid agents={AGENTS} />
             </div>
 
             {/* Activity log polls /api/signals every 30s */}
