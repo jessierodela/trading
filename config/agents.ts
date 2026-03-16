@@ -15,7 +15,7 @@ export const AGENTS: Agent[] = [
     id:          "A1",
     name:        "Momentum Scout",
     status:      "active",
-    focus:       "RSI + MACD — stocks & crypto",
+    focus:       "RSI + MACD + EMA20 — (1h)",
     signalCount: 0,
     alertCount:  0,
     lastAction:  "Scanning all symbols…",
