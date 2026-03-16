@@ -25,6 +25,14 @@ export interface IndicatorValues {
   ema200: number | null;
   bb:     { valueLowerBand: number; valueMiddleBand: number; valueUpperBand: number } | null;
   atr:    number | null;
+
+  // ── Phase 2: previous-bar values (backtrack: 1) ────────────────────────
+  // Used by Momentum Scout for bar-to-bar acceleration/deceleration logic.
+  // Null when prev-bar fetch is skipped (e.g. free plan rate limits).
+  prevRsi:      number | null;
+  prevHist:     number | null; // previous MACD histogram value
+  prevEma20:    number | null;
+  currentClose: number | null; // current bar close price
 }
 
 export type AssetType = "stock" | "crypto";
@@ -37,7 +45,12 @@ function sleep(ms: number) {
 }
 
 function emptyResult(symbol: string): IndicatorValues {
-  return { symbol, rsi: null, macd: null, ema20: null, ema50: null, ema200: null, bb: null, atr: null };
+  return {
+    symbol, rsi: null, macd: null, ema20: null, ema50: null,
+    ema200: null, bb: null, atr: null,
+    // Phase 2 prev-bar fields
+    prevRsi: null, prevHist: null, prevEma20: null, currentClose: null,
+  };
 }
 
 // ─── Single indicator fetch ───────────────────────────────────────────────
@@ -147,6 +160,39 @@ async function fetchAssetIndicators(
     if (i < enabled.length - 1) {
       await sleep(INDICATOR_DELAY_MS);
     }
+  }
+
+  // ── Phase 2: fetch prev-bar values for Momentum Scout ─────────────────
+  // Only fetch if the base indicators we need were successfully retrieved.
+  // Each prev-bar call costs one rate-limited slot (15.5s on free plan).
+  if (result.rsi !== null && enabled.includes("rsi")) {
+    await sleep(INDICATOR_DELAY_MS);
+    console.log(`[taapi] ${symbol} — fetching rsi (prev bar)`);
+    const r = await fetchIndicator("rsi", symbol, exchange, { period: 14, backtrack: 1 });
+    result.prevRsi = r?.value ?? null;
+  }
+
+  if (result.macd !== null && enabled.includes("macd")) {
+    await sleep(INDICATOR_DELAY_MS);
+    console.log(`[taapi] ${symbol} — fetching macd histogram (prev bar)`);
+    const r = await fetchIndicator("macd", symbol, exchange, { backtrack: 1 });
+    result.prevHist = r?.valueMACDHist ?? null;
+  }
+
+  if (result.ema20 !== null && enabled.includes("ema20")) {
+    await sleep(INDICATOR_DELAY_MS);
+    console.log(`[taapi] ${symbol} — fetching ema20 (prev bar)`);
+    const r = await fetchIndicator("ema", symbol, exchange, { period: 20, backtrack: 1 });
+    result.prevEma20 = r?.value ?? null;
+  }
+
+  // Fetch current close price (used for % distance from EMA20)
+  // Uses the /price endpoint — 1 call, returns { value: number }
+  if (enabled.includes("ema20")) {
+    await sleep(INDICATOR_DELAY_MS);
+    console.log(`[taapi] ${symbol} — fetching current close`);
+    const r = await fetchIndicator("price", symbol, exchange);
+    result.currentClose = r?.value ?? null;
   }
 
   return result;
