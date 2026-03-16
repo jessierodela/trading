@@ -13,7 +13,6 @@ interface SignalsPanelProps {
 
 const typeStyles: Record<Alert["type"], { label: string; color: string }> = {
   buy:   { label: "BUY",   color: "text-[var(--color-accent-green)]"  },
-  sell:  { label: "SELL",  color: "text-[var(--color-accent-red)]"    },
   watch: { label: "WATCH", color: "text-[var(--color-accent-blue)]"   },
   warn:  { label: "WARN",  color: "text-[var(--color-accent-orange)]" },
 };
