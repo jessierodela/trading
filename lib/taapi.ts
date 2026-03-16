@@ -92,13 +92,15 @@ async function fetchBulk(
     console.warn(`[taapi] ${symbol} has no enabled indicators — skipping.`);
     return emptyResult(symbol);
   }
-
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const body = {
         secret:    KEY,
         construct: buildBulkBody(symbol, exchange, enabled),
       };
+
+      // DEBUG — remove once BTC is confirmed working
+      console.log(`[taapi] ${symbol} request body:`, JSON.stringify(body, null, 2));
 
       const res = await fetch(`${BASE}/bulk`, {
         method:  "POST",
@@ -114,7 +116,9 @@ async function fetchBulk(
       }
 
       if (!res.ok) {
-        console.error(`[taapi] ${symbol} bulk failed: ${res.status}`);
+        // DEBUG — log the actual error body from TAAPI, not just the status code
+        const errText = await res.text();
+        console.error(`[taapi] ${symbol} bulk failed: ${res.status} — ${errText}`);
         return emptyResult(symbol);
       }
 
@@ -148,7 +152,6 @@ async function fetchBulk(
       if (attempt < retries) await sleep(5000);
     }
   }
-
   return emptyResult(symbol);
 }
 
