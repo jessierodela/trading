@@ -2,28 +2,79 @@
 
 import { useEffect, useState } from "react";
 import { Pulse } from "@/components/ui/Pulse";
+import { fetchQuote, formatPrice, formatChange, type PolygonQuote } from "@/lib/polygon";
 
-const MARKET_TICKERS = [
-  { label: "S&P 500", value: "5,234.18", change: "+0.61%", up: true },
-  { label: "NASDAQ",  value: "18,441.55", change: "+0.84%", up: true },
-  { label: "BTC",     value: "67,420",    change: "+2.33%", up: true },
-  { label: "VIX",     value: "13.88",     change: "-1.20%", up: false },
+const ASSETS = [
+  { label: "S&P 500", symbol: "^GSPC",  type: "stock"  as const },
+  { label: "NASDAQ",  symbol: "^IXIC",  type: "stock"  as const },
+  { label: "BTC",     symbol: "BTC",    type: "crypto" as const },
+  { label: "VIX",     symbol: "^VIX",   type: "stock"  as const },
 ];
+
+interface TickerState {
+  label: string;
+  value: string;
+  change: string;
+  up: boolean;
+}
+
+const EMPTY: TickerState[] = ASSETS.map((a) => ({
+  label: a.label,
+  value: "—",
+  change: "—",
+  up: true,
+}));
 
 export function Header() {
   const [time, setTime] = useState("");
+  const [tickers, setTickers] = useState<TickerState[]>(EMPTY);
 
+  // Clock — Central Time
   useEffect(() => {
     const tick = () => {
-      const t = new Date().toLocaleTimeString("en-US", {
-        hour12: false,
-        timeZone: "America/New_York",
-      });
-      setTime(t + " EST");
+      setTime(
+        new Date().toLocaleTimeString("en-US", {
+          hour12: false,
+          timeZone: "America/Chicago",
+        }) + " CT"
+      );
     };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
+  }, []);
+
+  // Market data — fetch on mount, refresh every 60 s
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      const quotes = await Promise.all(
+        ASSETS.map((a) => fetchQuote(a.symbol, a.type))
+      );
+
+      if (cancelled) return;
+
+      setTickers(
+        ASSETS.map((a, i) => {
+          const q: PolygonQuote | null = quotes[i];
+          if (!q) return { label: a.label, value: "—", change: "—", up: true };
+          return {
+            label:  a.label,
+            value:  formatPrice(q.price, a.type),
+            change: formatChange(q.changePct),
+            up:     q.changeUp,
+          };
+        })
+      );
+    };
+
+    load();
+    const id = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   return (
@@ -42,7 +93,7 @@ export function Header() {
 
       {/* Market tickers */}
       <div className="flex gap-6 items-center">
-        {MARKET_TICKERS.map((t) => (
+        {tickers.map((t) => (
           <div key={t.label} className="flex gap-2 items-baseline">
             <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">{t.label}</span>
             <span className="text-[11px] text-[var(--color-text-secondary)]">{t.value}</span>
