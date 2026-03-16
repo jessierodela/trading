@@ -2,11 +2,12 @@
 
 /**
  * components/dashboard/StatsBar.tsx
- * Polls /api/signals every 30s and displays live agent stats.
+ * Poll interval controlled by config/polling.ts — SIGNALS_POLL_MS.
  */
 
 import { useEffect, useState, useCallback } from "react";
-import { MetricTile } from "@/components/ui/MetricTile";
+import { MetricTile }      from "@/components/ui/MetricTile";
+import { SIGNALS_POLL_MS } from "@/config/polling";
 
 interface Stats {
   activeAgents:   number;
@@ -43,11 +44,10 @@ export function StatsBar() {
 
   useEffect(() => {
     fetchStats();
-    const id = setInterval(fetchStats, 30_000);
+    const id = setInterval(fetchStats, SIGNALS_POLL_MS);
     return () => clearInterval(id);
   }, [fetchStats]);
 
-  // Show skeleton tiles while loading
   const v = (val: number | undefined, fallback = "--") =>
     loading ? fallback : String(val ?? fallback);
 

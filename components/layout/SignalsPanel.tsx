@@ -2,14 +2,12 @@
 
 /**
  * components/layout/SignalsPanel.tsx
- * Polls /api/signals every 60s and renders live agent signals as alert cards.
- * No longer receives static ALERTS prop — data comes from the signals pipeline.
+ * Poll interval controlled by config/polling.ts — SIGNALS_POLL_MS.
  */
 
 import { useEffect, useState } from "react";
-import type { Signal } from "@/lib/signals";
-
-// ─── Types ────────────────────────────────────────────────────────────────
+import type { Signal }         from "@/lib/signals";
+import { SIGNALS_POLL_MS }     from "@/config/polling";
 
 interface AgentResult {
   id:          string;
@@ -22,17 +20,14 @@ interface SignalsApiResponse {
   agentResults: AgentResult[];
 }
 
-// Flattened display card derived from Signal
 interface AlertCard {
   symbol:     string;
   type:       "buy" | "sell" | "watch" | "warn";
   message:    string;
   agent:      string;
-  confidence: number; // 0–100
+  confidence: number;
   timeLabel:  string;
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
 
 const TYPE_STYLES: Record<AlertCard["type"], { label: string; color: string }> = {
   buy:   { label: "BUY",   color: "text-[var(--color-accent-green)]"  },
@@ -54,35 +49,27 @@ function signalsToCards(agentResults: AgentResult[]): AlertCard[] {
   for (const agent of agentResults) {
     for (const sig of agent.signals) {
       if (sig.type === "none") continue;
-
-      const confPct = CONFIDENCE_MAP[sig.confidence] ?? 50;
-      const timeLabel = offsetMin === 0 ? "now" : `${offsetMin}m ago`;
-
       cards.push({
         symbol:     sig.symbol,
-        type:       sig.type === "sell" ? "sell" : sig.type as AlertCard["type"],
+        type:       sig.type as AlertCard["type"],
         message:    sig.reason,
         agent:      sig.agent,
-        confidence: confPct,
-        timeLabel,
+        confidence: CONFIDENCE_MAP[sig.confidence] ?? 50,
+        timeLabel:  offsetMin === 0 ? "now" : `${offsetMin}m ago`,
       });
-
       offsetMin += 2;
     }
   }
 
-  // Sort: buy > sell > watch, then by confidence desc
   const ORDER = { buy: 0, sell: 1, watch: 2, warn: 3 };
   return cards
     .sort((a, b) => (ORDER[a.type] - ORDER[b.type]) || (b.confidence - a.confidence))
     .slice(0, 12);
 }
 
-// ─── Component ────────────────────────────────────────────────────────────
-
 export function SignalsPanel() {
-  const [cards, setCards]     = useState<AlertCard[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [cards, setCards]         = useState<AlertCard[]>([]);
+  const [loading, setLoading]     = useState(true);
   const [lastFetch, setLastFetch] = useState<number | null>(null);
 
   async function fetchSignals() {
@@ -102,18 +89,16 @@ export function SignalsPanel() {
 
   useEffect(() => {
     fetchSignals();
-    const id = setInterval(fetchSignals, 60_000);
+    const id = setInterval(fetchSignals, SIGNALS_POLL_MS);
     return () => clearInterval(id);
   }, []);
 
-  // Build age label for the header
   const ageLabel = lastFetch
     ? `${Math.round((Date.now() - lastFetch) / 1000)}s ago`
     : null;
 
   return (
     <aside className="w-[200px] shrink-0 border-l border-[var(--color-border-default)] flex flex-col overflow-hidden">
-      {/* Header */}
       <div className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] shrink-0 flex items-center gap-[6px]">
         <span className="w-[5px] h-[5px] rounded-full bg-[var(--color-accent-green)] opacity-80" />
         <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.14em] flex-1">SIGNALS</span>
@@ -122,10 +107,8 @@ export function SignalsPanel() {
         )}
       </div>
 
-      {/* Content */}
       <div className="overflow-y-auto flex-1">
         {loading ? (
-          // Skeleton placeholders while first fetch is in flight
           Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] animate-pulse">
               <div className="flex justify-between mb-[6px]">
@@ -145,44 +128,24 @@ export function SignalsPanel() {
           cards.map((card, i) => {
             const style = TYPE_STYLES[card.type] ?? TYPE_STYLES.watch;
             return (
-              <div
-                key={i}
-                className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] last:border-b-0"
-              >
-                {/* Symbol + badge */}
+              <div key={i} className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] last:border-b-0">
                 <div className="flex items-center justify-between mb-[4px]">
-                  <span className="text-[12px] font-medium text-[var(--color-text-primary)]">
-                    {card.symbol}
-                  </span>
-                  <span className={`text-[9px] font-semibold tracking-wide ${style.color}`}>
-                    {style.label}
-                  </span>
+                  <span className="text-[12px] font-medium text-[var(--color-text-primary)]">{card.symbol}</span>
+                  <span className={`text-[9px] font-semibold tracking-wide ${style.color}`}>{style.label}</span>
                 </div>
-
-                {/* Reasoning message */}
-                <p className="text-[10px] text-[var(--color-text-secondary)] leading-[1.4] mb-[5px]">
-                  {card.message}
-                </p>
-
-                {/* Agent + confidence % */}
+                <p className="text-[10px] text-[var(--color-text-secondary)] leading-[1.4] mb-[5px]">{card.message}</p>
                 <div className="flex items-center justify-between mb-[2px]">
                   <span className="text-[9px] text-[var(--color-text-dim)]">{card.agent}</span>
                   <span className="text-[9px] text-[var(--color-text-dim)]">{card.confidence}%</span>
                 </div>
-
-                {/* Confidence bar */}
                 <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden">
                   <div
                     className="h-full rounded-full bg-[var(--color-accent-green)] opacity-60"
                     style={{ width: `${card.confidence}%` }}
                   />
                 </div>
-
-                {/* Timestamp */}
                 <div className="mt-[4px]">
-                  <span className="text-[9px] text-[var(--color-text-dim)] opacity-50">
-                    {card.timeLabel}
-                  </span>
+                  <span className="text-[9px] text-[var(--color-text-dim)] opacity-50">{card.timeLabel}</span>
                 </div>
               </div>
             );

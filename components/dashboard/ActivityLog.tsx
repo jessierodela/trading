@@ -2,11 +2,12 @@
 
 /**
  * components/dashboard/ActivityLog.tsx
- * Polls /api/signals every 30s for live activity entries.
+ * Poll interval controlled by config/polling.ts — SIGNALS_POLL_MS.
  */
 
 import { useEffect, useState, useCallback } from "react";
 import type { ActivityEntry } from "@/types/agent";
+import { SIGNALS_POLL_MS }    from "@/config/polling";
 
 const iconMap = {
   signal: { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-green)]",  char: "▲" },
@@ -32,7 +33,7 @@ export function ActivityLog() {
 
   useEffect(() => {
     fetchActivity();
-    const id = setInterval(fetchActivity, 30_000);
+    const id = setInterval(fetchActivity, SIGNALS_POLL_MS);
     return () => clearInterval(id);
   }, [fetchActivity]);
 
