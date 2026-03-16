@@ -59,7 +59,7 @@ export const DEFAULT_INDICATOR_CONFIG: AssetIndicatorConfig[] = [
   { symbol: "SPY",  enabled: [] },
   { symbol: "BTC",  enabled: ["rsi", "macd", "ema20", "atr"] },
   { symbol: "ETH",  enabled: [] },
-  { symbol: "SOL",  enabled: [] },
+  { symbol: "SOL",  enabled: ["rsi", "macd", "ema20", "atr"] },
   { symbol: "BNB",  enabled: [] },
 ];
 
