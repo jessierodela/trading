@@ -4,14 +4,11 @@
  * and StatsBar counts. This is the "brain" that each agent uses.
  *
  * Agents:
- *  A1 — Momentum Scout:    RSI + MACD — ALL symbols (stocks + crypto)
- *  A2 — Breakout Watcher:  Bollinger Band breakouts — ALL symbols
- *  A3 — Trend Follower:    EMA 50/200 cross — stocks only (needs ema50/ema200)
- *  A4 — Mean Reversion:    Deep RSI oversold — ALL symbols
+ *  A1 — Momentum Scout:     RSI + MACD + EMA20 — ALL symbols
+ *  A2 — Breakout Watcher:   Bollinger Band breakouts — ALL symbols
+ *  A3 — Trend Follower:     EMA 50/200 cross — stocks only
+ *  A4 — Mean Reversion:     Deep RSI oversold — ALL symbols
  *  A5 — Volatility Arbiter: ATR spike — ALL symbols
- *
- * Crypto Ranger removed — it was an alias of Momentum Scout with no
- * distinct logic. Momentum Scout now covers both stocks and crypto.
  */
 
 import type { IndicatorValues } from "./taapi";
@@ -47,7 +44,25 @@ export interface DashboardStats {
 /**
  * A1 — Momentum Scout
  * Covers ALL symbols (stocks + crypto).
- * Logic: RSI oversold/overbought + MACD histogram direction.
+ *
+ * Three-condition logic using EMA20 as dynamic structure anchor:
+ *
+ * 1. BULLISH SIGNAL — Momentum continuation
+ *    MACD bullish crossover + RSI between 50–70
+ *    (positive MACD crossover with RSI in momentum zone implies price > EMA20)
+ *
+ * 2. PULLBACK ENTRY — Trend continuation entry on dip
+ *    RSI pulled back to 40–50 + MACD hist still positive
+ *    Healthy dip to dynamic support, momentum intact.
+ *
+ * 3. REVERSAL WARNING — Possible exhaustion
+ *    RSI > 75 + MACD hist shrinking (hist < 15% of |MACD| spread)
+ *    Overbought + momentum fading = watch for rollover.
+ *
+ * 4. SELL — Full confirmation
+ *    RSI > 70 + MACD hist already negative = momentum rolled over.
+ *
+ * Falls back to simpler RSI/MACD logic if ema20 is null.
  */
 function momentumScout(
   indicators: Map<string, IndicatorValues>,
@@ -59,38 +74,76 @@ function momentumScout(
     const ind = indicators.get(sym);
     if (!ind) continue;
 
-    const rsi  = ind.rsi;
-    const macd = ind.macd;
+    const rsi   = ind.rsi;
+    const macd  = ind.macd;
+    const ema20 = ind.ema20;
 
-    if (rsi !== null && macd !== null) {
-      // BUY — RSI oversold bounce + MACD histogram confirming momentum shift
-      if (rsi < 35 && macd.valueMACDHist > 0) {
+    if (rsi === null || macd === null) continue;
+
+    const hist               = macd.valueMACDHist;
+    const macdBullishCrossover = hist > 0 && macd.valueMACD > macd.valueMACDSignal;
+
+    if (ema20 !== null) {
+      // ── 1. Bullish momentum continuation ──────────────────────────────
+      // MACD just crossed bullish + RSI in healthy momentum zone (50–70)
+      if (macdBullishCrossover && rsi >= 50 && rsi <= 70) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "buy",
+          reason: `MACD bullish crossover + RSI ${rsi.toFixed(1)} in momentum zone (EMA20: $${ema20.toFixed(2)})`,
+          confidence: rsi >= 55 ? "high" : "medium",
+        });
+      }
+
+      // ── 2. Pullback entry ──────────────────────────────────────────────
+      // RSI pulled back to 40–50 + MACD hist still positive = dip to EMA20 support
+      else if (rsi >= 40 && rsi < 50 && hist > 0) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "buy",
+          reason: `Pullback entry — RSI ${rsi.toFixed(1)} near EMA20 ($${ema20.toFixed(2)}), MACD hist positive`,
+          confidence: "medium",
+        });
+      }
+
+      // ── 3. Reversal warning ────────────────────────────────────────────
+      // RSI > 75 + MACD hist shrinking = extended above EMA20, momentum fading
+      else if (rsi > 75 && hist < Math.abs(macd.valueMACD) * 0.15) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "watch",
+          reason: `Reversal warning — RSI ${rsi.toFixed(1)}, MACD hist shrinking, extended above EMA20 ($${ema20.toFixed(2)})`,
+          confidence: rsi > 80 ? "high" : "medium",
+        });
+      }
+
+      // ── 4. Sell — momentum rolled over ────────────────────────────────
+      else if (rsi > 70 && hist < 0) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "sell",
+          reason: `RSI overbought (${rsi.toFixed(1)}) + MACD hist negative — momentum rolled over below EMA20 ($${ema20.toFixed(2)})`,
+          confidence: rsi > 80 ? "high" : "medium",
+        });
+      }
+
+    } else {
+      // ── Fallback: ema20 not enabled, use RSI + MACD only ──────────────
+      if (rsi < 35 && hist > 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "buy",
           reason: `RSI oversold (${rsi.toFixed(1)}) + MACD hist positive`,
           confidence: rsi < 30 ? "high" : "medium",
         });
-      }
-      // SELL — RSI overbought AND MACD histogram already negative (momentum fading)
-      // Requires both conditions so we don't sell into continuing strength.
-      // e.g. RSI 76 + MACD hist still positive = momentum intact, no sell yet.
-      else if (rsi > 70 && macd.valueMACDHist < 0) {
+      } else if (rsi > 70 && hist < 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "sell",
           reason: `RSI overbought (${rsi.toFixed(1)}) + MACD hist negative — momentum fading`,
           confidence: rsi > 80 ? "high" : "medium",
         });
-      }
-      // WATCH — RSI overbought but MACD still positive (strength intact, stay alert)
-      else if (rsi > 70 && macd.valueMACDHist > 0) {
+      } else if (rsi > 70 && hist > 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "watch",
           reason: `RSI overbought (${rsi.toFixed(1)}) but MACD hist positive — monitor for reversal`,
           confidence: "medium",
         });
-      }
-      // WATCH — MACD bullish crossover in neutral RSI zone (35–70)
-      else if (macd.valueMACDHist > 0 && macd.valueMACD > macd.valueMACDSignal) {
+      } else if (macdBullishCrossover) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "watch",
           reason: `MACD bullish crossover`,
@@ -106,7 +159,6 @@ function momentumScout(
 /**
  * A2 — Breakout Watcher
  * Covers ALL symbols. Requires BB indicator enabled.
- * Logic: price relative to Bollinger Band upper/lower.
  */
 function breakoutWatcher(
   indicators: Map<string, IndicatorValues>,
@@ -150,8 +202,7 @@ function breakoutWatcher(
 
 /**
  * A3 — Trend Follower
- * Stocks only — EMA 50/200 are most meaningful on equities.
- * Logic: golden cross (ema50 > ema200) vs death cross.
+ * Stocks only — EMA 50/200 golden/death cross.
  */
 function trendFollower(
   indicators: Map<string, IndicatorValues>,
@@ -185,8 +236,7 @@ function trendFollower(
 
 /**
  * A4 — Mean Reversion
- * Covers ALL symbols. Requires RSI.
- * Logic: deeply oversold RSI only (stricter than Momentum Scout's <35 threshold).
+ * Covers ALL symbols. Requires RSI < 30 (stricter than Momentum Scout).
  */
 function meanReversion(
   indicators: Map<string, IndicatorValues>,
@@ -212,8 +262,7 @@ function meanReversion(
 
 /**
  * A5 — Volatility Arbiter
- * Covers ALL symbols. Requires ATR.
- * Logic: ATR spike relative to average across all scanned symbols.
+ * Covers ALL symbols. ATR spike relative to cross-asset average.
  */
 function volatilityArbiter(
   indicators: Map<string, IndicatorValues>,
@@ -306,10 +355,8 @@ export function evaluateSignals(
 ): { agentResults: AgentResult[]; stats: DashboardStats; activity: LiveActivityEntry[] } {
   const allSymbols = [...stockSymbols, ...cryptoSymbols];
 
-  // A1: Momentum Scout — ALL symbols (was stocks-only before, crypto was duplicated via Crypto Ranger)
   const a1Signals = momentumScout(indicators, allSymbols);
   const a2Signals = breakoutWatcher(indicators, quotes, allSymbols);
-  // A3: Trend Follower — stocks only (EMA 50/200 less useful for crypto on daily)
   const a3Signals = trendFollower(indicators, stockSymbols);
   const a4Signals = meanReversion(indicators, allSymbols);
   const a5Signals = volatilityArbiter(indicators, allSymbols);

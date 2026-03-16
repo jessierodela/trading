@@ -2,9 +2,8 @@
  * lib/taapi.ts
  * Fetches technical indicator values from Taapi.io
  *
- * Free plan: 1 indicator per call, 1 call/sec.
- * We call each indicator individually with a 1.1s gap between calls.
- * Bulk endpoint is NOT available on the free plan.
+ * Free plan: 1 indicator per call, 1 call/15sec.
+ * Each indicator is fetched individually with a 15.5s gap between calls.
  */
 
 import {
@@ -21,6 +20,7 @@ export interface IndicatorValues {
   symbol: string;
   rsi:    number | null;
   macd:   { valueMACD: number; valueMACDSignal: number; valueMACDHist: number } | null;
+  ema20:  number | null;
   ema50:  number | null;
   ema200: number | null;
   bb:     { valueLowerBand: number; valueMiddleBand: number; valueUpperBand: number } | null;
@@ -37,7 +37,7 @@ function sleep(ms: number) {
 }
 
 function emptyResult(symbol: string): IndicatorValues {
-  return { symbol, rsi: null, macd: null, ema50: null, ema200: null, bb: null, atr: null };
+  return { symbol, rsi: null, macd: null, ema20: null, ema50: null, ema200: null, bb: null, atr: null };
 }
 
 // ─── Single indicator fetch ───────────────────────────────────────────────
@@ -88,8 +88,7 @@ async function fetchIndicator(
 
 // ─── Fetch all enabled indicators for one asset ───────────────────────────
 
-// 1.1s between each indicator call to stay within 1 req/sec free plan limit
-const INDICATOR_DELAY_MS = 15500; //free plan: 1 req / 15 sec
+const INDICATOR_DELAY_MS = 15500; // free plan: 1 req / 15 sec
 
 async function fetchAssetIndicators(
   symbol:   string,
@@ -116,6 +115,11 @@ async function fetchAssetIndicators(
           : null;
         break;
       }
+      case "ema20": {
+        const r = await fetchIndicator("ema", symbol, exchange, { period: 20 });
+        result.ema20 = r?.value ?? null;
+        break;
+      }
       case "ema50": {
         const r = await fetchIndicator("ema", symbol, exchange, { period: 50 });
         result.ema50 = r?.value ?? null;
@@ -140,7 +144,6 @@ async function fetchAssetIndicators(
       }
     }
 
-    // Wait between indicator calls — but not after the last one
     if (i < enabled.length - 1) {
       await sleep(INDICATOR_DELAY_MS);
     }
@@ -151,14 +154,6 @@ async function fetchAssetIndicators(
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
-/**
- * Fetch indicators for all active assets sequentially.
- *
- * Free plan = 1 call/sec. Each indicator = 1 call.
- * Assets with no enabled indicators are skipped instantly.
- *
- * BTC with [rsi, macd, atr] = 3 calls, ~3.3s total.
- */
 export async function fetchAllIndicators(
   assets:          { symbol: string; type: AssetType }[],
   indicatorConfig: AssetIndicatorConfig[] = DEFAULT_INDICATOR_CONFIG
@@ -186,7 +181,6 @@ export async function fetchAllIndicators(
     const result = await fetchAssetIndicators(taapiSymbol, exchange, enabled);
     map.set(symbol, { ...result, symbol });
 
-    // Extra 2s gap between assets to let the rate limit window reset
     if (i < activeAssets.length - 1) {
       await sleep(2000);
     }
