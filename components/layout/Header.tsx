@@ -59,7 +59,7 @@ export function Header() {
           ASSETS.map((a) => {
             const q = data[a.symbol];
             if (!q) return { label: a.label, value: "—", change: "—", up: true };
-            return { label: a.label, ...q };
+            return { label: a.label, value: q.price, change: q.change, up: q.up };
           })
         );
       } catch {
