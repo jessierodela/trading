@@ -2,76 +2,76 @@
 
 /**
  * components/layout/SignalsPanel.tsx
- * Right-hand panel showing live signal feed.
+ * Right-hand panel rendering live agent alerts passed from the server.
  */
 
-import { useState } from "react";
+import type { Alert } from "@/types/agent";
 
-interface Signal {
-  id: string;
-  symbol: string;
-  action: "BUY" | "SELL" | "HOLD";
-  indicator: string;
-  timeframe: string;
-  timestamp: string;
+interface SignalsPanelProps {
+  alerts: Alert[];
 }
 
-const MOCK_SIGNALS: Signal[] = [
-  { id: "1", symbol: "BTC",  action: "BUY",  indicator: "RSI",     timeframe: "4H",  timestamp: "2m ago" },
-  { id: "2", symbol: "NVDA", action: "SELL", indicator: "MACD",    timeframe: "1D",  timestamp: "5m ago" },
-  { id: "3", symbol: "SOL",  action: "HOLD", indicator: "VWAP",    timeframe: "1H",  timestamp: "9m ago" },
-  { id: "4", symbol: "AAPL", action: "BUY",  indicator: "EMA 20",  timeframe: "1D",  timestamp: "14m ago" },
-  { id: "5", symbol: "ETH",  action: "BUY",  indicator: "Stoch",   timeframe: "4H",  timestamp: "21m ago" },
-  { id: "6", symbol: "TSLA", action: "SELL", indicator: "BB",      timeframe: "1D",  timestamp: "30m ago" },
-  { id: "7", symbol: "SPY",  action: "HOLD", indicator: "MACD",    timeframe: "1W",  timestamp: "45m ago" },
-];
-
-const actionStyles: Record<Signal["action"], string> = {
-  BUY:  "text-[var(--color-accent-green)]",
-  SELL: "text-[var(--color-accent-red)]",
-  HOLD: "text-[var(--color-text-dim)]",
+const typeStyles: Record<Alert["type"], { label: string; color: string }> = {
+  buy:   { label: "BUY",   color: "text-[var(--color-accent-green)]"  },
+  sell:  { label: "SELL",  color: "text-[var(--color-accent-red)]"    },
+  watch: { label: "WATCH", color: "text-[var(--color-accent-blue)]"   },
+  warn:  { label: "WARN",  color: "text-[var(--color-accent-orange)]" },
 };
 
-export function SignalsPanel() {
-  const [signals] = useState<Signal[]>(MOCK_SIGNALS);
-
+export function SignalsPanel({ alerts }: SignalsPanelProps) {
   return (
-    <aside className="w-[160px] shrink-0 border-l border-[var(--color-border-default)] flex flex-col overflow-hidden">
+    <aside className="w-[200px] shrink-0 border-l border-[var(--color-border-default)] flex flex-col overflow-hidden">
       {/* Header */}
       <div className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] shrink-0 flex items-center gap-[6px]">
         <span className="w-[5px] h-[5px] rounded-full bg-[var(--color-accent-green)] opacity-80" />
         <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.14em]">SIGNALS</span>
       </div>
 
-      {/* Signal list */}
+      {/* Alert list */}
       <div className="overflow-y-auto flex-1">
-        {signals.map((s) => (
-          <div
-            key={s.id}
-            className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] last:border-b-0"
-          >
-            {/* Symbol + action */}
-            <div className="flex items-center justify-between mb-[3px]">
-              <span className="text-[12px] font-medium text-[var(--color-text-primary)]">
-                {s.symbol}
-              </span>
-              <span className={`text-[10px] font-semibold tracking-wide ${actionStyles[s.action]}`}>
-                {s.action}
-              </span>
-            </div>
+        {alerts.map((alert, i) => {
+          const style = typeStyles[alert.type] ?? typeStyles.watch;
+          return (
+            <div
+              key={i}
+              className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] last:border-b-0"
+            >
+              {/* Symbol + type badge */}
+              <div className="flex items-center justify-between mb-[4px]">
+                <span className="text-[12px] font-medium text-[var(--color-text-primary)]">
+                  {alert.symbol}
+                </span>
+                <span className={`text-[9px] font-semibold tracking-wide ${style.color}`}>
+                  {style.label}
+                </span>
+              </div>
 
-            {/* Indicator + timeframe */}
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-[var(--color-text-dim)]">{s.indicator}</span>
-              <span className="text-[10px] text-[var(--color-text-dim)]">{s.timeframe}</span>
-            </div>
+              {/* Message */}
+              <p className="text-[10px] text-[var(--color-text-secondary)] leading-[1.4] mb-[5px]">
+                {alert.message}
+              </p>
 
-            {/* Timestamp */}
-            <div className="mt-[2px]">
-              <span className="text-[9px] text-[var(--color-text-dim)] opacity-60">{s.timestamp}</span>
+              {/* Agent + confidence */}
+              <div className="flex items-center justify-between mb-[2px]">
+                <span className="text-[9px] text-[var(--color-text-dim)]">{alert.agent}</span>
+                <span className="text-[9px] text-[var(--color-text-dim)]">{alert.confidence}%</span>
+              </div>
+
+              {/* Confidence bar */}
+              <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-[var(--color-accent-green)] opacity-60"
+                  style={{ width: `${alert.confidence}%` }}
+                />
+              </div>
+
+              {/* Timestamp */}
+              <div className="mt-[4px]">
+                <span className="text-[9px] text-[var(--color-text-dim)] opacity-50">{alert.time}</span>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </aside>
   );
