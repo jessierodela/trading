@@ -1,8 +1,14 @@
-import type { ActivityEntry } from "@/types/agent";
+"use client";
 
-interface ActivityLogProps {
-  entries: ActivityEntry[];
-}
+/**
+ * components/dashboard/ActivityLog.tsx
+ * Accepts live activity entries from the signals API.
+ * Falls back to static ACTIVITY_LOG if no live data yet.
+ */
+
+import { useEffect, useState, useCallback } from "react";
+import type { ActivityEntry } from "@/types/agent";
+import { ACTIVITY_LOG } from "@/config/agents";
 
 const iconMap = {
   signal: { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-green)]",  char: "▲" },
@@ -11,7 +17,27 @@ const iconMap = {
   error:  { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-red)]",    char: "✕" },
 };
 
-export function ActivityLog({ entries }: ActivityLogProps) {
+export function ActivityLog() {
+  const [entries, setEntries] = useState<ActivityEntry[]>(ACTIVITY_LOG);
+
+  const fetchActivity = useCallback(async () => {
+    try {
+      const res  = await fetch("/api/signals");
+      const data = await res.json();
+      if (data.activity && Array.isArray(data.activity) && data.activity.length > 0) {
+        setEntries(data.activity);
+      }
+    } catch {
+      // Keep showing static fallback on error
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchActivity();
+    const id = setInterval(fetchActivity, 30_000);
+    return () => clearInterval(id);
+  }, [fetchActivity]);
+
   return (
     <div className="flex flex-col flex-1 overflow-hidden px-[18px] pb-[14px]">
       <div className="flex justify-between items-center py-3 shrink-0">
@@ -26,11 +52,16 @@ export function ActivityLog({ entries }: ActivityLogProps) {
         {entries.map((entry, i) => {
           const icon = iconMap[entry.type] ?? iconMap.scan;
           return (
-            <div key={i} className="flex gap-[10px] py-[7px] border-b border-[var(--color-border-subtle)] items-start">
+            <div
+              key={i}
+              className="flex gap-[10px] py-[7px] border-b border-[var(--color-border-subtle)] items-start"
+            >
               <span className="text-[9px] text-[var(--color-text-dim)] whitespace-nowrap pt-[1px] min-w-[44px]">
                 {entry.time}
               </span>
-              <div className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] shrink-0 mt-[1px] ${icon.cls}`}>
+              <div
+                className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] shrink-0 mt-[1px] ${icon.cls}`}
+              >
                 {icon.char}
               </div>
               <div className="flex-1 min-w-0">
