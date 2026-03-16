@@ -1,121 +1,59 @@
-import type { Agent, ActivityEntry } from "@/types/agent";
+import type { Agent } from "@/types/agent";
+
+/**
+ * config/agents.ts
+ * Static agent definitions used by AgentGrid.
+ * signalCount / alertCount / lastAction are placeholder defaults —
+ * AgentGrid should override these with live data from /api/signals.
+ *
+ * Crypto Ranger removed — it was an alias of Momentum Scout with no
+ * distinct logic. Momentum Scout now covers both stocks and crypto.
+ */
 
 export const AGENTS: Agent[] = [
   {
     id:          "A1",
     name:        "Momentum Scout",
     status:      "active",
-    focus:       "RSI + MACD crossovers",
-    signalCount: 12,
-    alertCount:  4,
-    lastAction:  "Scanning NVDA, AAPL...",
+    focus:       "RSI + MACD — stocks & crypto",
+    signalCount: 0,
+    alertCount:  0,
+    lastAction:  "Scanning all symbols…",
   },
   {
     id:          "A2",
     name:        "Breakout Watcher",
     status:      "scanning",
-    focus:       "Volume + BB breakouts",
-    signalCount: 8,
-    alertCount:  2,
-    lastAction:  "Flagged TSLA setup",
+    focus:       "Bollinger Band breakouts",
+    signalCount: 0,
+    alertCount:  0,
+    lastAction:  "Monitoring BB levels",
   },
   {
     id:          "A3",
     name:        "Trend Follower",
     status:      "active",
-    focus:       "50/200 MA golden cross",
-    signalCount: 5,
-    alertCount:  1,
-    lastAction:  "Monitoring SPY trend",
+    focus:       "EMA 50/200 golden cross — stocks",
+    signalCount: 0,
+    alertCount:  0,
+    lastAction:  "Monitoring MA trends",
   },
   {
     id:          "A4",
-    name:        "Crypto Ranger",
-    status:      "scanning",
-    focus:       "BTC/ETH momentum",
-    signalCount: 9,
-    alertCount:  3,
-    lastAction:  "BTC above key level",
-  },
-  {
-    id:          "A5",
     name:        "Mean Reversion",
     status:      "idle",
-    focus:       "Oversold RSI bounce",
-    signalCount: 3,
+    focus:       "Deep RSI oversold bounce",
+    signalCount: 0,
     alertCount:  0,
     lastAction:  "Idle — no setups",
   },
   {
-    id:          "A6",
+    id:          "A5",
     name:        "Volatility Arbiter",
     status:      "idle",
-    focus:       "ATR + VIX correlation",
-    signalCount: 1,
+    focus:       "ATR spike detection",
+    signalCount: 0,
     alertCount:  0,
     lastAction:  "Waiting for vol spike",
-  },
-];
-
-export const ACTIVITY_LOG: ActivityEntry[] = [
-  {
-    time:    "now",
-    type:    "signal",
-    agent:   "Momentum Scout",
-    message: "<span style='color:var(--color-accent-green);font-weight:600'>NVDA</span> — RSI oversold bounce confirmed. Alert dispatched.",
-  },
-  {
-    time:    "2m",
-    type:    "scan",
-    agent:   "Crypto Ranger",
-    message: "Completed scan of <span style='color:var(--color-accent-green);font-weight:600'>BTC ETH SOL BNB</span> — 2 signals found.",
-  },
-  {
-    time:    "5m",
-    type:    "signal",
-    agent:   "Trend Follower",
-    message: "<span style='color:var(--color-accent-green);font-weight:600'>AAPL</span> — Golden cross detected on daily timeframe.",
-  },
-  {
-    time:    "8m",
-    type:    "scan",
-    agent:   "Breakout Watcher",
-    message: "Volume scan complete across all 10 tickers. 1 breakout candidate.",
-  },
-  {
-    time:    "12m",
-    type:    "alert",
-    agent:   "Volatility Arbiter",
-    message: "<span style='color:var(--color-accent-green);font-weight:600'>SPY</span> — VIX elevated. Warning alert triggered.",
-  },
-  {
-    time:    "18m",
-    type:    "scan",
-    agent:   "Momentum Scout",
-    message: "RSI sweep complete — 4 tickers in oversold territory.",
-  },
-  {
-    time:    "25m",
-    type:    "signal",
-    agent:   "Crypto Ranger",
-    message: "<span style='color:var(--color-accent-green);font-weight:600'>BTC</span> — Reclaimed 50MA. High confidence buy signal.",
-  },
-  {
-    time:    "33m",
-    type:    "scan",
-    agent:   "Mean Reversion",
-    message: "No qualifying setups found. Next scan in 15m.",
-  },
-  {
-    time:    "41m",
-    type:    "signal",
-    agent:   "Crypto Ranger",
-    message: "<span style='color:var(--color-accent-green);font-weight:600'>ETH</span> — OBV divergence noted. Watch alert sent.",
-  },
-  {
-    time:    "52m",
-    type:    "scan",
-    agent:   "Trend Follower",
-    message: "MA crossover scan complete. <span style='color:var(--color-accent-green);font-weight:600'>AAPL MSFT</span> flagged.",
   },
 ];
