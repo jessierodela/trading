@@ -17,14 +17,26 @@ export const revalidate = 30;
 export async function GET() {
   try {
     const assets = WATCHLIST.map((a) => ({ symbol: a.symbol, type: a.type }));
+
+    console.log("[api/market] fetching quotes for:", assets.map(a => a.symbol).join(", "));
+    console.log("[api/market] POLYGON_API_KEY present:", !!process.env.POLYGON_API_KEY);
+
     const quotes = await fetchAllQuotes(assets);
+
+    console.log("[api/market] quotes resolved:", quotes.size, "of", assets.length);
+    quotes.forEach((q, symbol) => {
+      console.log(`[api/market]  ${symbol}: price=${q.price} changePct=${q.changePct}`);
+    });
+
+    // Log which symbols fell back to static
+    const missing = assets.filter(a => !quotes.has(a.symbol)).map(a => a.symbol);
+    if (missing.length > 0) {
+      console.warn("[api/market] falling back to static for:", missing.join(", "));
+    }
 
     const result = WATCHLIST.map((asset) => {
       const q = quotes.get(asset.symbol);
-      if (!q) {
-        // Fall back to static data if Polygon call failed
-        return asset;
-      }
+      if (!q) return asset;
       return {
         ...asset,
         price:    formatPrice(q.price, asset.type),
@@ -35,8 +47,7 @@ export async function GET() {
 
     return NextResponse.json({ quotes: result });
   } catch (err) {
-    console.error("[api/market]", err);
-    // Return static fallback so UI never breaks
+    console.error("[api/market] caught error:", err);
     return NextResponse.json({ quotes: WATCHLIST });
   }
 }
