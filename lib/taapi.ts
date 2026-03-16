@@ -2,11 +2,9 @@
  * lib/taapi.ts
  * Fetches technical indicator values from Taapi.io
  *
- * Free plan: 1 credit/sec. Each indicator in a bulk call = 1 credit.
- * Delay between assets = (number of indicators for that asset + 1) seconds.
- *
- * Indicator selection is DYNAMIC — driven by config/indicators.ts.
- * Only enabled indicators are fetched, saving credits and reducing cycle time.
+ * Free plan: 1 indicator per call, 1 call/sec.
+ * We call each indicator individually with a 1.1s gap between calls.
+ * Bulk endpoint is NOT available on the free plan.
  */
 
 import {
@@ -14,13 +12,10 @@ import {
   type IndicatorKey,
   DEFAULT_INDICATOR_CONFIG,
   getEnabledIndicators,
-  estimateCycleSeconds,
 } from "@/config/indicators";
 
 const BASE = "https://api.taapi.io";
 const KEY  = process.env.TAAPI_API_KEY!;
-
-// ─── Types ────────────────────────────────────────────────────────────────
 
 export interface IndicatorValues {
   symbol: string;
@@ -33,42 +28,7 @@ export interface IndicatorValues {
 }
 
 export type AssetType = "stock" | "crypto";
-
 type Exchange = "binance" | "stocks";
-
-interface BulkConstructItem {
-  indicator: string;
-  exchange?: string;
-  symbol:    string;
-  interval:  string;
-  id?:       string;
-  period?:   number;
-  [key: string]: unknown;
-}
-
-// ─── Bulk query builder (dynamic) ─────────────────────────────────────────
-
-function buildBulkBody(
-  symbol:   string,
-  exchange: Exchange,
-  enabled:  IndicatorKey[]
-): BulkConstructItem[] {
-  const base = { exchange, symbol, interval: "1h" };
-  const items: BulkConstructItem[] = [];
-
-  for (const key of enabled) {
-    switch (key) {
-      case "rsi":   items.push({ indicator: "rsi",    ...base }); break;
-      case "macd":  items.push({ indicator: "macd",   ...base }); break;
-      case "ema50": items.push({ indicator: "ema",    ...base, period: 50,  id: "ema50"  }); break;
-      case "ema200":items.push({ indicator: "ema",    ...base, period: 200, id: "ema200" }); break;
-      case "bb":    items.push({ indicator: "bbands", ...base }); break;
-      case "atr":   items.push({ indicator: "atr",    ...base }); break;
-    }
-  }
-
-  return items;
-}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -80,115 +40,155 @@ function emptyResult(symbol: string): IndicatorValues {
   return { symbol, rsi: null, macd: null, ema50: null, ema200: null, bb: null, atr: null };
 }
 
-// ─── Fetch single asset ────────────────────────────────────────────────────
+// ─── Single indicator fetch ───────────────────────────────────────────────
 
-async function fetchBulk(
-  symbol:   string,
-  exchange: Exchange,
-  enabled:  IndicatorKey[],
+async function fetchIndicator(
+  indicator: string,
+  symbol:    string,
+  exchange:  Exchange,
+  params:    Record<string, unknown> = {},
   retries = 2
-): Promise<IndicatorValues> {
-  if (enabled.length === 0) {
-    console.warn(`[taapi] ${symbol} has no enabled indicators — skipping.`);
-    return emptyResult(symbol);
+): Promise<Record<string, number> | null> {
+  const url = new URL(`${BASE}/${indicator}`);
+  url.searchParams.set("secret",   KEY);
+  url.searchParams.set("exchange", exchange);
+  url.searchParams.set("symbol",   symbol);
+  url.searchParams.set("interval", "1h");
+  for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set(k, String(v));
   }
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const body = {
-        secret:    KEY,
-        construct: buildBulkBody(symbol, exchange, enabled),
-      };
-
-      // DEBUG — remove once BTC is confirmed working
-      console.log(`[taapi] ${symbol} request body:`, JSON.stringify(body, null, 2));
-
-      const res = await fetch(`${BASE}/bulk`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(body),
-      });
+      const res = await fetch(url.toString());
 
       if (res.status === 429) {
-        const backoff = (attempt + 1) * 10_000;
-        console.warn(`[taapi] ${symbol} rate limited (429), retrying in ${backoff / 1000}s...`);
+        const backoff = (attempt + 1) * 15_000;
+        console.warn(`[taapi] ${symbol}/${indicator} rate limited, retrying in ${backoff / 1000}s...`);
         await sleep(backoff);
         continue;
       }
 
       if (!res.ok) {
-        // DEBUG — log the actual error body from TAAPI, not just the status code
         const errText = await res.text();
-        console.error(`[taapi] ${symbol} bulk failed: ${res.status} — ${errText}`);
-        return emptyResult(symbol);
+        console.error(`[taapi] ${symbol}/${indicator} failed: ${res.status} — ${errText}`);
+        return null;
       }
 
-      const json = await res.json();
-      const data: Array<{ id?: string; indicator: string; result: Record<string, number> }> =
-        json.data ?? [];
-
-      const get = (ind: string, id?: string) =>
-        data.find((d) => (id ? d.id === id : d.indicator === ind))?.result ?? null;
-
-      return {
-        symbol,
-        rsi:   get("rsi")   ? get("rsi")!.value   : null,
-        macd:  get("macd")  ? {
-          valueMACD:       get("macd")!.valueMACD,
-          valueMACDSignal: get("macd")!.valueMACDSignal,
-          valueMACDHist:   get("macd")!.valueMACDHist,
-        } : null,
-        ema50:  get("ema", "ema50")  ? get("ema", "ema50")!.value  : null,
-        ema200: get("ema", "ema200") ? get("ema", "ema200")!.value : null,
-        bb:    get("bbands") ? {
-          valueLowerBand:  get("bbands")!.valueLowerBand,
-          valueMiddleBand: get("bbands")!.valueMiddleBand,
-          valueUpperBand:  get("bbands")!.valueUpperBand,
-        } : null,
-        atr:   get("atr") ? get("atr")!.value : null,
-      };
+      return await res.json();
 
     } catch (err) {
-      console.error(`[taapi] ${symbol} error (attempt ${attempt + 1}):`, err);
+      console.error(`[taapi] ${symbol}/${indicator} error (attempt ${attempt + 1}):`, err);
       if (attempt < retries) await sleep(5000);
     }
   }
-  return emptyResult(symbol);
+
+  return null;
 }
 
-// ─── Public API ────────────────────────────────────────────────────────────
+// ─── Fetch all enabled indicators for one asset ───────────────────────────
+
+// 1.1s between each indicator call to stay within 1 req/sec free plan limit
+const INDICATOR_DELAY_MS = 1100;
+
+async function fetchAssetIndicators(
+  symbol:   string,
+  exchange: Exchange,
+  enabled:  IndicatorKey[]
+): Promise<IndicatorValues> {
+  const result = emptyResult(symbol);
+
+  for (let i = 0; i < enabled.length; i++) {
+    const key = enabled[i];
+
+    console.log(`[taapi] ${symbol} — fetching ${key} (${i + 1}/${enabled.length})`);
+
+    switch (key) {
+      case "rsi": {
+        const r = await fetchIndicator("rsi", symbol, exchange);
+        result.rsi = r?.value ?? null;
+        break;
+      }
+      case "macd": {
+        const r = await fetchIndicator("macd", symbol, exchange);
+        result.macd = r
+          ? { valueMACD: r.valueMACD, valueMACDSignal: r.valueMACDSignal, valueMACDHist: r.valueMACDHist }
+          : null;
+        break;
+      }
+      case "ema50": {
+        const r = await fetchIndicator("ema", symbol, exchange, { period: 50 });
+        result.ema50 = r?.value ?? null;
+        break;
+      }
+      case "ema200": {
+        const r = await fetchIndicator("ema", symbol, exchange, { period: 200 });
+        result.ema200 = r?.value ?? null;
+        break;
+      }
+      case "bb": {
+        const r = await fetchIndicator("bbands", symbol, exchange);
+        result.bb = r
+          ? { valueLowerBand: r.valueLowerBand, valueMiddleBand: r.valueMiddleBand, valueUpperBand: r.valueUpperBand }
+          : null;
+        break;
+      }
+      case "atr": {
+        const r = await fetchIndicator("atr", symbol, exchange);
+        result.atr = r?.value ?? null;
+        break;
+      }
+    }
+
+    // Wait between indicator calls — but not after the last one
+    if (i < enabled.length - 1) {
+      await sleep(INDICATOR_DELAY_MS);
+    }
+  }
+
+  return result;
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────
 
 /**
- * Fetch indicators for all assets using the provided (or default) indicator config.
+ * Fetch indicators for all active assets sequentially.
  *
- * Rate limiting: delay after each asset = (indicators_for_that_asset + 1) seconds.
- * More efficient than a fixed 7s delay — assets with fewer indicators wait less.
+ * Free plan = 1 call/sec. Each indicator = 1 call.
+ * Assets with no enabled indicators are skipped instantly.
  *
- * Pass a custom indicatorConfig (loaded from DB/API) to use user-configured indicators.
+ * BTC with [rsi, macd, atr] = 3 calls, ~3.3s total.
  */
 export async function fetchAllIndicators(
   assets:          { symbol: string; type: AssetType }[],
   indicatorConfig: AssetIndicatorConfig[] = DEFAULT_INDICATOR_CONFIG
 ): Promise<Map<string, IndicatorValues>> {
-  const map       = new Map<string, IndicatorValues>();
-  const estimated = estimateCycleSeconds(indicatorConfig);
+  const map = new Map<string, IndicatorValues>();
 
-  console.log(`[taapi] Starting fetch for ${assets.length} assets (~${estimated}s estimated)`);
+  const activeAssets = assets.filter(({ symbol }) =>
+    getEnabledIndicators(symbol, indicatorConfig).length > 0
+  );
 
-  for (let i = 0; i < assets.length; i++) {
-    const { symbol, type } = assets[i];
+  console.log(
+    `[taapi] ${activeAssets.length} active asset(s) of ${assets.length}. ` +
+    `Active: [${activeAssets.map((a) => a.symbol).join(", ")}]`
+  );
+
+  for (let i = 0; i < activeAssets.length; i++) {
+    const { symbol, type } = activeAssets[i];
 
     const exchange:    Exchange       = type === "crypto" ? "binance" : "stocks";
     const taapiSymbol: string         = type === "crypto" ? `${symbol}/USDT` : symbol;
     const enabled:     IndicatorKey[] = getEnabledIndicators(symbol, indicatorConfig);
 
-    console.log(`[taapi] Fetching ${symbol} (${i + 1}/${assets.length}) — [${enabled.join(", ")}]`);
+    console.log(`[taapi] Fetching ${symbol} (${i + 1}/${activeAssets.length}) — [${enabled.join(", ")}]`);
 
-    const result = await fetchBulk(taapiSymbol, exchange, enabled);
+    const result = await fetchAssetIndicators(taapiSymbol, exchange, enabled);
     map.set(symbol, { ...result, symbol });
 
-    if (i < assets.length - 1) {
-      const delay = (enabled.length + 1) * 1000;
-      await sleep(delay);
+    // Extra 2s gap between assets to let the rate limit window reset
+    if (i < activeAssets.length - 1) {
+      await sleep(2000);
     }
   }
 
