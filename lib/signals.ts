@@ -15,12 +15,34 @@ import type { IndicatorValues } from "./taapi";
 
 export type SignalType = "buy" | "sell" | "watch" | "none";
 
+/**
+ * Phase 4 — Momentum tags give AI a structured funnel instead of raw buy/sell/watch.
+ * Multiple tags can apply to one signal.
+ */
+export type MomentumTag =
+  | "trend_continuation"
+  | "pullback_to_support"
+  | "acceleration"
+  | "extended_but_strong"
+  | "decelerating"
+  | "rollover"
+  | "oversold_bounce";
+
 export interface Signal {
   symbol:     string;
   agent:      string;
   type:       SignalType;
   reason:     string;
   confidence: "high" | "medium" | "low";
+  /** Phase 4: structured momentum tags — only set by Momentum Scout */
+  tags?:      MomentumTag[];
+  /** Phase 3: bar-to-bar context for display or AI downstream */
+  context?: {
+    ema20PctDistance?: number; // % price is above/below EMA20
+    ema20Slope?:       number; // EMA20[cur] - EMA20[prev]
+    histChange?:       number; // histogram[cur] - histogram[prev]
+    rsiChange?:        number; // RSI[cur] - RSI[prev]
+  };
 }
 
 export interface AgentResult {
@@ -45,24 +67,23 @@ export interface DashboardStats {
  * A1 — Momentum Scout
  * Covers ALL symbols (stocks + crypto).
  *
- * Three-condition logic using EMA20 as dynamic structure anchor:
+ * Phase 1 (original): EMA20 + RSI + MACD
+ * Phase 2 (upgrade):  Bar-to-bar change — prevRsi, prevHist, prevEma20, currentClose, prevClose
+ * Phase 3 (upgrade):  Position context — % distance from EMA20, EMA20 slope
+ * Phase 4 (upgrade):  Momentum tagging — acceleration, deceleration, rollover, etc.
  *
- * 1. BULLISH SIGNAL — Momentum continuation
- *    MACD bullish crossover + RSI between 50–70
- *    (positive MACD crossover with RSI in momentum zone implies price > EMA20)
+ * Signal priority (EMA20-enabled path):
+ *  1. ACCELERATION       — all engines firing, highest-conviction BUY
+ *  2. TREND CONTINUATION — MACD crossover + RSI in momentum zone
+ *  3. PULLBACK TO SUPPORT — healthy dip to EMA20
+ *  4. DECELERATION       — histogram shrinking + RSI overbought (WATCH)
+ *  5. EXTENDED BUT STRONG — overbought but hist still expanding (WATCH)
+ *  6. REVERSAL WARNING   — RSI > 75 + hist collapsing (WATCH)
+ *  7. SELL               — RSI overbought + hist negative (confirmed rollover)
+ *  8. OVERSOLD BOUNCE    — RSI < 35 + hist positive
  *
- * 2. PULLBACK ENTRY — Trend continuation entry on dip
- *    RSI pulled back to 40–50 + MACD hist still positive
- *    Healthy dip to dynamic support, momentum intact.
- *
- * 3. REVERSAL WARNING — Possible exhaustion
- *    RSI > 75 + MACD hist shrinking (hist < 15% of |MACD| spread)
- *    Overbought + momentum fading = watch for rollover.
- *
- * 4. SELL — Full confirmation
- *    RSI > 70 + MACD hist already negative = momentum rolled over.
- *
- * Falls back to simpler RSI/MACD logic if ema20 is null.
+ * Falls back to Phase 1 logic if ema20 is null.
+ * Requires prevHist / prevRsi / prevEma20 from taapi.ts for Phase 2+ conditions.
  */
 function momentumScout(
   indicators: Map<string, IndicatorValues>,
@@ -80,74 +101,230 @@ function momentumScout(
 
     if (rsi === null || macd === null) continue;
 
-    const hist               = macd.valueMACDHist;
-    const macdBullishCrossover = hist > 0 && macd.valueMACD > macd.valueMACDSignal;
+    const hist    = macd.valueMACDHist;
+    const macdVal = macd.valueMACD;
+    const sigVal  = macd.valueMACDSignal;
+
+    // ── Phase 2: prev-bar values (null-safe) ──────────────────────────────
+    const prevRsi   = ind.prevRsi   ?? null;
+    const prevHist  = ind.prevHist  ?? null;
+    const prevEma20 = ind.prevEma20 ?? null;
+    const curClose  = ind.currentClose ?? null;
+
+    // ── Phase 3: derived context ───────────────────────────────────────────
+    const ema20Slope    = ema20 != null && prevEma20 != null ? ema20 - prevEma20 : null;
+    const ema20PctDist  = ema20 != null && curClose  != null && ema20 > 0
+      ? ((curClose - ema20) / ema20) * 100
+      : null;
+    const histChange    = prevHist != null ? hist - prevHist : null;
+    const rsiChange     = prevRsi  != null ? rsi  - prevRsi  : null;
+
+    // Build context object — only include fields we actually have
+    const context: Signal["context"] = {
+      ...(ema20PctDist != null ? { ema20PctDistance: +ema20PctDist.toFixed(2) } : {}),
+      ...(ema20Slope   != null ? { ema20Slope:       +ema20Slope.toFixed(4)   } : {}),
+      ...(histChange   != null ? { histChange:        +histChange.toFixed(6)   } : {}),
+      ...(rsiChange    != null ? { rsiChange:         +rsiChange.toFixed(2)    } : {}),
+    };
+
+    // ── Helper: is price above EMA20? ─────────────────────────────────────
+    // Strictly requires both currentClose and ema20 — no proxy fallback.
+    // MACD polarity is related but not interchangeable with price structure:
+    // price can be below EMA20 with MACD still positive, and vice versa.
+    // Conditions that need real price structure must check priceAboveEma === true.
+    const priceAboveEma: boolean | null =
+      ema20 != null && curClose != null ? curClose > ema20 : null;
 
     if (ema20 !== null) {
-      // ── 1. Bullish momentum continuation ──────────────────────────────
-      // MACD just crossed bullish + RSI in healthy momentum zone (50–70)
-      if (macdBullishCrossover && rsi >= 50 && rsi <= 70) {
+      // Renamed from macdBullishCrossover — this describes current bullish alignment
+      // (MACD above signal + histogram positive), NOT the crossover event itself.
+      // A true crossover requires prevMacd <= prevSignal AND macdVal > sigVal.
+      // Until prevMacd/prevSignal are available in taapi.ts, "alignment" is accurate.
+      const macdBullishAlignment = hist > 0 && macdVal > sigVal;
+
+      // ── 1. MOMENTUM ACCELERATION (Phase 2 — highest-priority BUY) ──────
+      // All five conditions must align:
+      //   close > EMA20         — price structure intact
+      //   EMA20 slope > 0       — moving average itself rising
+      //   hist > 0              — MACD momentum positive
+      //   hist > prevHist       — histogram expanding bar-over-bar
+      //   RSI > prevRSI         — RSI accelerating upward
+      //   RSI 55–75             — momentum zone, not yet overbought
+      if (
+        priceAboveEma &&
+        ema20Slope != null && ema20Slope > 0 &&
+        hist > 0 &&
+        histChange != null && histChange > 0 &&
+        rsiChange  != null && rsiChange  > 0 &&
+        rsi >= 55 && rsi <= 75
+      ) {
+        const prevHistStr = prevHist != null ? prevHist.toFixed(4) : "?";
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "buy",
-          reason: `MACD bullish crossover + RSI ${rsi.toFixed(1)} in momentum zone (EMA20: $${ema20.toFixed(2)})`,
+          reason: `Momentum acceleration — price above rising EMA20 ($${ema20.toFixed(2)}), ` +
+                  `histogram expanding (${prevHistStr} → ${hist.toFixed(4)}), ` +
+                  `RSI climbing (${prevRsi != null ? prevRsi.toFixed(1) : "?"} → ${rsi.toFixed(1)})`,
+          confidence: rsi >= 62 ? "high" : "medium",
+          tags: ["acceleration", "trend_continuation"],
+          context,
+        });
+        continue; // Highest priority — skip all lower conditions
+      }
+
+      // ── 2. TREND CONTINUATION ──────────────────────────────────────────
+      // Tightened: requires real price structure, not just MACD alignment.
+      //   priceAboveEma === true  — confirmed by actual close, not proxy
+      //   ema20Slope > 0          — EMA20 itself rising (trend has structure)
+      //   macdBullishAlignment    — MACD above signal, hist positive
+      //   RSI 50–70               — healthy momentum zone
+      // Without price + slope confirmation, this would fire in weaker contexts
+      // than acceleration, making the two labels inconsistent in quality.
+      if (
+        priceAboveEma === true &&
+        ema20Slope != null && ema20Slope > 0 &&
+        macdBullishAlignment &&
+        rsi >= 50 && rsi <= 70
+      ) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "buy",
+          reason: `Trend continuation — price above rising EMA20 ($${ema20.toFixed(2)}), ` +
+                  `MACD bullish alignment, RSI ${rsi.toFixed(1)} in momentum zone` +
+                  (ema20PctDist != null ? ` (${ema20PctDist.toFixed(1)}% above EMA20)` : ""),
           confidence: rsi >= 55 ? "high" : "medium",
+          tags: ["trend_continuation"],
+          context,
         });
+        continue;
       }
 
-      // ── 2. Pullback entry ──────────────────────────────────────────────
-      // RSI pulled back to 40–50 + MACD hist still positive = dip to EMA20 support
+      // ── 3. PULLBACK TO SUPPORT ─────────────────────────────────────────
+      // RSI 40–50 + hist still positive — healthy dip toward EMA20
       else if (rsi >= 40 && rsi < 50 && hist > 0) {
-        signals.push({
-          symbol: sym, agent: "Momentum Scout", type: "buy",
-          reason: `Pullback entry — RSI ${rsi.toFixed(1)} near EMA20 ($${ema20.toFixed(2)}), MACD hist positive`,
-          confidence: "medium",
-        });
+        const nearEma = ema20PctDist == null || (ema20PctDist >= -2 && ema20PctDist <= 4);
+        if (nearEma) {
+          signals.push({
+            symbol: sym, agent: "Momentum Scout", type: "buy",
+            reason: `Pullback to support — RSI ${rsi.toFixed(1)} dipped to 40–50, MACD hist positive, ` +
+                    `near EMA20 ($${ema20.toFixed(2)})` +
+                    (ema20PctDist != null ? ` — ${ema20PctDist.toFixed(1)}% from EMA20` : ""),
+            confidence: "medium",
+            tags: ["pullback_to_support"],
+            context,
+          });
+          continue;
+        }
       }
 
-      // ── 3. Reversal warning ────────────────────────────────────────────
-      // RSI > 75 + MACD hist shrinking = extended above EMA20, momentum fading
-      else if (rsi > 75 && hist < Math.abs(macd.valueMACD) * 0.15) {
+      // ── 4. MOMENTUM DECELERATION (Phase 2) ────────────────────────────
+      // hist > 0 but shrinking + RSI > 70 — momentum losing steam above EMA20
+      // Fires BEFORE reversal warning so it catches the early signal
+      if (
+        priceAboveEma &&
+        hist > 0 &&
+        histChange != null && histChange < 0 &&
+        rsi > 70
+      ) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "watch",
-          reason: `Reversal warning — RSI ${rsi.toFixed(1)}, MACD hist shrinking, extended above EMA20 ($${ema20.toFixed(2)})`,
-          confidence: rsi > 80 ? "high" : "medium",
+          reason: `Momentum decelerating — histogram shrinking (${prevHist != null ? prevHist.toFixed(4) : "?"} → ${hist.toFixed(4)}), ` +
+                  `RSI overbought at ${rsi.toFixed(1)}, still above EMA20 ($${ema20.toFixed(2)}) — watch for rollover`,
+          confidence: rsi > 78 ? "high" : "medium",
+          tags: ["decelerating"],
+          context,
         });
+        continue;
       }
 
-      // ── 4. Sell — momentum rolled over ────────────────────────────────
+      // ── 5. EXTENDED BUT STRONG ─────────────────────────────────────────
+      // RSI 70–78 but histogram still expanding — overbought, don't fight it yet
+      if (
+        rsi >= 70 && rsi <= 78 &&
+        hist > 0 &&
+        histChange != null && histChange > 0 &&
+        (ema20PctDist == null || ema20PctDist > 4)
+      ) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "watch",
+          reason: `Extended but strong — RSI ${rsi.toFixed(1)} overbought but histogram still expanding, ` +
+                  `price ${ema20PctDist != null ? ema20PctDist.toFixed(1) + "%" : "well"} above EMA20 ($${ema20.toFixed(2)}) — don't fight trend yet`,
+          confidence: "medium",
+          tags: ["extended_but_strong"],
+          context,
+        });
+        continue;
+      }
+
+      // ── 6. REVERSAL WARNING ────────────────────────────────────────────
+      // RSI > 75 + histogram small relative to MACD line spread
+      else if (rsi > 75 && hist < Math.abs(macdVal) * 0.15) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "watch",
+          reason: `Reversal warning — RSI ${rsi.toFixed(1)}, MACD histogram contracting sharply above EMA20 ($${ema20.toFixed(2)})`,
+          confidence: rsi > 80 ? "high" : "medium",
+          tags: ["rollover"],
+          context,
+        });
+        continue;
+      }
+
+      // ── 7. SELL — MOMENTUM ROLLED OVER ────────────────────────────────
+      // RSI overbought + hist already negative = confirmed rollover
       else if (rsi > 70 && hist < 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "sell",
-          reason: `RSI overbought (${rsi.toFixed(1)}) + MACD hist negative — momentum rolled over below EMA20 ($${ema20.toFixed(2)})`,
+          reason: `Momentum rolled over — RSI overbought (${rsi.toFixed(1)}) + MACD hist negative` +
+                  (ema20PctDist != null ? `, price ${ema20PctDist.toFixed(1)}% from EMA20 ($${ema20.toFixed(2)})` : ` below EMA20 ($${ema20.toFixed(2)})`),
           confidence: rsi > 80 ? "high" : "medium",
+          tags: ["rollover"],
+          context,
         });
+        continue;
+      }
+
+      // ── 8. OVERSOLD BOUNCE (EMA20 context) ───────────────────────────
+      else if (rsi < 35 && hist > 0) {
+        signals.push({
+          symbol: sym, agent: "Momentum Scout", type: "buy",
+          reason: `Oversold bounce — RSI ${rsi.toFixed(1)}, MACD hist positive` +
+                  (ema20PctDist != null ? `, price ${ema20PctDist.toFixed(1)}% from EMA20 ($${ema20.toFixed(2)})` : `, EMA20: $${ema20.toFixed(2)}`),
+          confidence: rsi < 30 ? "high" : "medium",
+          tags: ["oversold_bounce"],
+          context,
+        });
+        continue;
       }
 
     } else {
-      // ── Fallback: ema20 not enabled, use RSI + MACD only ──────────────
+      // ── Fallback: ema20 not available — Phase 1 logic ─────────────────
+      const macdBullishAlignment = hist > 0 && macdVal > sigVal;
+
       if (rsi < 35 && hist > 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "buy",
           reason: `RSI oversold (${rsi.toFixed(1)}) + MACD hist positive`,
           confidence: rsi < 30 ? "high" : "medium",
+          tags: ["oversold_bounce"],
         });
       } else if (rsi > 70 && hist < 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "sell",
           reason: `RSI overbought (${rsi.toFixed(1)}) + MACD hist negative — momentum fading`,
           confidence: rsi > 80 ? "high" : "medium",
+          tags: ["rollover"],
         });
       } else if (rsi > 70 && hist > 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "watch",
           reason: `RSI overbought (${rsi.toFixed(1)}) but MACD hist positive — monitor for reversal`,
           confidence: "medium",
+          tags: ["extended_but_strong"],
         });
-      } else if (macdBullishCrossover) {
+      } else if (macdBullishAlignment && rsi >= 50 && rsi <= 70) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "watch",
-          reason: `MACD bullish crossover`,
+          reason: `MACD bullish alignment — RSI ${rsi.toFixed(1)} in momentum zone (no EMA20 data)`,
           confidence: "low",
+          tags: ["trend_continuation"],
         });
       }
     }
