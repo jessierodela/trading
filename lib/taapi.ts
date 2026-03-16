@@ -89,7 +89,7 @@ async function fetchIndicator(
 // ─── Fetch all enabled indicators for one asset ───────────────────────────
 
 // 1.1s between each indicator call to stay within 1 req/sec free plan limit
-const INDICATOR_DELAY_MS = 1100;
+const INDICATOR_DELAY_MS = 15500; //free plan: 1 req / 15 sec
 
 async function fetchAssetIndicators(
   symbol:   string,
