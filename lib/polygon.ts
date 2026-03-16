@@ -42,6 +42,14 @@ async function fetchStockQuote(symbol: string): Promise<PolygonQuote | null> {
       `${BASE}/v2/snapshot/locale/us/markets/stocks/tickers/${symbol}?apiKey=${KEY}`,
       { next: { revalidate: 30 } }
     );
+
+    // TEMP DEBUG — remove after diagnosing
+    if (symbol === "AAPL") {
+      const raw = await res.clone().json();
+      console.log("[polygon] AAPL status:", res.status);
+      console.log("[polygon] AAPL raw:", JSON.stringify(raw).slice(0, 600));
+    }
+
     if (!res.ok) return null;
 
     const json   = await res.json();
@@ -60,6 +68,8 @@ async function fetchStockQuote(symbol: string): Promise<PolygonQuote | null> {
     return null;
   }
 }
+
+
 
 // ─── Crypto ────────────────────────────────────────────────────────────────
 
