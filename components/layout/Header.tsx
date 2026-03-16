@@ -2,14 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { Pulse } from "@/components/ui/Pulse";
-import { fetchQuote, formatPrice, formatChange, type PolygonQuote } from "@/lib/polygon";
 
 const ASSETS = [
-  { label: "S&P 500", symbol: "^GSPC",  type: "stock"  as const },
-  { label: "NASDAQ",  symbol: "^IXIC",  type: "stock"  as const },
-  { label: "BTC",     symbol: "BTC",    type: "crypto" as const },
-  { label: "VIX",     symbol: "^VIX",   type: "stock"  as const },
-];
+  { label: "S&P 500", symbol: "^GSPC",  type: "stock"  },
+  { label: "NASDAQ",  symbol: "^IXIC",  type: "stock"  },
+  { label: "BTC",     symbol: "BTC",    type: "crypto" },
+  { label: "VIX",     symbol: "^VIX",   type: "stock"  },
+] as const;
 
 interface TickerState {
   label: string;
@@ -44,29 +43,28 @@ export function Header() {
     return () => clearInterval(id);
   }, []);
 
-  // Market data — fetch on mount, refresh every 60 s
+  // Market data — hits /api/quotes (server-side, safe to use yahoo-finance2)
   useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
-      const quotes = await Promise.all(
-        ASSETS.map((a) => fetchQuote(a.symbol, a.type))
-      );
+      try {
+        const params = ASSETS.map((a) => `${a.symbol}:${a.type}`).join(",");
+        const res = await fetch(`/api/quotes?assets=${encodeURIComponent(params)}`);
+        if (!res.ok) return;
+        const data: Record<string, { price: string; change: string; up: boolean }> = await res.json();
+        if (cancelled) return;
 
-      if (cancelled) return;
-
-      setTickers(
-        ASSETS.map((a, i) => {
-          const q: PolygonQuote | null = quotes[i];
-          if (!q) return { label: a.label, value: "—", change: "—", up: true };
-          return {
-            label:  a.label,
-            value:  formatPrice(q.price, a.type),
-            change: formatChange(q.changePct),
-            up:     q.changeUp,
-          };
-        })
-      );
+        setTickers(
+          ASSETS.map((a) => {
+            const q = data[a.symbol];
+            if (!q) return { label: a.label, value: "—", change: "—", up: true };
+            return { label: a.label, ...q };
+          })
+        );
+      } catch {
+        // leave previous values intact on error
+      }
     };
 
     load();
