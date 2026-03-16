@@ -12,7 +12,6 @@ import { AgentGrid }          from "@/components/agents/AgentGrid";
 import { ActivityLog }        from "@/components/dashboard/ActivityLog";
 import IndicatorSettings      from "@/components/IndicatorSettings";
 import { AGENTS }             from "@/config/agents";
-import { ALERTS }             from "@/config/alerts";
 
 export default function DashboardPage() {
   return (
@@ -48,8 +47,8 @@ export default function DashboardPage() {
           </div>
         </main>
 
-        {/* Right — Alerts panel */}
-        <SignalsPanel alerts={ALERTS} />
+        {/* Right — Live signals panel polls /api/signals every 60s */}
+        <SignalsPanel />
       </div>
     </div>
   );
