@@ -2,6 +2,16 @@
  * lib/signals.ts
  * Converts raw Taapi indicator values → agent signals, activity log entries,
  * and StatsBar counts. This is the "brain" that each agent uses.
+ *
+ * Agents:
+ *  A1 — Momentum Scout:    RSI + MACD — ALL symbols (stocks + crypto)
+ *  A2 — Breakout Watcher:  Bollinger Band breakouts — ALL symbols
+ *  A3 — Trend Follower:    EMA 50/200 cross — stocks only (needs ema50/ema200)
+ *  A4 — Mean Reversion:    Deep RSI oversold — ALL symbols
+ *  A5 — Volatility Arbiter: ATR spike — ALL symbols
+ *
+ * Crypto Ranger removed — it was an alias of Momentum Scout with no
+ * distinct logic. Momentum Scout now covers both stocks and crypto.
  */
 
 import type { IndicatorValues } from "./taapi";
@@ -34,7 +44,11 @@ export interface DashboardStats {
 
 // ─── Per-agent signal logic ────────────────────────────────────────────────
 
-/** A1 — Momentum Scout: RSI oversold + MACD crossover */
+/**
+ * A1 — Momentum Scout
+ * Covers ALL symbols (stocks + crypto).
+ * Logic: RSI oversold/overbought + MACD histogram direction.
+ */
 function momentumScout(
   indicators: Map<string, IndicatorValues>,
   symbols: string[]
@@ -49,7 +63,7 @@ function momentumScout(
     const macd = ind.macd;
 
     if (rsi !== null && macd !== null) {
-      // RSI oversold bounce
+      // RSI oversold bounce + MACD histogram confirming
       if (rsi < 35 && macd.valueMACDHist > 0) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "buy",
@@ -65,7 +79,7 @@ function momentumScout(
           confidence: rsi > 80 ? "high" : "medium",
         });
       }
-      // MACD crossover (hist flipped positive)
+      // MACD bullish crossover only (no RSI extreme)
       else if (macd.valueMACDHist > 0 && macd.valueMACD > macd.valueMACDSignal) {
         signals.push({
           symbol: sym, agent: "Momentum Scout", type: "watch",
@@ -79,7 +93,11 @@ function momentumScout(
   return signals;
 }
 
-/** A2 — Breakout Watcher: price near/above BB upper band */
+/**
+ * A2 — Breakout Watcher
+ * Covers ALL symbols. Requires BB indicator enabled.
+ * Logic: price relative to Bollinger Band upper/lower.
+ */
 function breakoutWatcher(
   indicators: Map<string, IndicatorValues>,
   quotes: Map<string, { price: number }>,
@@ -93,27 +111,22 @@ function breakoutWatcher(
     if (!ind || !quote || !ind.bb) continue;
 
     const price = quote.price;
-    const { valueLowerBand, valueMiddleBand, valueUpperBand } = ind.bb;
+    const { valueLowerBand, valueUpperBand } = ind.bb;
     const bandWidth = valueUpperBand - valueLowerBand;
 
-    // Price breaking above upper band — breakout signal
     if (price > valueUpperBand) {
       signals.push({
         symbol: sym, agent: "Breakout Watcher", type: "buy",
         reason: `Price $${price.toFixed(2)} broke above BB upper ($${valueUpperBand.toFixed(2)})`,
         confidence: "high",
       });
-    }
-    // Price near upper band (within 1% of band width)
-    else if (price > valueUpperBand - bandWidth * 0.01) {
+    } else if (price > valueUpperBand - bandWidth * 0.01) {
       signals.push({
         symbol: sym, agent: "Breakout Watcher", type: "watch",
         reason: `Price approaching BB upper — potential breakout setup`,
         confidence: "medium",
       });
-    }
-    // Price below lower band — oversold squeeze
-    else if (price < valueLowerBand) {
+    } else if (price < valueLowerBand) {
       signals.push({
         symbol: sym, agent: "Breakout Watcher", type: "watch",
         reason: `Price below BB lower — mean reversion candidate`,
@@ -125,7 +138,11 @@ function breakoutWatcher(
   return signals;
 }
 
-/** A3 — Trend Follower: EMA 50/200 golden & death cross */
+/**
+ * A3 — Trend Follower
+ * Stocks only — EMA 50/200 are most meaningful on equities.
+ * Logic: golden cross (ema50 > ema200) vs death cross.
+ */
 function trendFollower(
   indicators: Map<string, IndicatorValues>,
   symbols: string[]
@@ -147,7 +164,7 @@ function trendFollower(
     } else {
       signals.push({
         symbol: sym, agent: "Trend Follower", type: "sell",
-        reason: `EMA50 below EMA200 — bearish trend (death cross zone)`,
+        reason: `EMA50 below EMA200 — death cross zone`,
         confidence: Math.abs(gap) > 3 ? "high" : "medium",
       });
     }
@@ -156,19 +173,11 @@ function trendFollower(
   return signals;
 }
 
-/** A4 — Crypto Ranger: RSI + MACD on crypto only */
-function cryptoRanger(
-  indicators: Map<string, IndicatorValues>,
-  symbols: string[]
-): Signal[] {
-  // Reuse momentum logic but label differently
-  return momentumScout(indicators, symbols).map((s) => ({
-    ...s,
-    agent: "Crypto Ranger",
-  }));
-}
-
-/** A5 — Mean Reversion: deep RSI oversold only */
+/**
+ * A4 — Mean Reversion
+ * Covers ALL symbols. Requires RSI.
+ * Logic: deeply oversold RSI only (stricter than Momentum Scout's <35 threshold).
+ */
 function meanReversion(
   indicators: Map<string, IndicatorValues>,
   symbols: string[]
@@ -191,14 +200,17 @@ function meanReversion(
   return signals;
 }
 
-/** A6 — Volatility Arbiter: ATR spike */
+/**
+ * A5 — Volatility Arbiter
+ * Covers ALL symbols. Requires ATR.
+ * Logic: ATR spike relative to average across all scanned symbols.
+ */
 function volatilityArbiter(
   indicators: Map<string, IndicatorValues>,
   symbols: string[]
 ): Signal[] {
   const signals: Signal[] = [];
 
-  // Compute average ATR to identify spikes
   const atrs = symbols
     .map((s) => indicators.get(s)?.atr)
     .filter((v): v is number => v !== null && v !== undefined);
@@ -247,10 +259,9 @@ export function buildActivityLog(agentResults: AgentResult[]): LiveActivityEntry
   let offset = 0;
 
   for (const agent of agentResults) {
-    const buySignals = agent.signals.filter((s) => s.type === "buy" || s.type === "sell");
+    const actionSignals  = agent.signals.filter((s) => s.type === "buy" || s.type === "sell");
     const scannedSymbols = [...new Set(agent.signals.map((s) => s.symbol))];
 
-    // Scan entry
     entries.push({
       time:    timeAgo(offset),
       type:    "scan",
@@ -261,8 +272,7 @@ export function buildActivityLog(agentResults: AgentResult[]): LiveActivityEntry
     });
     offset += 15;
 
-    // Signal entries (top 2 per agent)
-    for (const sig of buySignals.slice(0, 2)) {
+    for (const sig of actionSignals.slice(0, 2)) {
       entries.push({
         time:    timeAgo(offset),
         type:    sig.type === "buy" ? "signal" : "alert",
@@ -273,7 +283,7 @@ export function buildActivityLog(agentResults: AgentResult[]): LiveActivityEntry
     }
   }
 
-  return entries.slice(0, 12); // cap at 12 entries
+  return entries.slice(0, 12);
 }
 
 // ─── Main evaluation function ──────────────────────────────────────────────
@@ -284,14 +294,15 @@ export function evaluateSignals(
   stockSymbols: string[],
   cryptoSymbols: string[]
 ): { agentResults: AgentResult[]; stats: DashboardStats; activity: LiveActivityEntry[] } {
-  const allSymbols   = [...stockSymbols, ...cryptoSymbols];
+  const allSymbols = [...stockSymbols, ...cryptoSymbols];
 
-  const a1Signals = momentumScout(indicators, stockSymbols);
+  // A1: Momentum Scout — ALL symbols (was stocks-only before, crypto was duplicated via Crypto Ranger)
+  const a1Signals = momentumScout(indicators, allSymbols);
   const a2Signals = breakoutWatcher(indicators, quotes, allSymbols);
+  // A3: Trend Follower — stocks only (EMA 50/200 less useful for crypto on daily)
   const a3Signals = trendFollower(indicators, stockSymbols);
-  const a4Signals = cryptoRanger(indicators, cryptoSymbols);
-  const a5Signals = meanReversion(indicators, allSymbols);
-  const a6Signals = volatilityArbiter(indicators, allSymbols);
+  const a4Signals = meanReversion(indicators, allSymbols);
+  const a5Signals = volatilityArbiter(indicators, allSymbols);
 
   const agentResults: AgentResult[] = [
     {
@@ -322,31 +333,22 @@ export function evaluateSignals(
       signals: a3Signals,
     },
     {
-      id: "A4", name: "Crypto Ranger",
+      id: "A4", name: "Mean Reversion",
       signalCount: a4Signals.length,
       alertCount:  a4Signals.filter((s) => s.confidence === "high").length,
       lastAction:  a4Signals.length
-        ? `${a4Signals[0].symbol} — ${a4Signals[0].reason.slice(0, 40)}…`
-        : "Scanning crypto markets",
+        ? `${a4Signals[0].symbol} deeply oversold — bounce watch`
+        : "Idle — no setups",
       signals: a4Signals,
     },
     {
-      id: "A5", name: "Mean Reversion",
+      id: "A5", name: "Volatility Arbiter",
       signalCount: a5Signals.length,
       alertCount:  a5Signals.filter((s) => s.confidence === "high").length,
       lastAction:  a5Signals.length
-        ? `${a5Signals[0].symbol} deeply oversold — bounce watch`
-        : "Idle — no setups",
-      signals: a5Signals,
-    },
-    {
-      id: "A6", name: "Volatility Arbiter",
-      signalCount: a6Signals.length,
-      alertCount:  a6Signals.filter((s) => s.confidence === "high").length,
-      lastAction:  a6Signals.length
-        ? `${a6Signals[0].symbol} vol spike detected`
+        ? `${a5Signals[0].symbol} vol spike detected`
         : "Waiting for vol spike",
-      signals: a6Signals,
+      signals: a5Signals,
     },
   ];
 
