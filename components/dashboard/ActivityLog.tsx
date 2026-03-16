@@ -2,13 +2,11 @@
 
 /**
  * components/dashboard/ActivityLog.tsx
- * Accepts live activity entries from the signals API.
- * Falls back to static ACTIVITY_LOG if no live data yet.
+ * Polls /api/signals every 30s for live activity entries.
  */
 
 import { useEffect, useState, useCallback } from "react";
 import type { ActivityEntry } from "@/types/agent";
-import { ACTIVITY_LOG } from "@/config/agents";
 
 const iconMap = {
   signal: { cls: "bg-[var(--color-surface-hover)] text-[var(--color-accent-green)]",  char: "▲" },
@@ -18,7 +16,7 @@ const iconMap = {
 };
 
 export function ActivityLog() {
-  const [entries, setEntries] = useState<ActivityEntry[]>(ACTIVITY_LOG);
+  const [entries, setEntries] = useState<ActivityEntry[]>([]);
 
   const fetchActivity = useCallback(async () => {
     try {
@@ -28,7 +26,7 @@ export function ActivityLog() {
         setEntries(data.activity);
       }
     } catch {
-      // Keep showing static fallback on error
+      // Keep showing whatever is currently in state on error
     }
   }, []);
 
@@ -49,31 +47,37 @@ export function ActivityLog() {
       </div>
 
       <div className="overflow-y-auto flex-1">
-        {entries.map((entry, i) => {
-          const icon = iconMap[entry.type] ?? iconMap.scan;
-          return (
-            <div
-              key={i}
-              className="flex gap-[10px] py-[7px] border-b border-[var(--color-border-subtle)] items-start"
-            >
-              <span className="text-[9px] text-[var(--color-text-dim)] whitespace-nowrap pt-[1px] min-w-[44px]">
-                {entry.time}
-              </span>
+        {entries.length === 0 ? (
+          <p className="text-[9px] text-[var(--color-text-dim)] opacity-40 pt-[8px]">
+            Waiting for first scan…
+          </p>
+        ) : (
+          entries.map((entry, i) => {
+            const icon = iconMap[entry.type] ?? iconMap.scan;
+            return (
               <div
-                className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] shrink-0 mt-[1px] ${icon.cls}`}
+                key={i}
+                className="flex gap-[10px] py-[7px] border-b border-[var(--color-border-subtle)] items-start"
               >
-                {icon.char}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-[9px] text-[var(--color-text-dim)] mb-[1px]">{entry.agent}</div>
+                <span className="text-[9px] text-[var(--color-text-dim)] whitespace-nowrap pt-[1px] min-w-[44px]">
+                  {entry.time}
+                </span>
                 <div
-                  className="text-[11px] text-[var(--color-text-secondary)] leading-[1.5]"
-                  dangerouslySetInnerHTML={{ __html: entry.message }}
-                />
+                  className={`w-4 h-4 rounded-full flex items-center justify-center text-[8px] shrink-0 mt-[1px] ${icon.cls}`}
+                >
+                  {icon.char}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[9px] text-[var(--color-text-dim)] mb-[1px]">{entry.agent}</div>
+                  <div
+                    className="text-[11px] text-[var(--color-text-secondary)] leading-[1.5]"
+                    dangerouslySetInnerHTML={{ __html: entry.message }}
+                  />
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
     </div>
   );
