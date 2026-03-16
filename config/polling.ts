@@ -13,10 +13,10 @@
  */
 
 /** How long the server caches /api/signals results (ms) */
-export const SIGNALS_CACHE_TTL_MS = 120_000;
+export const SIGNALS_CACHE_TTL_MS = 140_000;
 
 /** How often client components poll /api/signals (ms) — must match TTL */
-export const SIGNALS_POLL_MS = 120_000;
+export const SIGNALS_POLL_MS = 140_000;
 
 /** How often the watchlist polls /api/market for live prices (ms) */
 export const MARKET_POLL_MS = 30_000;
