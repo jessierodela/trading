@@ -1,21 +1,18 @@
 /**
  * app/api/signals/route.ts
  *
- * Main signals endpoint — now wires Momentum Scout AI (GPT-4o) for A1,
- * while A2–A5 continue running their existing hardcoded logic from signals.ts.
+ * Signal persistence layer:
+ *  L1 — In-memory cache (90s TTL)   — fastest, lost on cold start
+ *  L2 — Supabase (1hr hold window)  — survives deploys, enables backtesting
  *
- * Architecture:
- *  - Cache provides all indicator + price data (pre-fetched, pre-derived)
- *  - A1 (Momentum Scout AI) reads cache → calls GPT-4o → returns AI Signal[]
- *  - A2–A5 read from the same cache snapshot → run deterministic logic
- *  - All results merged into the existing AgentResult[] shape
- *
- * The existing SignalsPanel.tsx, StatsBar, and ActivityLog are unchanged.
+ * Read order:  L1 → L2 → run GPT-4o → write both
+ * Write order: after every GPT-4o run → write L1 + L2 (Supabase)
  */
 
 import { NextResponse }         from "next/server";
 import { getCache }             from "@/lib/indicatorCache";
 import { runMomentumScoutAI }   from "@/lib/agents/momentumScout";
+import { persistSignalRun, loadLastSignalRun } from "@/lib/signalStore";
 import {
   evaluateSignals,
   type AgentResult,
@@ -24,30 +21,58 @@ import {
   buildActivityLog,
 } from "@/lib/signals";
 
-// Simple in-memory response cache to avoid re-running GPT-4o on every poll.
-// TTL matches the 90s client poll interval from polling.ts.
-const RESPONSE_CACHE_TTL_MS = 90_000;
-let cachedResponse:  object | null = null;
-let cacheExpiresAt:  number        = 0;
+// ─── L1 in-memory cache ───────────────────────────────────────────────────
+
+const MEMORY_TTL_MS = 90_000;
+let memCachedResponse: object | null = null;
+let memCacheExpiresAt: number        = 0;
+
+export function invalidateSignalsCache(): void {
+  memCachedResponse = null;
+  memCacheExpiresAt = 0;
+  console.log("[signals] L1 cache invalidated — next poll will run GPT-4o");
+}
+
+// ─── Route ────────────────────────────────────────────────────────────────
 
 export async function GET() {
-  // ── Serve cached response if still fresh ──────────────────────────────
-  if (cachedResponse && Date.now() < cacheExpiresAt) {
-    return NextResponse.json(cachedResponse);
+  // L1: in-memory hit — serve immediately
+  if (memCachedResponse && Date.now() < memCacheExpiresAt) {
+    return NextResponse.json(memCachedResponse);
   }
 
   const cache    = getCache();
   const snapshot = cache.read();
 
+  // No fresh indicator data — fall back to Supabase before returning empty
   if (snapshot.data.size === 0) {
+    const stored = await loadLastSignalRun();
+    if (stored) {
+      // Warm L1 from Supabase
+      memCachedResponse = stored;
+      memCacheExpiresAt = Date.now() + MEMORY_TTL_MS;
+      return NextResponse.json(stored);
+    }
     return NextResponse.json(
       { agentResults: [], stats: null, activity: [] },
       { status: 200 }
     );
   }
 
-  // ── Build indicator + quote maps for legacy agents (A2–A5) ─────────────
-  // These agents still use the Map<string, IndicatorValues> interface from signals.ts.
+  // L2: cold start with indicator data present — check Supabase first
+  if (!memCachedResponse) {
+    const stored = await loadLastSignalRun();
+    if (stored) {
+      memCachedResponse = stored;
+      memCacheExpiresAt = Date.now() + MEMORY_TTL_MS;
+      return NextResponse.json(stored);
+    }
+  }
+
+  // ── Fresh GPT-4o run ──────────────────────────────────────────────────
+
+  const startMs = Date.now();
+
   const indicatorMap = new Map(
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators])
   );
@@ -57,12 +82,8 @@ export async function GET() {
       .map(([sym, entry]) => [sym, { price: entry.quote!.price }])
   );
 
-  // ── Run agents in parallel ─────────────────────────────────────────────
   const [a1Signals, legacyResults] = await Promise.all([
-    // A1: Momentum Scout AI (GPT-4o)
     runMomentumScoutAI(snapshot),
-
-    // A2–A5: existing deterministic logic
     evaluateSignals(
       indicatorMap,
       quoteMap,
@@ -71,7 +92,6 @@ export async function GET() {
     ),
   ]);
 
-  // ── Replace A1 in the agentResults array with the AI version ──────────
   const a1Result: AgentResult = {
     id:          "A1",
     name:        "Momentum Scout AI",
@@ -83,13 +103,11 @@ export async function GET() {
     signals: a1Signals,
   };
 
-  // legacyResults.agentResults[0] is the old hardcoded A1 — replace it
   const agentResults: AgentResult[] = [
     a1Result,
-    ...legacyResults.agentResults.slice(1), // A2, A3, A4, A5
+    ...legacyResults.agentResults.slice(1),
   ];
 
-  // ── Recompute stats across all agents ─────────────────────────────────
   const allSignals   = agentResults.flatMap((a) => a.signals);
   const buySignals   = allSignals.filter((s) => s.type === "buy");
   const highConf     = buySignals.filter((s) => s.confidence === "high");
@@ -104,11 +122,26 @@ export async function GET() {
 
   const activity: LiveActivityEntry[] = buildActivityLog(agentResults);
 
-  const response = { agentResults, stats, activity };
+  const response = {
+    agentResults,
+    stats,
+    activity,
+    generatedAt: new Date().toISOString(),
+  };
 
-  // Cache response for 90s
-  cachedResponse  = response;
-  cacheExpiresAt  = Date.now() + RESPONSE_CACHE_TTL_MS;
+  const durationMs = Date.now() - startMs;
+
+  // Write L1
+  memCachedResponse = response;
+  memCacheExpiresAt = Date.now() + MEMORY_TTL_MS;
+
+  // Write L2 — non-blocking, never delays response
+  persistSignalRun({
+    snapshot,
+    a1Signals,
+    agentResults,
+    durationMs,
+  }).catch((err) => console.error("[signals] Supabase persist failed:", err));
 
   return NextResponse.json(response);
 }
