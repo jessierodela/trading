@@ -13,6 +13,7 @@ import { ActivityLog }        from "@/components/dashboard/ActivityLog";
 import IndicatorSettings      from "@/components/IndicatorSettings";
 import { AGENTS }             from "@/config/agents";
 
+
 export default function DashboardPage() {
   return (
     <div className="flex flex-col h-screen overflow-hidden">

@@ -7,9 +7,11 @@
  *   taapi.io  → RSI, MACD, EMA20 (+ prev-bar values)
  *   yahoo-finance2 → currentClose, priceAboveEma20, changePct
  *
- * The cache runs on a 5-minute auto-refresh timer (server-side only).
+ * AUTO-REFRESH: disabled for development — manual-only mode.
+ * To re-enable for production, set AUTO_REFRESH = true below.
+ *
  * Agents read from cache instantly — no waiting on fetches.
- * Manual refresh is supported via forceRefresh().
+ * Manual refresh: POST /api/cache/refresh from the dashboard.
  *
  * Usage:
  *   import { getCache } from "@/lib/indicatorCache";
@@ -65,9 +67,12 @@ const ASSETS: { symbol: string; type: "stock" | "crypto" }[] = [
 const STOCK_SYMBOLS  = ASSETS.filter((a) => a.type === "stock" ).map((a) => a.symbol);
 const CRYPTO_SYMBOLS = ASSETS.filter((a) => a.type === "crypto").map((a) => a.symbol);
 
-// ─── Interval ──────────────────────────────────────────────────────────────
+// ─── Mode ──────────────────────────────────────────────────────────────────
+// Set AUTO_REFRESH = true when ready for production.
+// In manual mode the cache starts empty — data only arrives via forceRefresh().
 
-const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const AUTO_REFRESH        = false;
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes (used when AUTO_REFRESH = true)
 
 // ─── Derived field calculator ─────────────────────────────────────────────
 
@@ -120,12 +125,19 @@ class IndicatorCache {
     await this.fetch();
   }
 
-  // ── Internal: start the auto-refresh timer ───────────────────────────────
+  // ── Public: start the cache (called by getCache on init) ────────────────
+  // In manual mode: no-op — cache stays empty until forceRefresh() is called.
+  // In auto mode:   fetches immediately, then every REFRESH_INTERVAL_MS.
   start(): void {
+    if (!AUTO_REFRESH) {
+      console.log("[cache] Manual mode — no auto-refresh. Use POST /api/cache/refresh.");
+      return;
+    }
+
     if (this.timer) return; // already running
 
-    console.log("[cache] Starting — initial fetch...");
-    this.fetch(); // fetch immediately on start
+    console.log("[cache] Auto mode — initial fetch starting...");
+    this.fetch();
 
     this.timer = setInterval(() => {
       console.log("[cache] Auto-refresh triggered");

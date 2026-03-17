@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Pulse } from "@/components/ui/Pulse";
+import { RefreshButton } from "@/components/dashboard/RefreshButton";
 
 const ASSETS = [
   { label: "S&P 500", symbol: "^GSPC",  type: "stock"  },
@@ -9,6 +10,8 @@ const ASSETS = [
   { label: "BTC",     symbol: "BTC",    type: "crypto" },
   { label: "VIX",     symbol: "^VIX",   type: "stock"  },
 ] as const;
+
+
 
 interface TickerState {
   label: string;
@@ -101,6 +104,8 @@ export function Header() {
           </div>
         ))}
       </div>
+        
+      <RefreshButton />
 
       {/* Clock */}
       <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">
