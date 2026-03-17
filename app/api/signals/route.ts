@@ -3,21 +3,42 @@
  *
  * READ ONLY — never triggers GPT-4o directly.
  *
- * Source priority:
- *  L1 — In-memory (90s TTL)     — fastest, lost on cold start
- *  L2 — Supabase (1hr window)   — survives deploys and cold starts
- *  L3 — Empty state             — before first manual refresh
- *
- * GPT-4o is triggered exclusively by POST /api/cache/refresh,
- * which fetches indicators then calls runMomentumScoutAI directly.
- * This keeps the signal route fast and eliminates the cold-start
- * issue where empty indicator cache blocked GPT-4o from running.
+ * Always recomputes stats + activity from agentResults before responding
+ * so StatsBar and AgentGrid always have accurate counts regardless of
+ * whether data came from L1 memory, L2 Supabase, or a fresh run.
  */
 
-import { NextResponse }              from "next/server";
-import { memCache, MEMORY_TTL_MS }  from "@/lib/signalsCache";
-import { loadLastSignalRun }         from "@/lib/signalStore";
-import { buildActivityLog }          from "@/lib/signals";
+import { NextResponse }             from "next/server";
+import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
+import { loadLastSignalRun }        from "@/lib/signalStore";
+import {
+  buildActivityLog,
+  type AgentResult,
+  type DashboardStats,
+} from "@/lib/signals";
+
+function computeStats(agentResults: AgentResult[]): DashboardStats {
+  const allSignals   = agentResults.flatMap((a) => a.signals);
+  const buySignals   = allSignals.filter((s) => s.type === "buy");
+  const highConf     = buySignals.filter((s) => s.confidence === "high");
+  const activeAgents = agentResults.filter((a) => a.signalCount > 0).length;
+  return {
+    activeAgents,
+    alertsToday:    allSignals.length,
+    buySignals:     buySignals.length,
+    highConfidence: highConf.length,
+  };
+}
+
+function buildResponse(agentResults: AgentResult[], generatedAt: string, fromStore = false) {
+  return {
+    agentResults,
+    stats:    computeStats(agentResults),
+    activity: buildActivityLog(agentResults),
+    generatedAt,
+    fromStore,
+  };
+}
 
 export async function GET() {
   // L1: in-memory hit
@@ -25,19 +46,16 @@ export async function GET() {
     return NextResponse.json(memCache.response);
   }
 
-  // L2: Supabase — handles cold starts and post-deploy
+  // L2: Supabase
   const stored = await loadLastSignalRun();
   if (stored) {
-    // Warm L1 so subsequent polls don't hit Supabase every time
-    memCache.response  = stored;
+    const response = buildResponse(stored.agentResults, stored.generatedAt, true);
+    memCache.response  = response;
     memCache.expiresAt = Date.now() + MEMORY_TTL_MS;
-    return NextResponse.json({
-      ...stored,
-      activity: buildActivityLog(stored.agentResults),
-    });
+    return NextResponse.json(response);
   }
 
-  // L3: nothing yet — user needs to hit Refresh
+  // L3: nothing yet
   return NextResponse.json(
     { agentResults: [], stats: null, activity: [], fromStore: false },
     { status: 200 }
