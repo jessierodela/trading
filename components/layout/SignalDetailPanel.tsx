@@ -1,0 +1,204 @@
+"use client";
+
+/**
+ * components/layout/SignalDetailPanel.tsx
+ *
+ * Slide-over panel that renders from the right when a signal card is clicked.
+ * Receives the full RichCard object — no additional fetch needed.
+ *
+ * Shows:
+ *  - Symbol + signal type badge + classification
+ *  - Confidence bar
+ *  - Full reasoning paragraph
+ *  - Key factors list
+ *  - Raw indicator values (RSI, MACD, EMA20, derived fields)
+ *  - Cache timestamp
+ */
+
+import { useEffect } from "react";
+import type { RichCard } from "@/components/layout/SignalsPanel";
+
+interface Props {
+  card:    RichCard | null;
+  onClose: () => void;
+}
+
+const TYPE_STYLES: Record<string, { label: string; color: string; bar: string }> = {
+  buy:   { label: "BUY",   color: "text-[var(--color-accent-green)]",  bar: "bg-[var(--color-accent-green)]"  },
+  sell:  { label: "SELL",  color: "text-[var(--color-accent-red)]",    bar: "bg-[var(--color-accent-red)]"    },
+  watch: { label: "WATCH", color: "text-[var(--color-accent-blue)]",   bar: "bg-[var(--color-accent-blue)]"   },
+  warn:  { label: "WARN",  color: "text-[var(--color-accent-orange)]", bar: "bg-[var(--color-accent-orange)]" },
+};
+
+function Row({ label, value }: { label: string; value: string | number | null | undefined }) {
+  if (value === null || value === undefined) return null;
+  return (
+    <div className="flex items-baseline justify-between py-[5px] border-b border-[var(--color-border-default)] last:border-b-0">
+      <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">{label}</span>
+      <span className="text-[10px] text-[var(--color-text-secondary)] tabular-nums font-mono">{value}</span>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-[18px]">
+      <p className="text-[8px] text-[var(--color-text-dim)] tracking-[.18em] mb-[8px] opacity-60">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function formatTs(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+function fmt(n: number | null | undefined, decimals = 2): string {
+  if (n === null || n === undefined) return "—";
+  return n.toFixed(decimals);
+}
+
+export function SignalDetailPanel({ card, onClose }: Props) {
+  const open = card !== null;
+
+  // Close on Escape
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [open, onClose]);
+
+  const style   = card ? (TYPE_STYLES[card.type] ?? TYPE_STYLES.watch) : TYPE_STYLES.watch;
+  const ind     = card?.indicators;
+  const derived = card?.derived;
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        className={[
+          "fixed inset-0 z-40 bg-black transition-opacity duration-200",
+          open ? "opacity-30 pointer-events-auto" : "opacity-0 pointer-events-none",
+        ].join(" ")}
+      />
+
+      {/* Slide-over */}
+      <aside
+        className={[
+          "fixed top-0 right-0 h-full z-50 flex flex-col",
+          "w-[320px] bg-[var(--color-surface-panel)] border-l border-[var(--color-border-default)]",
+          "transition-transform duration-250 ease-in-out",
+          open ? "translate-x-0" : "translate-x-full",
+        ].join(" ")}
+      >
+        {/* ── Header ── */}
+        <div className="flex items-center justify-between px-[16px] py-[12px] border-b border-[var(--color-border-default)] shrink-0">
+          <div className="flex items-center gap-[8px]">
+            <span className="text-[14px] font-semibold text-[var(--color-text-primary)]">
+              {card?.symbol ?? "—"}
+            </span>
+            {card && (
+              <span className={`text-[9px] font-semibold tracking-[.14em] ${style.color}`}>
+                {style.label}
+              </span>
+            )}
+            {card?.classification && (
+              <span className="text-[8px] text-[var(--color-text-dim)] opacity-60 tracking-[.1em] border border-[var(--color-border-default)] px-[5px] py-[1px] rounded-[3px]">
+                {card.classification.replace(/_/g, " ")}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="text-[var(--color-text-dim)] hover:text-[var(--color-text-primary)] text-[16px] leading-none opacity-60 hover:opacity-100 transition-opacity"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* ── Scrollable body ── */}
+        <div className="flex-1 overflow-y-auto px-[16px] py-[14px]">
+
+          {/* Confidence */}
+          {card && (
+            <Section title="CONFIDENCE">
+              <div className="flex items-center justify-between mb-[5px]">
+                <span className="text-[10px] text-[var(--color-text-secondary)] capitalize">{card.confidenceLabel}</span>
+                <span className="text-[10px] text-[var(--color-text-dim)] tabular-nums">{card.confidence}%</span>
+              </div>
+              <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full ${style.bar} opacity-70`}
+                  style={{ width: `${card.confidence}%` }}
+                />
+              </div>
+            </Section>
+          )}
+
+          {/* Reasoning */}
+          {card?.fullReasoning && (
+            <Section title="REASONING">
+              <p className="text-[11px] text-[var(--color-text-secondary)] leading-[1.6]">
+                {card.fullReasoning}
+              </p>
+            </Section>
+          )}
+
+          {/* Key factors */}
+          {card?.keyFactors && card.keyFactors.length > 0 && (
+            <Section title="KEY FACTORS">
+              <ul className="space-y-[6px]">
+                {card.keyFactors.map((f, i) => (
+                  <li key={i} className="flex items-start gap-[6px]">
+                    <span className={`text-[8px] mt-[2px] ${style.color}`}>▸</span>
+                    <span className="text-[10px] text-[var(--color-text-secondary)] leading-[1.5]">{f}</span>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
+
+          {/* Raw indicators */}
+          {ind && (
+            <Section title="INDICATORS">
+              <Row label="RSI"         value={fmt(ind.rsi)}                          />
+              <Row label="MACD"        value={fmt(ind.macd?.valueMACD, 4)}           />
+              <Row label="MACD Signal" value={fmt(ind.macd?.valueMACDSignal, 4)}     />
+              <Row label="MACD Hist"   value={fmt(ind.macd?.valueMACDHist, 6)}       />
+              <Row label="EMA20"       value={ind.ema20 ? `$${fmt(ind.ema20)}` : null} />
+              <Row label="Close"       value={ind.currentClose ? `$${fmt(ind.currentClose)}` : null} />
+              <Row label="ATR"         value={fmt(ind.atr, 4)}                       />
+            </Section>
+          )}
+
+          {/* Derived fields */}
+          {derived && (
+            <Section title="DERIVED">
+              <Row label="Price above EMA20"  value={derived.priceAboveEma20 === null ? "—" : derived.priceAboveEma20 ? "Yes" : "No"} />
+              <Row label="EMA20 slope"        value={fmt(derived.ema20Slope, 4)}     />
+              <Row label="EMA20 dist %"       value={derived.ema20PctDist != null ? `${fmt(derived.ema20PctDist)}%` : null} />
+              <Row label="Hist change"        value={fmt(derived.histChange, 6)}     />
+              <Row label="RSI change"         value={fmt(derived.rsiChange, 2)}      />
+              <Row label="Prev RSI"           value={fmt(ind?.prevRsi, 1)}           />
+              <Row label="Prev MACD hist"     value={fmt(ind?.prevHist, 6)}          />
+            </Section>
+          )}
+
+          {/* Agent + cache meta */}
+          {card && (
+            <Section title="META">
+              <Row label="Agent"         value={card.agent}                         />
+              <Row label="Cache updated" value={formatTs(card.cacheTimestamp)}      />
+              <Row label="Time"          value={card.timeLabel}                     />
+            </Section>
+          )}
+        </div>
+      </aside>
+    </>
+  );
+}

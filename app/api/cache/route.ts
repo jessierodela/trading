@@ -1,22 +1,24 @@
 /**
  * app/api/cache/route.ts
  *
- * Cache initialization + status endpoint.
- *
- * GET  /api/cache          → returns cache status (lastUpdated, symbol count, refreshing)
- * POST /api/cache/refresh  → triggers a manual force-refresh (see refresh/route.ts)
- *
- * This route also serves as the startup hook — importing getCache() here
- * ensures the singleton is initialized and the 5-min timer is running
- * from the first request onward, even before /api/signals is called.
+ * Cache status + full indicator/derived snapshot endpoint.
+ * SignalsPanel fetches this alongside /api/signals to get raw indicator
+ * data for the SignalDetailPanel slide-over.
  */
 
 import { NextResponse }  from "next/server";
 import { getCache }      from "@/lib/indicatorCache";
 
 export async function GET() {
-  const cache    = getCache(); // initializes + starts timer on first call
+  const cache    = getCache();
   const snapshot = cache.read();
+
+  const indicators = Object.fromEntries(
+    [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators])
+  );
+  const derived = Object.fromEntries(
+    [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.derived])
+  );
 
   return NextResponse.json({
     lastUpdated:     snapshot.lastUpdated,
@@ -25,18 +27,7 @@ export async function GET() {
     symbolCount:     snapshot.data.size,
     stockSymbols:    snapshot.stockSymbols,
     cryptoSymbols:   snapshot.cryptoSymbols,
-    // Per-symbol availability summary (not full data — keep payload small)
-    availability: Object.fromEntries(
-      [...snapshot.data.entries()].map(([sym, entry]) => [
-        sym,
-        {
-          hasRsi:   entry.indicators.rsi   !== null,
-          hasMacd:  entry.indicators.macd  !== null,
-          hasEma20: entry.indicators.ema20 !== null,
-          hasClose: entry.indicators.currentClose !== null,
-          hasQuote: entry.quote !== null,
-        },
-      ])
-    ),
+    indicators,
+    derived,
   });
 }
