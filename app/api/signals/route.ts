@@ -50,7 +50,8 @@ export async function GET() {
   const now = Date.now();
   if (memCache.response && now < memCache.expiresAt) {
     const ttlLeft = ((memCache.expiresAt - now) / 1000).toFixed(1);
-    console.log(`${TAG} [${reqId}] L1 HIT — returning memCache (expires in ${ttlLeft}s, generatedAt=${memCache.response.generatedAt})`);
+    const cached = memCache.response as ReturnType<typeof buildResponse>;
+    console.log(`${TAG} [${reqId}] L1 HIT — returning memCache (expires in ${ttlLeft}s, generatedAt=${cached.generatedAt})`);
     return NextResponse.json(memCache.response);
   }
 
