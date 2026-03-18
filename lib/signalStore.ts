@@ -17,7 +17,7 @@
  * if it was captured within the past hour.
  */
 
-import { supabase }           from "@/lib/supabase";
+import { getSupabase }        from "@/lib/supabase";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { AgentResult }   from "@/lib/signals";
 import type { Signal }        from "@/lib/signals";
@@ -39,7 +39,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
 
   try {
     // ── 1. signal_runs ──────────────────────────────────────────────────
-    const { data: run, error: runError } = await supabase
+    const { data: run, error: runError } = await getSupabase()
       .from("signal_runs")
       .insert({
         triggered_at: new Date().toISOString(),
@@ -93,7 +93,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
       .filter(Boolean);
 
     if (indicatorRows.length > 0) {
-      const { error: indError } = await supabase
+      const { error: indError } = await getSupabase()
         .from("indicator_snapshots")
         .insert(indicatorRows);
 
@@ -135,7 +135,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
     });
 
     if (signalRows.length > 0) {
-      const { error: sigError } = await supabase
+      const { error: sigError } = await getSupabase()
         .from("signal_results")
         .insert(signalRows);
 
@@ -168,7 +168,7 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
     // Get the most recent successful run within the hold window
     const cutoff = new Date(Date.now() - HOLD_WINDOW_MS).toISOString();
 
-    const { data: run, error: runError } = await supabase
+    const { data: run, error: runError } = await getSupabase()
       .from("signal_runs")
       .select("id, triggered_at")
       .eq("success", true)
@@ -183,7 +183,7 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
     }
 
     // Load signal_results for this run
-    const { data: results, error: resError } = await supabase
+    const { data: results, error: resError } = await getSupabase()
       .from("signal_results")
       .select("*")
       .eq("run_id", run.id);
