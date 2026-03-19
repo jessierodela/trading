@@ -18,7 +18,6 @@
  */
 
 import { getSupabase, withRetry } from "@/lib/supabase";
-import type { PostgrestSingleResponse, PostgrestResponse } from "@supabase/supabase-js";
 import type { CacheSnapshot }     from "@/lib/indicatorCache";
 import type { AgentResult }       from "@/lib/signals";
 import type { Signal }            from "@/lib/signals";
@@ -40,7 +39,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
 
   try {
     // ── 1. signal_runs ──────────────────────────────────────────────────
-    const { data: run, error: runError } = await withRetry<PostgrestSingleResponse<{ id: string }>>(
+    const { data: run, error: runError } = await withRetry(
       async () =>
         getSupabase()
           .from("signal_runs")
@@ -98,7 +97,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
       .filter(Boolean);
 
     if (indicatorRows.length > 0) {
-      const { error: indError } = await withRetry<PostgrestResponse<unknown>>(
+      const { error: indError } = await withRetry(
         async () =>
           getSupabase()
             .from("indicator_snapshots")
@@ -143,7 +142,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
     });
 
     if (signalRows.length > 0) {
-      const { error: sigError } = await withRetry<PostgrestResponse<unknown>>(
+      const { error: sigError } = await withRetry(
         async () =>
           getSupabase()
             .from("signal_results")
@@ -179,7 +178,7 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
   try {
     const cutoff = new Date(Date.now() - HOLD_WINDOW_MS).toISOString();
 
-    const { data: run, error: runError } = await withRetry<PostgrestSingleResponse<{ id: string; triggered_at: string }>>(
+    const { data: run, error: runError } = await withRetry(
       async () =>
         getSupabase()
           .from("signal_runs")
@@ -197,7 +196,7 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
       return null;
     }
 
-    const { data: results, error: resError } = await withRetry<PostgrestResponse<Record<string, any>>>(
+    const { data: results, error: resError } = await withRetry(
       async () =>
         getSupabase()
           .from("signal_results")
