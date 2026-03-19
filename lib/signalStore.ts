@@ -166,10 +166,31 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
 
 // ─── Read (cold-start fallback) ───────────────────────────────────────────
 
+export interface IndicatorSnapshot {
+  symbol:            string;
+  captured_at:       string;
+  price:             number | null;
+  rsi:               number | null;
+  prev_rsi:          number | null;
+  rsi_change:        number | null;
+  macd_value:        number | null;
+  macd_signal:       number | null;
+  macd_hist:         number | null;
+  prev_hist:         number | null;
+  hist_change:       number | null;
+  ema20:             number | null;
+  prev_ema20:        number | null;
+  ema20_slope:       number | null;
+  ema20_pct_dist:    number | null;
+  price_above_ema20: boolean | null;
+  atr:               number | null;
+}
+
 export interface StoredResponse {
-  agentResults: AgentResult[];
-  generatedAt:  string;
-  fromStore:    true;
+  agentResults:       AgentResult[];
+  generatedAt:        string;
+  fromStore:          true;
+  indicatorSnapshots: IndicatorSnapshot[];
 }
 
 export async function loadLastSignalRun(): Promise<StoredResponse | null> {
@@ -232,15 +253,27 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
       signals,
     };
 
+    // Also fetch indicator snapshots for this run so the panel
+    // can display indicator data even after a cold start / cache wipe
+    const { data: snapshots } = await withRetry(
+      async () =>
+        getSupabase()
+          .from("indicator_snapshots")
+          .select("symbol, captured_at, price, rsi, prev_rsi, rsi_change, macd_value, macd_signal, macd_hist, prev_hist, hist_change, ema20, prev_ema20, ema20_slope, ema20_pct_dist, price_above_ema20, atr")
+          .eq("run_id", run.id),
+      { label: "indicator_snapshots read" }
+    );
+
     console.log(
       `[signalStore] Loaded last run from ${run.triggered_at} — ` +
-      `${signals.length} signals`
+      `${signals.length} signals, ${snapshots?.length ?? 0} indicator snapshots`
     );
 
     return {
-      agentResults: [a1Result],
-      generatedAt:  run.triggered_at,
-      fromStore:    true,
+      agentResults:       [a1Result],
+      generatedAt:        run.triggered_at,
+      fromStore:          true,
+      indicatorSnapshots: (snapshots ?? []) as IndicatorSnapshot[],
     };
 
   } catch (err) {
