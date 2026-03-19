@@ -210,7 +210,7 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
       return null;
     }
 
-    const signals: Signal[] = results.map((row) => ({
+    const signals: Signal[] = results.map((row: any) => ({ // eslint-disable-line @typescript-eslint/no-explicit-any
       symbol:     row.symbol,
       agent:      row.agent,
       type:       row.signal_type as Signal["type"],
