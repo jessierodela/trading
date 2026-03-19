@@ -90,8 +90,6 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
           ema20_pct_dist:    derived.ema20PctDist,
           price_above_ema20: derived.priceAboveEma20,
           atr:               ind.atr,
-          raw_indicators:    ind,
-          raw_derived:       derived,
         };
       })
       .filter(Boolean);
