@@ -12,6 +12,7 @@
 import { useEffect, useState }      from "react";
 import type { Signal }              from "@/lib/signals";
 import type { IndicatorValues }     from "@/lib/taapi";
+import type { IndicatorSnapshot }   from "@/lib/signalStore";
 import { SIGNALS_POLL_MS }          from "@/config/polling";
 import { SignalDetailPanel }        from "@/components/layout/SignalDetailPanel";
 
@@ -25,9 +26,9 @@ interface AgentResult {
 }
 
 interface SignalsApiResponse {
-  agentResults: AgentResult[];
-  // Cache timestamp injected by /api/signals/route.ts
-  cacheLastUpdated?: string;
+  agentResults:       AgentResult[];
+  indicatorSnapshots: IndicatorSnapshot[];
+  cacheLastUpdated?:  string;
 }
 
 /** Full data shape passed to SignalDetailPanel — export for the panel to import */
@@ -77,45 +78,68 @@ const CONFIDENCE_MAP: Record<string, number> = {
   low:    42,
 };
 
-/**
- * Extract classification from reason string.
- * Momentum Scout AI prefixes reason with "[classification] ..."
- */
 function extractClassification(reason: string): string | null {
   const match = reason.match(/^\[([^\]]+)\]/);
   return match ? match[1] : null;
 }
 
-/**
- * Extract the 1-sentence summary from the reason string.
- * Format: "[classification] <reasoning> — <key_factors>"
- * We want just the reasoning sentence, before the " — " separator.
- */
 function extractSummary(reason: string): string {
-  // Strip leading [classification] tag
-  const withoutTag = reason.replace(/^\[[^\]]+\]\s*/, "");
-  // Take only the first sentence (up to first period or the " — " key_factors separator)
+  const withoutTag    = reason.replace(/^\[[^\]]+\]\s*/, "");
   const beforeFactors = withoutTag.split(" — ")[0];
   const firstSentence = beforeFactors.split(/\.\s/)[0];
   return firstSentence.trim();
 }
 
-/**
- * Extract full reasoning (everything before the " — key_factors" section).
- */
 function extractReasoning(reason: string): string {
   const withoutTag = reason.replace(/^\[[^\]]+\]\s*/, "");
   return withoutTag.split(" — ")[0].trim();
 }
 
-/**
- * Extract key factors array from the reason string.
- * They are joined with "; " after the " — " separator.
- */
 function extractKeyFactors(reason: string): string[] {
   const parts = reason.split(" — ");
   if (parts.length < 2) return [];
   return parts[1].split(";").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Build indicator + derived maps from stored snapshots.
+ * These come from Supabase via /api/signals and survive cold starts.
+ */
+function snapshotsToMaps(snapshots: IndicatorSnapshot[]): {
+  indicatorMap: Map<string, IndicatorValues>;
+  derivedMap:   Map<string, RichCard["derived"]>;
+} {
+  const indicatorMap = new Map<string, IndicatorValues>();
+  const derivedMap   = new Map<string, RichCard["derived"]>();
+
+  for (const s of snapshots) {
+    indicatorMap.set(s.symbol, {
+      rsi:          s.rsi          ?? undefined,
+      prevRsi:      s.prev_rsi     ?? undefined,
+      prevHist:     s.prev_hist    ?? undefined,
+      ema20:        s.ema20        ?? undefined,
+      prevEma20:    s.prev_ema20   ?? undefined,
+      atr:          s.atr          ?? undefined,
+      currentClose: s.price        ?? undefined,
+      macd: (s.macd_value !== null || s.macd_signal !== null || s.macd_hist !== null)
+        ? {
+            valueMACD:       s.macd_value  ?? 0,
+            valueMACDSignal: s.macd_signal ?? 0,
+            valueMACDHist:   s.macd_hist   ?? 0,
+          }
+        : undefined,
+    } as IndicatorValues);
+
+    derivedMap.set(s.symbol, {
+      priceAboveEma20: s.price_above_ema20,
+      ema20Slope:      s.ema20_slope,
+      ema20PctDist:    s.ema20_pct_dist,
+      histChange:      s.hist_change,
+      rsiChange:       s.rsi_change,
+    });
+  }
+
+  return { indicatorMap, derivedMap };
 }
 
 function signalsToRichCards(
@@ -169,6 +193,10 @@ export function SignalsPanel() {
 
   async function fetchSignals() {
     try {
+      // /api/signals now returns indicatorSnapshots — no need to also fetch
+      // /api/cache for indicator data. We still fetch /api/cache for its
+      // lastUpdated timestamp and any live indicators that may be fresher,
+      // but fall back to the stored snapshots when the cache is cold.
       const [signalsRes, cacheRes] = await Promise.all([
         fetch("/api/signals"),
         fetch("/api/cache"),
@@ -177,22 +205,34 @@ export function SignalsPanel() {
       const signalsData = (await signalsRes.json()) as SignalsApiResponse;
       const cacheData   = await cacheRes.json() as {
         lastUpdated: string | null;
-        // Per-symbol indicator + derived snapshots injected by /api/cache
         indicators?: Record<string, IndicatorValues>;
         derived?:    Record<string, RichCard["derived"]>;
       };
 
       if (signalsData.agentResults) {
-        const indicatorMap = new Map<string, IndicatorValues>(
-          Object.entries(cacheData.indicators ?? {})
+        // Start with stored snapshots from Supabase (always available after a run)
+        const { indicatorMap, derivedMap } = snapshotsToMaps(
+          signalsData.indicatorSnapshots ?? []
         );
-        const derivedMap = new Map<string, RichCard["derived"]>(
-          Object.entries(cacheData.derived ?? {})
-        );
+
+        // Overlay with live cache data if present — it's fresher
+        if (cacheData.indicators) {
+          for (const [sym, ind] of Object.entries(cacheData.indicators)) {
+            indicatorMap.set(sym, ind);
+          }
+        }
+        if (cacheData.derived) {
+          for (const [sym, der] of Object.entries(cacheData.derived)) {
+            derivedMap.set(sym, der);
+          }
+        }
+
+        // Prefer live cache timestamp, fall back to signal run timestamp
+        const timestamp = cacheData.lastUpdated ?? signalsData.cacheLastUpdated ?? null;
 
         setCards(signalsToRichCards(
           signalsData.agentResults,
-          cacheData.lastUpdated,
+          timestamp,
           indicatorMap,
           derivedMap,
         ));
@@ -291,7 +331,7 @@ export function SignalsPanel() {
         </div>
       </aside>
 
-      {/* Slide-over detail panel — rendered outside aside so it overlays full screen */}
+      {/* Slide-over detail panel */}
       <SignalDetailPanel
         card={selected}
         onClose={() => setSelected(null)}
