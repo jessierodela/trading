@@ -57,14 +57,14 @@ export function getSupabase(): SupabaseClient {
  */
 const RETRYABLE = ["ETIMEDOUT", "UND_ERR_SOCKET", "fetch failed"];
 
-export async function withRetry<T>(
-  fn: () => Promise<T>,
+export async function withRetry(
+  fn: () => Promise<any>, // eslint-disable-line @typescript-eslint/no-explicit-any
   { retries = 3, delayMs = 300, label = "supabase" }: {
     retries?: number;
     delayMs?: number;
     label?: string;
   } = {}
-): Promise<T> {
+): Promise<any> { // eslint-disable-line @typescript-eslint/no-explicit-any
   let lastErr: unknown;
 
   for (let attempt = 1; attempt <= retries; attempt++) {
