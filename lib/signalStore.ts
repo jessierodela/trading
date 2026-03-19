@@ -41,7 +41,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
   try {
     // ── 1. signal_runs ──────────────────────────────────────────────────
     const { data: run, error: runError } = await withRetry<PostgrestSingleResponse<{ id: string }>>(
-      () =>
+      async () =>
         getSupabase()
           .from("signal_runs")
           .insert({
@@ -99,7 +99,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
 
     if (indicatorRows.length > 0) {
       const { error: indError } = await withRetry<PostgrestResponse<unknown>>(
-        () =>
+        async () =>
           getSupabase()
             .from("indicator_snapshots")
             .insert(indicatorRows),
@@ -144,7 +144,7 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
 
     if (signalRows.length > 0) {
       const { error: sigError } = await withRetry<PostgrestResponse<unknown>>(
-        () =>
+        async () =>
           getSupabase()
             .from("signal_results")
             .insert(signalRows),
@@ -180,7 +180,7 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
     const cutoff = new Date(Date.now() - HOLD_WINDOW_MS).toISOString();
 
     const { data: run, error: runError } = await withRetry<PostgrestSingleResponse<{ id: string; triggered_at: string }>>(
-      () =>
+      async () =>
         getSupabase()
           .from("signal_runs")
           .select("id, triggered_at")
@@ -198,7 +198,7 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
     }
 
     const { data: results, error: resError } = await withRetry<PostgrestResponse<Record<string, any>>>(
-      () =>
+      async () =>
         getSupabase()
           .from("signal_results")
           .select("*")
