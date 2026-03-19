@@ -17,10 +17,10 @@
  * if it was captured within the past hour.
  */
 
-import { getSupabase }        from "@/lib/supabase";
-import type { CacheSnapshot } from "@/lib/indicatorCache";
-import type { AgentResult }   from "@/lib/signals";
-import type { Signal }        from "@/lib/signals";
+import { getSupabase, withRetry } from "@/lib/supabase";
+import type { CacheSnapshot }     from "@/lib/indicatorCache";
+import type { AgentResult }       from "@/lib/signals";
+import type { Signal }            from "@/lib/signals";
 
 const HOLD_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
@@ -39,18 +39,22 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
 
   try {
     // ── 1. signal_runs ──────────────────────────────────────────────────
-    const { data: run, error: runError } = await getSupabase()
-      .from("signal_runs")
-      .insert({
-        triggered_at: new Date().toISOString(),
-        trigger:      "manual",
-        symbols:      allSymbols,
-        model:        "gpt-4o",
-        duration_ms:  durationMs,
-        success:      true,
-      })
-      .select("id")
-      .single();
+    const { data: run, error: runError } = await withRetry(
+      () =>
+        getSupabase()
+          .from("signal_runs")
+          .insert({
+            triggered_at: new Date().toISOString(),
+            trigger:      "manual",
+            symbols:      allSymbols,
+            model:        "gpt-4o",
+            duration_ms:  durationMs,
+            success:      true,
+          })
+          .select("id")
+          .single(),
+      { label: "signal_runs insert" }
+    );
 
     if (runError || !run) {
       console.error("[signalStore] Failed to insert signal_run:", runError);
@@ -93,9 +97,13 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
       .filter(Boolean);
 
     if (indicatorRows.length > 0) {
-      const { error: indError } = await getSupabase()
-        .from("indicator_snapshots")
-        .insert(indicatorRows);
+      const { error: indError } = await withRetry(
+        () =>
+          getSupabase()
+            .from("indicator_snapshots")
+            .insert(indicatorRows),
+        { label: "indicator_snapshots insert" }
+      );
 
       if (indError) {
         console.error("[signalStore] Failed to insert indicator_snapshots:", indError);
@@ -106,7 +114,6 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
     const signalRows = a1Signals.map((sig) => {
       const entry = snapshot.data.get(sig.symbol);
 
-      // Extract structured fields from reason string
       const classification = sig.reason.match(/^\[([^\]]+)\]/)?.[1] ?? null;
       const reasoning      = sig.reason.replace(/^\[[^\]]+\]\s*/, "").split(" — ")[0].trim();
       const keyFactors     = sig.reason.includes(" — ")
@@ -135,9 +142,13 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
     });
 
     if (signalRows.length > 0) {
-      const { error: sigError } = await getSupabase()
-        .from("signal_results")
-        .insert(signalRows);
+      const { error: sigError } = await withRetry(
+        () =>
+          getSupabase()
+            .from("signal_results")
+            .insert(signalRows),
+        { label: "signal_results insert" }
+      );
 
       if (sigError) {
         console.error("[signalStore] Failed to insert signal_results:", sigError);
@@ -165,35 +176,40 @@ export interface StoredResponse {
 
 export async function loadLastSignalRun(): Promise<StoredResponse | null> {
   try {
-    // Get the most recent successful run within the hold window
     const cutoff = new Date(Date.now() - HOLD_WINDOW_MS).toISOString();
 
-    const { data: run, error: runError } = await getSupabase()
-      .from("signal_runs")
-      .select("id, triggered_at")
-      .eq("success", true)
-      .gte("triggered_at", cutoff)
-      .order("triggered_at", { ascending: false })
-      .limit(1)
-      .single();
+    const { data: run, error: runError } = await withRetry(
+      () =>
+        getSupabase()
+          .from("signal_runs")
+          .select("id, triggered_at")
+          .eq("success", true)
+          .gte("triggered_at", cutoff)
+          .order("triggered_at", { ascending: false })
+          .limit(1)
+          .single(),
+      { label: "signal_runs read" }
+    );
 
     if (runError || !run) {
       console.log("[signalStore] No recent run found in Supabase (within 1hr)");
       return null;
     }
 
-    // Load signal_results for this run
-    const { data: results, error: resError } = await getSupabase()
-      .from("signal_results")
-      .select("*")
-      .eq("run_id", run.id);
+    const { data: results, error: resError } = await withRetry(
+      () =>
+        getSupabase()
+          .from("signal_results")
+          .select("*")
+          .eq("run_id", run.id),
+      { label: "signal_results read" }
+    );
 
     if (resError || !results || results.length === 0) {
       console.log("[signalStore] No signal_results for run", run.id);
       return null;
     }
 
-    // Reconstruct Signal[] from stored rows
     const signals: Signal[] = results.map((row) => ({
       symbol:     row.symbol,
       agent:      row.agent,
@@ -207,7 +223,6 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
       tags: row.classification ? [row.classification] : [],
     }));
 
-    // Reconstruct AgentResult shape
     const a1Result: AgentResult = {
       id:          "A1",
       name:        "Momentum Scout AI",
