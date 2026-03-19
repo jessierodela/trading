@@ -11,6 +11,7 @@
 import { NextResponse }             from "next/server";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
 import { loadLastSignalRun }        from "@/lib/signalStore";
+import type { IndicatorSnapshot }   from "@/lib/signalStore";
 import {
   buildActivityLog,
   type AgentResult,
@@ -32,18 +33,24 @@ function computeStats(agentResults: AgentResult[]): DashboardStats {
   };
 }
 
-function buildResponse(agentResults: AgentResult[], generatedAt: string, fromStore = false) {
+function buildResponse(
+  agentResults:       AgentResult[],
+  generatedAt:        string,
+  fromStore           = false,
+  indicatorSnapshots: IndicatorSnapshot[] = [],
+) {
   return {
     agentResults,
-    stats:    computeStats(agentResults),
-    activity: buildActivityLog(agentResults),
+    stats:              computeStats(agentResults),
+    activity:           buildActivityLog(agentResults),
     generatedAt,
     fromStore,
+    indicatorSnapshots,
   };
 }
 
 export async function GET() {
-  const reqId = Math.random().toString(36).slice(2, 7); // short ID to correlate logs per request
+  const reqId = Math.random().toString(36).slice(2, 7);
   console.log(`${TAG} [${reqId}] GET /api/signals`);
 
   // ── L1: in-memory cache ──────────────────────────────────────────────────
@@ -69,16 +76,21 @@ export async function GET() {
   } catch (err) {
     console.error(`${TAG} [${reqId}] L2 ERROR — loadLastSignalRun threw:`, err);
     return NextResponse.json(
-      { agentResults: [], stats: null, activity: [], fromStore: false, error: "supabase_load_failed" },
+      { agentResults: [], stats: null, activity: [], fromStore: false, indicatorSnapshots: [], error: "supabase_load_failed" },
       { status: 200 }
     );
   }
 
   if (stored) {
     console.log(
-      `${TAG} [${reqId}] L2 HIT — generatedAt=${stored.generatedAt}, agents=${stored.agentResults.length}`
+      `${TAG} [${reqId}] L2 HIT — generatedAt=${stored.generatedAt}, agents=${stored.agentResults.length}, snapshots=${stored.indicatorSnapshots.length}`
     );
-    const response = buildResponse(stored.agentResults, stored.generatedAt, true);
+    const response = buildResponse(
+      stored.agentResults,
+      stored.generatedAt,
+      true,
+      stored.indicatorSnapshots,
+    );
     memCache.response  = response;
     memCache.expiresAt = now + MEMORY_TTL_MS;
     console.log(`${TAG} [${reqId}] L1 populated — expires in ${(MEMORY_TTL_MS / 1000).toFixed(0)}s`);
@@ -88,7 +100,7 @@ export async function GET() {
   // ── L3: nothing yet ───────────────────────────────────────────────────────
   console.warn(`${TAG} [${reqId}] L2 MISS — no stored run found in Supabase. Returning empty state.`);
   return NextResponse.json(
-    { agentResults: [], stats: null, activity: [], fromStore: false },
+    { agentResults: [], stats: null, activity: [], fromStore: false, indicatorSnapshots: [] },
     { status: 200 }
   );
 }
