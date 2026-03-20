@@ -340,7 +340,7 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
       body: JSON.stringify({
         model:       "gpt-4o",
         temperature: 0,    // deterministic — we want consistency, not creativity
-        max_tokens:  600,  // bumped from 512: volume/ATR reasoning adds ~1 sentence
+        max_tokens:  900,  // reasoning (3 sentences) + key_factors (4 items) + JSON overhead ~800 tokens
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user",   content: JSON.stringify(payload, null, 2) },
@@ -354,17 +354,23 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
       return null;
     }
 
-    const data = await res.json();
-    const raw  = data.choices?.[0]?.message?.content ?? "";
+    const data         = await res.json();
+    const choice       = data.choices?.[0];
+    const raw          = choice?.message?.content ?? "";
+    const finishReason = choice?.finish_reason as string | undefined;
+
+    // Detect truncation — if finish_reason is "length" the JSON is incomplete
+    if (finishReason === "length") {
+      console.warn(`[momentumScout] GPT-4o response truncated (finish_reason=length) — increase max_tokens`);
+    }
 
     // Strip any accidental markdown fences before parsing
     const clean = raw.replace(/```json|```/gi, "").trim();
 
     try {
       return JSON.parse(clean) as MomentumScoutResponse;
-    } catch (parseErr) {
-      // Log the raw response so we can see what GPT-4o actually returned
-      console.error(`[momentumScout] JSON.parse failed. finish_reason=${choice?.finish_reason}. Raw response:`, raw);
+    } catch {
+      console.error(`[momentumScout] JSON.parse failed. finish_reason=${finishReason}. Raw:`, raw);
       return null;
     }
 
@@ -376,23 +382,19 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
 
 // ─── Response → Signal ────────────────────────────────────────────────────
 
-function toSignal(response: MomentumScoutResponse): Signal {
-  // Derive signal type from classification (source of truth is the classification,
-  // not the model's signal_type field — guards against prompt drift)
+function toSignal(response: MomentumScoutResponse, symbol: string): Signal {
   const type = CLASSIFICATION_TO_SIGNAL[response.classification] ?? "none";
 
-  // Combine reasoning + key_factors into the reason string the dashboard displays
   const keyFactorStr = response.key_factors?.length
     ? ` — ${response.key_factors.join("; ")}`
     : "";
 
   return {
-    symbol:     response.symbol,
+    symbol,   // always the known local value, never response.symbol
     agent:      "Momentum Scout AI",
     type,
-    reason:     `[${response.classification}] ${response.reasoning}${keyFactorStr}`,
+    reason:     `[${response.classification}] ${response.reasoning ?? "no reasoning returned"}${keyFactorStr}`,
     confidence: response.confidence,
-    // Pass classification through as a tag for downstream consumers
     tags:       [response.classification.replace("_risk", "") as any],
   };
 }
@@ -428,7 +430,7 @@ export async function runMomentumScoutAI(
       const response = await callGpt4o(payload);
       if (!response) return null;
 
-      return toSignal(response);
+      return toSignal(response, symbol);
     })
   );
 
