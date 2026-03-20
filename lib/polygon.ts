@@ -20,6 +20,7 @@ export interface PolygonQuote {
   change:    number;     // $ change
   changePct: number;     // % change (e.g. 2.34 means +2.34%)
   changeUp:  boolean;
+  volume:    number | null; // regularMarketVolume — used by indicatorCache for relativeVolume
 }
 
 export type AssetType = "stock" | "crypto";
@@ -36,15 +37,16 @@ export async function fetchQuote(
 
     const q = await yf.quote(ticker);
 
-    const price = q.regularMarketPrice;
-    const prevC = q.regularMarketPreviousClose;
+    const price  = q.regularMarketPrice;
+    const prevC  = q.regularMarketPreviousClose;
+    const volume = q.regularMarketVolume ?? null;
 
     if (!price || !prevC) return null;
 
     const change    = price - prevC;
     const changePct = (change / prevC) * 100;
 
-    return { symbol, price, change, changePct, changeUp: changePct >= 0 };
+    return { symbol, price, change, changePct, changeUp: changePct >= 0, volume };
   } catch {
     return null;
   }
