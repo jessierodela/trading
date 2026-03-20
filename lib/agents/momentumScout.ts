@@ -359,12 +359,10 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
     const raw          = choice?.message?.content ?? "";
     const finishReason = choice?.finish_reason as string | undefined;
 
-    // Detect truncation — if finish_reason is "length" the JSON is incomplete
     if (finishReason === "length") {
       console.warn(`[momentumScout] GPT-4o response truncated (finish_reason=length) — increase max_tokens`);
     }
 
-    // Strip any accidental markdown fences before parsing
     const clean = raw.replace(/```json|```/gi, "").trim();
 
     try {
@@ -380,20 +378,64 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
   }
 }
 
+// ─── Fallback reasoning generator ────────────────────────────────────────
+// Used when GPT-4o omits or returns an empty reasoning field.
+// Builds a deterministic 3-sentence summary from the classification +
+// the same indicator data the model received, so the UI is never blank.
+
+function buildFallbackReasoning(
+  classification: MomentumClassification,
+  payload: ReturnType<typeof buildPayload>
+): string {
+  if (!payload || typeof payload !== "object") return `Classification: ${classification}.`;
+  const p = payload as Record<string, unknown>;
+
+  const structureLine = p.priceAboveEma20
+    ? `Price is above a ${(p.ema20Slope as number) > 0 ? "rising" : "flat"} EMA20.`
+    : `Price is below EMA20, structure is bearish.`;
+
+  const histSign    = (p.macdHist as number) > 0 ? "positive" : "negative";
+  const histDir     = (p.histChange as number) > 0 ? "expanding" : "contracting";
+  const rsiDir      = (p.rsiChange as number) > 0 ? "rising" : "falling";
+  const momentumLine = `MACD histogram is ${histSign} and ${histDir}; RSI is ${rsiDir} at ${(p.rsi as number)?.toFixed(1)}.`;
+
+  const implicationMap: Record<MomentumClassification, string> = {
+    acceleration:        "Momentum is accelerating — bullish continuation likely.",
+    trend_continuation:  "Trend is intact with stable positive momentum.",
+    pullback_to_support: "Price has pulled back toward EMA20 support in a healthy trend.",
+    extended_but_strong: "Price is extended but momentum has not broken down yet.",
+    decelerating:        "Momentum is decelerating — watch for consolidation or a shallow pullback.",
+    rollover_risk:       "Multiple weakness signals suggest rollover risk.",
+    oversold_bounce:     "Oversold conditions may support a short-term bounce.",
+    neutral:             "Mixed signals — no clear directional edge.",
+  };
+
+  return `${structureLine} ${momentumLine} ${implicationMap[classification]}`;
+}
+
 // ─── Response → Signal ────────────────────────────────────────────────────
 
-function toSignal(response: MomentumScoutResponse, symbol: string): Signal {
+function toSignal(
+  response: MomentumScoutResponse,
+  symbol:   string,
+  payload:  ReturnType<typeof buildPayload>
+): Signal {
   const type = CLASSIFICATION_TO_SIGNAL[response.classification] ?? "none";
+
+  // Use GPT-4o reasoning if present; fall back to local deterministic summary.
+  // Prevents "no reasoning returned" from ever appearing in the UI.
+  const reasoning = response.reasoning?.trim()
+    || buildFallbackReasoning(response.classification, payload);
 
   const keyFactorStr = response.key_factors?.length
     ? ` — ${response.key_factors.join("; ")}`
     : "";
 
   return {
-    symbol,   // always the known local value, never response.symbol
+    symbol,
     agent:      "Momentum Scout AI",
     type,
-    reason:     `[${response.classification}] ${response.reasoning ?? "no reasoning returned"}${keyFactorStr}`,
+    reason:     `[${response.classification}] ${reasoning}${keyFactorStr}`,
     confidence: response.confidence,
     tags:       [response.classification.replace("_risk", "") as any],
   };
@@ -430,7 +472,7 @@ export async function runMomentumScoutAI(
       const response = await callGpt4o(payload);
       if (!response) return null;
 
-      return toSignal(response, symbol);
+      return toSignal(response, symbol, payload);
     })
   );
 
