@@ -33,6 +33,16 @@ export interface IndicatorValues {
   prevHist:     number | null; // previous MACD histogram value
   prevEma20:    number | null;
   currentClose: number | null; // current bar close price
+
+  // ── Volume ─────────────────────────────────────────────────────────────
+  // volume is overridden by yahoo-finance2 (regularMarketVolume) in indicatorCache.
+  // prevVolume + volumeSma20 come from taapi (prev-bar candle + volumesma endpoint).
+  // high/low come from taapi candle — used for candleRangeInAtr.
+  volume:      number | null;
+  prevVolume:  number | null;
+  volumeSma20: number | null;
+  high:        number | null; // current bar high
+  low:         number | null; // current bar low
 }
 
 export type AssetType = "stock" | "crypto";
@@ -50,6 +60,8 @@ function emptyResult(symbol: string): IndicatorValues {
     ema200: null, bb: null, atr: null,
     // Phase 2 prev-bar fields
     prevRsi: null, prevHist: null, prevEma20: null, currentClose: null,
+    // Volume + candle range
+    volume: null, prevVolume: null, volumeSma20: null, high: null, low: null,
   };
 }
 
@@ -155,6 +167,23 @@ async function fetchAssetIndicators(
         result.atr = r?.value ?? null;
         break;
       }
+      case "volumeSma20": {
+        // taapi endpoint: "volumesma" — 20-bar average volume.
+        // Used by indicatorCache to compute relativeVolume and volumeAboveAverage.
+        const r = await fetchIndicator("volumesma", symbol, exchange, { period: 20 });
+        result.volumeSma20 = r?.value ?? null;
+        break;
+      }
+      case "candle": {
+        // Fetches current-bar OHLCV — used for high/low (candleRangeInAtr)
+        // and provides prevVolume when combined with backtrack: 1 below.
+        const r = await fetchIndicator("candle", symbol, exchange);
+        result.high = r?.high ?? null;
+        result.low  = r?.low  ?? null;
+        // volume from candle is a fallback only; yahoo-finance2 overrides it in cache
+        if (result.volume == null) result.volume = r?.volume ?? null;
+        break;
+      }
     }
 
     if (i < enabled.length - 1) {
@@ -193,6 +222,16 @@ async function fetchAssetIndicators(
     console.log(`[taapi] ${symbol} — fetching current close`);
     const r = await fetchIndicator("price", symbol, exchange);
     result.currentClose = r?.value ?? null;
+  }
+
+  // ── Volume: previous-bar volume via candle backtrack ──────────────────
+  // Only fetch if "candle" was enabled (provides high/low/volume for current bar).
+  // prevVolume = previous bar's volume, used to compute volumeChangePct + volumeExpanding.
+  if (enabled.includes("candle")) {
+    await sleep(INDICATOR_DELAY_MS);
+    console.log(`[taapi] ${symbol} — fetching candle (prev bar) for prevVolume`);
+    const r = await fetchIndicator("candle", symbol, exchange, { backtrack: 1 });
+    result.prevVolume = r?.volume ?? null;
   }
 
   return result;
