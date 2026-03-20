@@ -109,7 +109,18 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
     }
 
     // ── 3. signal_results (A1 only for now) ────────────────────────────
-    const signalRows = a1Signals.map((sig) => {
+    // Guard: drop any signal missing a symbol before touching the DB.
+    // This should never happen after the momentumScout fix, but acts as
+    // a safety net so a single bad signal can't abort the whole insert.
+    const validSignals = a1Signals.filter((sig) => {
+      if (!sig.symbol) {
+        console.warn("[signalStore] Dropping signal with missing symbol:", sig);
+        return false;
+      }
+      return true;
+    });
+
+    const signalRows = validSignals.map((sig) => {
       const entry = snapshot.data.get(sig.symbol);
 
       const classification = sig.reason.match(/^\[([^\]]+)\]/)?.[1] ?? null;
