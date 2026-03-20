@@ -118,11 +118,17 @@ async function fetchIndicator(
 
 // ─── Bulk POST (crypto / Binance) ─────────────────────────────────────────
 
+// Internal construct shape — params are kept separate for clarity when building
+// the list, then flattened before sending to taapi (which expects them at the
+// top level of each indicator object, not nested under a "params" key).
 interface BulkConstruct {
   id:        string;
   indicator: string;
   params?:   Record<string, unknown>;
 }
+
+// Wire shape taapi actually expects: { id, indicator, period?, backtrack?, ... }
+type BulkConstructWire = { id: string; indicator: string } & Record<string, unknown>;
 
 // Raw item shape returned by taapi's /bulk endpoint.
 // `result` is a free-form object whose keys depend on the indicator
@@ -143,13 +149,21 @@ async function fetchBulk(
   constructs: BulkConstruct[],
   retries = 2
 ): Promise<Map<string, Record<string, number>> | null> {
+  // Flatten params into each construct — taapi expects { id, indicator, period, backtrack, ... }
+  // not { id, indicator, params: { period, backtrack } }
+  const wire: BulkConstructWire[] = constructs.map(({ id, indicator, params }) => ({
+    id,
+    indicator,
+    ...params,
+  }));
+
   const body = {
     secret: KEY,
     construct: {
       exchange,
       symbol,
       interval: "1h",
-      indicators: constructs,
+      indicators: wire,
     },
   };
 
