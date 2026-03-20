@@ -2,8 +2,19 @@
  * lib/taapi.ts
  * Fetches technical indicator values from Taapi.io
  *
- * Free plan: 1 indicator per call, 1 call/15sec.
- * Each indicator is fetched individually with a 15.5s gap between calls.
+ * Strategy:
+ *   - Crypto assets on Binance → POST /bulk (up to 20 calculations per request,
+ *     1 request / 15s). All current-bar indicators in one call; all prev-bar
+ *     (backtrack:1) indicators in a second call. Total: 2 rate-limit slots
+ *     instead of ~13.
+ *   - Stock assets → sequential GET (unchanged, stocks exchange does not
+ *     support the bulk endpoint on the free plan).
+ *
+ * Free plan constraints:
+ *   - 1 API request / 15 seconds
+ *   - Bulk: up to 20 constructs per POST
+ *   - Binance real-time pairs only: BTC/USDT, ETH/USDT, XRP/USD, LTC/USDT, XMR/USDT
+ *     (SOL is NOT available on the free plan — keep it disabled in indicators config)
  */
 
 import {
@@ -26,23 +37,19 @@ export interface IndicatorValues {
   bb:     { valueLowerBand: number; valueMiddleBand: number; valueUpperBand: number } | null;
   atr:    number | null;
 
-  // ── Phase 2: previous-bar values (backtrack: 1) ────────────────────────
-  // Used by Momentum Scout for bar-to-bar acceleration/deceleration logic.
-  // Null when prev-bar fetch is skipped (e.g. free plan rate limits).
+  // ── Phase 2: previous-bar values (backtrack: 1) ───────────────────────
   prevRsi:      number | null;
-  prevHist:     number | null; // previous MACD histogram value
+  prevHist:     number | null;
   prevEma20:    number | null;
-  currentClose: number | null; // current bar close price
+  currentClose: number | null;
 
-  // ── Volume ─────────────────────────────────────────────────────────────
-  // volume is overridden by yahoo-finance2 (regularMarketVolume) in indicatorCache.
-  // prevVolume + volumeSma20 come from taapi (prev-bar candle + volumesma endpoint).
-  // high/low come from taapi candle — used for candleRangeInAtr.
+  // ── Volume + candle range ─────────────────────────────────────────────
+  // volume is overridden by yahoo-finance2 in indicatorCache.
   volume:      number | null;
   prevVolume:  number | null;
   volumeSma20: number | null;
-  high:        number | null; // current bar high
-  low:         number | null; // current bar low
+  high:        number | null;
+  low:         number | null;
 }
 
 export type AssetType = "stock" | "crypto";
@@ -58,14 +65,12 @@ function emptyResult(symbol: string): IndicatorValues {
   return {
     symbol, rsi: null, macd: null, ema20: null, ema50: null,
     ema200: null, bb: null, atr: null,
-    // Phase 2 prev-bar fields
     prevRsi: null, prevHist: null, prevEma20: null, currentClose: null,
-    // Volume + candle range
     volume: null, prevVolume: null, volumeSma20: null, high: null, low: null,
   };
 }
 
-// ─── Single indicator fetch ───────────────────────────────────────────────
+// ─── Sequential GET (stocks / fallback) ──────────────────────────────────
 
 async function fetchIndicator(
   indicator: string,
@@ -111,11 +116,196 @@ async function fetchIndicator(
   return null;
 }
 
-// ─── Fetch all enabled indicators for one asset ───────────────────────────
+// ─── Bulk POST (crypto / Binance) ─────────────────────────────────────────
 
-const INDICATOR_DELAY_MS = 15500; // free plan: 1 req / 15 sec
+interface BulkConstruct {
+  id:        string;
+  indicator: string;
+  params?:   Record<string, unknown>;
+}
 
-async function fetchAssetIndicators(
+// Raw item shape returned by taapi's /bulk endpoint.
+// `result` is a free-form object whose keys depend on the indicator
+// (e.g. { value } for RSI, { valueMACD, valueMACDSignal, valueMACDHist } for MACD).
+interface BulkResultItem {
+  id:     string;
+  result: Record<string, number>;
+  errors?: string[];
+}
+
+/**
+ * POST /bulk — fetches up to 20 indicator constructs in a single rate-limit slot.
+ * Returns a map of { [id]: result } for easy lookup, or null on failure.
+ */
+async function fetchBulk(
+  symbol:     string,
+  exchange:   Exchange,
+  constructs: BulkConstruct[],
+  retries = 2
+): Promise<Map<string, Record<string, number>> | null> {
+  const body = {
+    secret: KEY,
+    construct: {
+      exchange,
+      symbol,
+      interval: "1h",
+      indicators: constructs,
+    },
+  };
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(`${BASE}/bulk`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify(body),
+      });
+
+      if (res.status === 429) {
+        const backoff = (attempt + 1) * 15_000;
+        console.warn(`[taapi] ${symbol}/bulk rate limited, retrying in ${backoff / 1000}s...`);
+        await sleep(backoff);
+        continue;
+      }
+
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`[taapi] ${symbol}/bulk failed: ${res.status} — ${errText}`);
+        return null;
+      }
+
+      const json = await res.json() as { data: BulkResultItem[] };
+
+      const map = new Map<string, Record<string, number>>();
+      for (const item of json.data) {
+        if (item.errors?.length) {
+          console.warn(`[taapi] bulk item "${item.id}" had errors:`, item.errors);
+          continue; // skip failed constructs; others still populate the map
+        }
+        map.set(item.id, item.result);
+      }
+
+      return map;
+
+    } catch (err) {
+      console.error(`[taapi] ${symbol}/bulk error (attempt ${attempt + 1}):`, err);
+      if (attempt < retries) await sleep(5000);
+    }
+  }
+
+  return null;
+}
+
+// ─── Crypto bulk fetch ────────────────────────────────────────────────────
+
+const INDICATOR_DELAY_MS = 15500;
+
+/**
+ * Fetches all enabled indicators for a crypto asset using two bulk POSTs:
+ *   1. Current-bar indicators (RSI, MACD, EMA20, EMA50, EMA200, BB, ATR,
+ *      volumeSma20, candle, price)
+ *   2. Prev-bar indicators (RSI backtrack:1, MACD backtrack:1, EMA20 backtrack:1,
+ *      candle backtrack:1 for prevVolume)
+ *
+ * Each POST counts as one rate-limit slot (15s). Two calls = ~31s total,
+ * versus ~200s for the equivalent sequential fetch.
+ */
+async function fetchCryptoIndicatorsBulk(
+  symbol:   string,   // e.g. "BTC/USDT"
+  exchange: Exchange,
+  enabled:  IndicatorKey[]
+): Promise<IndicatorValues> {
+  const result = emptyResult(symbol);
+
+  // ── Build current-bar construct list ────────────────────────────────
+  const currentConstructs: BulkConstruct[] = [];
+
+  if (enabled.includes("rsi"))       currentConstructs.push({ id: "rsi",       indicator: "rsi" });
+  if (enabled.includes("macd"))      currentConstructs.push({ id: "macd",      indicator: "macd" });
+  if (enabled.includes("ema20"))     currentConstructs.push({ id: "ema20",     indicator: "ema",       params: { period: 20 } });
+  if (enabled.includes("ema50"))     currentConstructs.push({ id: "ema50",     indicator: "ema",       params: { period: 50 } });
+  if (enabled.includes("ema200"))    currentConstructs.push({ id: "ema200",    indicator: "ema",       params: { period: 200 } });
+  if (enabled.includes("bb"))        currentConstructs.push({ id: "bb",        indicator: "bbands" });
+  if (enabled.includes("atr"))       currentConstructs.push({ id: "atr",       indicator: "atr" });
+  if (enabled.includes("volumeSma20")) currentConstructs.push({ id: "volsma",  indicator: "volumesma", params: { period: 20 } });
+  if (enabled.includes("candle"))    currentConstructs.push({ id: "candle",    indicator: "candle" });
+  // currentClose via price endpoint
+  if (enabled.includes("ema20"))     currentConstructs.push({ id: "price",     indicator: "price" });
+
+  // ── Build prev-bar construct list ───────────────────────────────────
+  const prevConstructs: BulkConstruct[] = [];
+
+  if (enabled.includes("rsi"))    prevConstructs.push({ id: "prevRsi",    indicator: "rsi",    params: { backtrack: 1 } });
+  if (enabled.includes("macd"))   prevConstructs.push({ id: "prevMacd",   indicator: "macd",   params: { backtrack: 1 } });
+  if (enabled.includes("ema20"))  prevConstructs.push({ id: "prevEma20",  indicator: "ema",    params: { period: 20, backtrack: 1 } });
+  if (enabled.includes("candle")) prevConstructs.push({ id: "prevCandle", indicator: "candle", params: { backtrack: 1 } });
+
+  // ── Call 1: current-bar bulk ─────────────────────────────────────────
+  if (currentConstructs.length > 0) {
+    console.log(`[taapi] ${symbol} — bulk current-bar (${currentConstructs.length} constructs)`);
+    const current = await fetchBulk(symbol, exchange, currentConstructs);
+
+    if (current) {
+      result.rsi   = current.get("rsi")?.value   ?? null;
+      result.ema20 = current.get("ema20")?.value  ?? null;
+      result.ema50 = current.get("ema50")?.value  ?? null;
+      result.ema200 = current.get("ema200")?.value ?? null;
+      result.atr   = current.get("atr")?.value   ?? null;
+      result.volumeSma20 = current.get("volsma")?.value ?? null;
+      result.currentClose = current.get("price")?.value ?? null;
+
+      const m = current.get("macd");
+      if (m) {
+        result.macd = {
+          valueMACD:       m.valueMACD,
+          valueMACDSignal: m.valueMACDSignal,
+          valueMACDHist:   m.valueMACDHist,
+        };
+      }
+
+      const bb = current.get("bb");
+      if (bb) {
+        result.bb = {
+          valueLowerBand:  bb.valueLowerBand,
+          valueMiddleBand: bb.valueMiddleBand,
+          valueUpperBand:  bb.valueUpperBand,
+        };
+      }
+
+      const candle = current.get("candle");
+      if (candle) {
+        result.high = candle.high ?? null;
+        result.low  = candle.low  ?? null;
+        if (result.volume == null) result.volume = candle.volume ?? null;
+      }
+    } else {
+      console.warn(`[taapi] ${symbol} — current-bar bulk returned null, result will be empty`);
+    }
+  }
+
+  // ── Call 2: prev-bar bulk ────────────────────────────────────────────
+  if (prevConstructs.length > 0) {
+    await sleep(INDICATOR_DELAY_MS); // honour 1 req / 15s rate limit
+
+    console.log(`[taapi] ${symbol} — bulk prev-bar (${prevConstructs.length} constructs)`);
+    const prev = await fetchBulk(symbol, exchange, prevConstructs);
+
+    if (prev) {
+      result.prevRsi   = prev.get("prevRsi")?.value       ?? null;
+      result.prevHist  = prev.get("prevMacd")?.valueMACDHist ?? null;
+      result.prevEma20 = prev.get("prevEma20")?.value     ?? null;
+      result.prevVolume = prev.get("prevCandle")?.volume  ?? null;
+    } else {
+      console.warn(`[taapi] ${symbol} — prev-bar bulk returned null, prev values will be null`);
+    }
+  }
+
+  return result;
+}
+
+// ─── Sequential fetch (stocks, unchanged) ────────────────────────────────
+
+async function fetchAssetIndicatorsSequential(
   symbol:   string,
   exchange: Exchange,
   enabled:  IndicatorKey[]
@@ -124,7 +314,6 @@ async function fetchAssetIndicators(
 
   for (let i = 0; i < enabled.length; i++) {
     const key = enabled[i];
-
     console.log(`[taapi] ${symbol} — fetching ${key} (${i + 1}/${enabled.length})`);
 
     switch (key) {
@@ -168,68 +357,45 @@ async function fetchAssetIndicators(
         break;
       }
       case "volumeSma20": {
-        // taapi endpoint: "volumesma" — 20-bar average volume.
-        // Used by indicatorCache to compute relativeVolume and volumeAboveAverage.
         const r = await fetchIndicator("volumesma", symbol, exchange, { period: 20 });
         result.volumeSma20 = r?.value ?? null;
         break;
       }
       case "candle": {
-        // Fetches current-bar OHLCV — used for high/low (candleRangeInAtr)
-        // and provides prevVolume when combined with backtrack: 1 below.
         const r = await fetchIndicator("candle", symbol, exchange);
         result.high = r?.high ?? null;
         result.low  = r?.low  ?? null;
-        // volume from candle is a fallback only; yahoo-finance2 overrides it in cache
         if (result.volume == null) result.volume = r?.volume ?? null;
         break;
       }
     }
 
-    if (i < enabled.length - 1) {
-      await sleep(INDICATOR_DELAY_MS);
-    }
+    if (i < enabled.length - 1) await sleep(INDICATOR_DELAY_MS);
   }
 
-  // ── Phase 2: fetch prev-bar values for Momentum Scout ─────────────────
-  // Only fetch if the base indicators we need were successfully retrieved.
-  // Each prev-bar call costs one rate-limited slot (15.5s on free plan).
+  // prev-bar sequential (same as before)
   if (result.rsi !== null && enabled.includes("rsi")) {
     await sleep(INDICATOR_DELAY_MS);
-    console.log(`[taapi] ${symbol} — fetching rsi (prev bar)`);
     const r = await fetchIndicator("rsi", symbol, exchange, { period: 14, backtrack: 1 });
     result.prevRsi = r?.value ?? null;
   }
-
   if (result.macd !== null && enabled.includes("macd")) {
     await sleep(INDICATOR_DELAY_MS);
-    console.log(`[taapi] ${symbol} — fetching macd histogram (prev bar)`);
     const r = await fetchIndicator("macd", symbol, exchange, { backtrack: 1 });
     result.prevHist = r?.valueMACDHist ?? null;
   }
-
   if (result.ema20 !== null && enabled.includes("ema20")) {
     await sleep(INDICATOR_DELAY_MS);
-    console.log(`[taapi] ${symbol} — fetching ema20 (prev bar)`);
     const r = await fetchIndicator("ema", symbol, exchange, { period: 20, backtrack: 1 });
     result.prevEma20 = r?.value ?? null;
   }
-
-  // Fetch current close price (used for % distance from EMA20)
-  // Uses the /price endpoint — 1 call, returns { value: number }
   if (enabled.includes("ema20")) {
     await sleep(INDICATOR_DELAY_MS);
-    console.log(`[taapi] ${symbol} — fetching current close`);
     const r = await fetchIndicator("price", symbol, exchange);
     result.currentClose = r?.value ?? null;
   }
-
-  // ── Volume: previous-bar volume via candle backtrack ──────────────────
-  // Only fetch if "candle" was enabled (provides high/low/volume for current bar).
-  // prevVolume = previous bar's volume, used to compute volumeChangePct + volumeExpanding.
   if (enabled.includes("candle")) {
     await sleep(INDICATOR_DELAY_MS);
-    console.log(`[taapi] ${symbol} — fetching candle (prev bar) for prevVolume`);
     const r = await fetchIndicator("candle", symbol, exchange, { backtrack: 1 });
     result.prevVolume = r?.volume ?? null;
   }
@@ -261,9 +427,14 @@ export async function fetchAllIndicators(
     const taapiSymbol: string         = type === "crypto" ? `${symbol}/USDT` : symbol;
     const enabled:     IndicatorKey[] = getEnabledIndicators(symbol, indicatorConfig);
 
-    console.log(`[taapi] Fetching ${symbol} (${i + 1}/${activeAssets.length}) — [${enabled.join(", ")}]`);
+    console.log(`[taapi] Fetching ${symbol} (${i + 1}/${activeAssets.length}) — [${enabled.join(", ")}] — strategy: ${type === "crypto" ? "bulk" : "sequential"}`);
 
-    const result = await fetchAssetIndicators(taapiSymbol, exchange, enabled);
+    // Crypto → bulk POST (2 calls total: current-bar + prev-bar)
+    // Stocks → sequential GET (unchanged behaviour)
+    const result = type === "crypto"
+      ? await fetchCryptoIndicatorsBulk(taapiSymbol, exchange, enabled)
+      : await fetchAssetIndicatorsSequential(taapiSymbol, exchange, enabled);
+
     map.set(symbol, { ...result, symbol });
 
     if (i < activeAssets.length - 1) {
