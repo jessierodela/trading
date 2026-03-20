@@ -340,7 +340,7 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
       body: JSON.stringify({
         model:       "gpt-4o",
         temperature: 0,    // deterministic — we want consistency, not creativity
-        max_tokens:  900,  // bumped from 512: volume/ATR reasoning adds ~1 sentence
+        max_tokens:  600,  // bumped from 512: volume/ATR reasoning adds ~1 sentence
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user",   content: JSON.stringify(payload, null, 2) },
@@ -359,21 +359,24 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
 
     // Strip any accidental markdown fences before parsing
     const clean = raw.replace(/```json|```/gi, "").trim();
-    return JSON.parse(clean) as MomentumScoutResponse;
+
+    try {
+      return JSON.parse(clean) as MomentumScoutResponse;
+    } catch (parseErr) {
+      // Log the raw response so we can see what GPT-4o actually returned
+      console.error(`[momentumScout] JSON.parse failed. finish_reason=${choice?.finish_reason}. Raw response:`, raw);
+      return null;
+    }
 
   } catch (err) {
-    console.error("[momentumScout] Parse/fetch error:", err);
+    console.error("[momentumScout] Fetch error:", err);
     return null;
   }
 }
 
 // ─── Response → Signal ────────────────────────────────────────────────────
 
-// symbol is passed explicitly — never trust the model to return it correctly.
-// GPT-4o can omit or misformat the symbol field, which causes a NOT NULL
-// constraint violation in signal_results. The symbol is already known from
-// the targets.map() closure; threading it through here is the safe pattern.
-function toSignal(response: MomentumScoutResponse, symbol: string): Signal {
+function toSignal(response: MomentumScoutResponse): Signal {
   // Derive signal type from classification (source of truth is the classification,
   // not the model's signal_type field — guards against prompt drift)
   const type = CLASSIFICATION_TO_SIGNAL[response.classification] ?? "none";
@@ -384,10 +387,10 @@ function toSignal(response: MomentumScoutResponse, symbol: string): Signal {
     : "";
 
   return {
-    symbol,   // always the known local value, never response.symbol
+    symbol:     response.symbol,
     agent:      "Momentum Scout AI",
     type,
-    reason:     `[${response.classification}] ${response.reasoning ?? "no reasoning returned"}${keyFactorStr}`,
+    reason:     `[${response.classification}] ${response.reasoning}${keyFactorStr}`,
     confidence: response.confidence,
     // Pass classification through as a tag for downstream consumers
     tags:       [response.classification.replace("_risk", "") as any],
@@ -425,7 +428,7 @@ export async function runMomentumScoutAI(
       const response = await callGpt4o(payload);
       if (!response) return null;
 
-      return toSignal(response, symbol);
+      return toSignal(response);
     })
   );
 
