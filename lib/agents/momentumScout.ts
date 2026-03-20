@@ -340,7 +340,7 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
       body: JSON.stringify({
         model:       "gpt-4o",
         temperature: 0,    // deterministic — we want consistency, not creativity
-        max_tokens:  600,  // bumped from 512: volume/ATR reasoning adds ~1 sentence
+        max_tokens:  900,  // bumped from 512: volume/ATR reasoning adds ~1 sentence
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user",   content: JSON.stringify(payload, null, 2) },
