@@ -227,7 +227,9 @@ async function fetchCryptoIndicatorsBulk(
   if (enabled.includes("ema200"))    currentConstructs.push({ id: "ema200",    indicator: "ema",       params: { period: 200 } });
   if (enabled.includes("bb"))        currentConstructs.push({ id: "bb",        indicator: "bbands" });
   if (enabled.includes("atr"))       currentConstructs.push({ id: "atr",       indicator: "atr" });
-  if (enabled.includes("volumeSma20")) currentConstructs.push({ id: "volsma",  indicator: "volumesma", params: { period: 20 } });
+  // taapi does not have a "volumesma" endpoint. Use "vwma" (Volume Weighted Moving Average)
+  // as the closest proxy for a volume-smoothed average, or swap for "obv" / "volume" if preferred.
+  if (enabled.includes("volumeSma20")) currentConstructs.push({ id: "volsma",  indicator: "vwma", params: { period: 20 } });
   if (enabled.includes("candle"))    currentConstructs.push({ id: "candle",    indicator: "candle" });
   // currentClose via price endpoint
   if (enabled.includes("ema20"))     currentConstructs.push({ id: "price",     indicator: "price" });
@@ -357,7 +359,9 @@ async function fetchAssetIndicatorsSequential(
         break;
       }
       case "volumeSma20": {
-        const r = await fetchIndicator("volumesma", symbol, exchange, { period: 20 });
+        // taapi has no "volumesma" endpoint — "vwma" (Volume Weighted Moving Average)
+        // is the closest available proxy for a smoothed volume average.
+        const r = await fetchIndicator("vwma", symbol, exchange, { period: 20 });
         result.volumeSma20 = r?.value ?? null;
         break;
       }
