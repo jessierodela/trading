@@ -369,7 +369,11 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
 
 // ─── Response → Signal ────────────────────────────────────────────────────
 
-function toSignal(response: MomentumScoutResponse): Signal {
+// symbol is passed explicitly — never trust the model to return it correctly.
+// GPT-4o can omit or misformat the symbol field, which causes a NOT NULL
+// constraint violation in signal_results. The symbol is already known from
+// the targets.map() closure; threading it through here is the safe pattern.
+function toSignal(response: MomentumScoutResponse, symbol: string): Signal {
   // Derive signal type from classification (source of truth is the classification,
   // not the model's signal_type field — guards against prompt drift)
   const type = CLASSIFICATION_TO_SIGNAL[response.classification] ?? "none";
@@ -380,10 +384,10 @@ function toSignal(response: MomentumScoutResponse): Signal {
     : "";
 
   return {
-    symbol:     response.symbol,
+    symbol,   // always the known local value, never response.symbol
     agent:      "Momentum Scout AI",
     type,
-    reason:     `[${response.classification}] ${response.reasoning}${keyFactorStr}`,
+    reason:     `[${response.classification}] ${response.reasoning ?? "no reasoning returned"}${keyFactorStr}`,
     confidence: response.confidence,
     // Pass classification through as a tag for downstream consumers
     tags:       [response.classification.replace("_risk", "") as any],
@@ -421,7 +425,7 @@ export async function runMomentumScoutAI(
       const response = await callGpt4o(payload);
       if (!response) return null;
 
-      return toSignal(response);
+      return toSignal(response, symbol);
     })
   );
 
