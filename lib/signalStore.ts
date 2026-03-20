@@ -104,7 +104,11 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
       );
 
       if (indError) {
-        console.error("[signalStore] Failed to insert indicator_snapshots:", indError);
+        // Roll back the signal_runs row so loadLastSignalRun() doesn't find
+        // an orphaned run with no results on subsequent polls.
+        console.error("[signalStore] Failed to insert indicator_snapshots — rolling back run:", indError);
+        await getSupabase().from("signal_runs").delete().eq("id", runId);
+        return;
       }
     }
 
@@ -160,7 +164,11 @@ export async function persistSignalRun(payload: PersistPayload): Promise<void> {
       );
 
       if (sigError) {
-        console.error("[signalStore] Failed to insert signal_results:", sigError);
+        // Roll back the signal_runs row for the same reason — an orphaned run
+        // with no results will cause empty state on every poll until it ages out.
+        console.error("[signalStore] Failed to insert signal_results — rolling back run:", sigError);
+        await getSupabase().from("signal_runs").delete().eq("id", runId);
+        return;
       }
     }
 
