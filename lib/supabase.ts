@@ -15,6 +15,8 @@
 
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
+const FETCH_TIMEOUT_MS = 8_000; // fail fast — let withRetry fire immediately
+
 let _client: SupabaseClient | null = null;
 
 /**
@@ -37,8 +39,12 @@ export function getSupabase(): SupabaseClient {
   _client = createClient(url, key, {
     auth: { persistSession: false },
     global: {
-      fetch: (url, options) =>
-        fetch(url, { ...options, cache: "no-store" }),
+      fetch: (url, options) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+        return fetch(url, { ...options, cache: "no-store", signal: controller.signal })
+          .finally(() => clearTimeout(timer));
+      },
     },
   });
 
