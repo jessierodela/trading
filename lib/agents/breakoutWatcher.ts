@@ -229,7 +229,8 @@ export async function runBreakoutWatcher(
 
       const { implication, structure, breakout_conditions } = result;
 
-      // Map to the Signal type used by the rest of the dashboard
+      // Map to the Signal type used by the rest of the dashboard.
+      // Full reasoning packed into reason string; context carries numeric fields.
       const signal: Signal = {
         agent:      "Breakout Watcher",
         symbol,
@@ -239,32 +240,18 @@ export async function runBreakoutWatcher(
         confidence: implication.confidence === "High"     ? "high"
                   : implication.confidence === "Moderate" ? "medium"
                   : "low",
-        reason: implication.summary,
-        details: {
-          // Full structured reasoning for SignalDetailPanel
-          classification: implication.signal.toLowerCase(),
-          reasoning:      implication.summary,
-          key_factors: [
-            `Structure: ${structure.summary}`,
-            `Breakout: ${breakout_conditions.summary}`,
-            `Price vs bands: ${structure.price_vs_bands}`,
-            `Volatility: ${structure.volatility_state}`,
-            `Volume confirmation: ${breakout_conditions.volume_confirmation}`,
-            `Extension risk: ${breakout_conditions.extension_risk}`,
-          ],
-          raw_indicators: {
-            close,
-            bb_upper:         bbUpper,
-            bb_middle:        bbMiddle,
-            bb_lower:         bbLower,
-            bb_width:         bbWidth,
-            bb_width_prev:    bbWidthPrev,
-            relative_volume:  parseFloat(relVol.toFixed(2)),
-            close_quality:    closeQuality,
-            squeeze_present:  structure.squeeze_present,
-          },
+        reason: [
+          `[${implication.signal}] ${implication.summary}`,
+          `Structure: ${structure.summary}`,
+          `Breakout: ${breakout_conditions.summary}`,
+          `Vol: ${breakout_conditions.volume_confirmation} | Extension risk: ${breakout_conditions.extension_risk}`,
+        ].join(" — "),
+        tags: [structure.volatility_state as any],
+        context: {
+          ema20PctDistance: bbMiddle > 0
+            ? parseFloat(((close - bbMiddle) / bbMiddle * 100).toFixed(2))
+            : undefined,
         },
-        timestamp: new Date().toISOString(),
       };
 
       results.push(signal);
