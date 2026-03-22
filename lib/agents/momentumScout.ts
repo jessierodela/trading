@@ -464,7 +464,9 @@ export async function runMomentumScoutAI(
     targets.map(async (symbol) => {
       const payload = buildPayload(symbol, snapshot);
       if (!payload) {
-        console.warn(`[momentumScout] No cache data for ${symbol} — skipping`);
+        // Symbol has no indicator data — either disabled in indicators config
+        // or taapi fetch failed for it. Expected when only BTC is active.
+        console.log(`[momentumScout] No cache data for ${symbol} — skipping`);
         return null;
       }
 
