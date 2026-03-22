@@ -248,7 +248,16 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
       return null;
     }
 
-    const signals: Signal[] = results.map((row: any) => ({ // eslint-disable-line @typescript-eslint/no-explicit-any
+    // Map agent name → stable id + display name
+    // Matches the ids assigned in cache/refresh/route.ts
+    const AGENT_META: Record<string, { id: string; name: string }> = {
+      "Momentum Scout AI": { id: "A1", name: "Momentum Scout AI" },
+      "Breakout Watcher":  { id: "A6", name: "Breakout Watcher"  },
+    };
+
+    // Build Signal objects from DB rows
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const allSignals: Signal[] = results.map((row: any) => ({
       symbol:     row.symbol,
       agent:      row.agent,
       type:       row.signal_type as Signal["type"],
@@ -261,16 +270,32 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
       tags: row.classification ? [row.classification] : [],
     }));
 
-    const a1Result: AgentResult = {
-      id:          "A1",
-      name:        "Momentum Scout AI",
-      signalCount: signals.length,
-      alertCount:  signals.filter((s) => s.confidence === "high").length,
-      lastAction:  signals.length
-        ? `Flagged ${signals[0].symbol} — ${signals[0].reason.slice(0, 50)}…`
-        : "Scanning — no qualifying setups",
-      signals,
-    };
+    // Group by agent — each agent gets its own AgentResult entry
+    const groupedByAgent = new Map<string, Signal[]>();
+    for (const sig of allSignals) {
+      const agentName = sig.agent ?? "Unknown";
+      if (!groupedByAgent.has(agentName)) groupedByAgent.set(agentName, []);
+      groupedByAgent.get(agentName)!.push(sig);
+    }
+
+    const agentResults: AgentResult[] = [...groupedByAgent.entries()].map(
+      ([agentName, signals]) => {
+        const meta = AGENT_META[agentName] ?? {
+          id:   `A_${agentName.replace(/\s+/g, "_").toUpperCase()}`,
+          name: agentName,
+        };
+        return {
+          id:          meta.id,
+          name:        meta.name,
+          signalCount: signals.length,
+          alertCount:  signals.filter((s) => s.confidence === "high").length,
+          lastAction:  signals.length
+            ? `Flagged ${signals[0].symbol} — ${signals[0].reason.slice(0, 50)}…`
+            : "Scanning — no qualifying setups",
+          signals,
+        };
+      }
+    );
 
     // Also fetch indicator snapshots for this run so the panel
     // can display indicator data even after a cold start / cache wipe
@@ -285,11 +310,11 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
 
     console.log(
       `[signalStore] Loaded last run from ${run.triggered_at} — ` +
-      `${signals.length} signals, ${snapshots?.length ?? 0} indicator snapshots`
+      `${allSignals.length} signals across ${agentResults.length} agent(s), ${snapshots?.length ?? 0} indicator snapshots`
     );
 
     return {
-      agentResults:       [a1Result],
+      agentResults,
       generatedAt:        run.triggered_at,
       fromStore:          true,
       indicatorSnapshots: (snapshots ?? []) as IndicatorSnapshot[],
