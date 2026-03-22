@@ -34,8 +34,10 @@ export interface IndicatorValues {
   ema20:  number | null;
   ema50:  number | null;
   ema200: number | null;
-  bb:     { valueLowerBand: number; valueMiddleBand: number; valueUpperBand: number } | null;
-  atr:    number | null;
+  bb:           { valueLowerBand: number; valueMiddleBand: number; valueUpperBand: number } | null;
+  bb_width:     number | null; // (upper - lower) / middle — derived after fetch
+  bb_width_prev: number | null; // same calc from prev-bar BB values
+  atr:          number | null;
 
   // ── Phase 2: previous-bar values (backtrack: 1) ───────────────────────
   prevRsi:      number | null;
@@ -64,7 +66,7 @@ function sleep(ms: number) {
 function emptyResult(symbol: string): IndicatorValues {
   return {
     symbol, rsi: null, macd: null, ema20: null, ema50: null,
-    ema200: null, bb: null, atr: null,
+    ema200: null, bb: null, bb_width: null, bb_width_prev: null, atr: null,
     prevRsi: null, prevHist: null, prevEma20: null, currentClose: null,
     volume: null, prevVolume: null, volumeSma20: null, high: null, low: null,
   };
@@ -254,6 +256,7 @@ async function fetchCryptoIndicatorsBulk(
   if (enabled.includes("rsi"))    prevConstructs.push({ id: "prevRsi",    indicator: "rsi",    params: { backtrack: 1 } });
   if (enabled.includes("macd"))   prevConstructs.push({ id: "prevMacd",   indicator: "macd",   params: { backtrack: 1 } });
   if (enabled.includes("ema20"))  prevConstructs.push({ id: "prevEma20",  indicator: "ema",    params: { period: 20, backtrack: 1 } });
+  if (enabled.includes("bb"))     prevConstructs.push({ id: "prevBb",     indicator: "bbands", params: { backtrack: 1 } });
   if (enabled.includes("candle")) prevConstructs.push({ id: "prevCandle", indicator: "candle", params: { backtrack: 1 } });
 
   // ── Call 1: current-bar bulk ─────────────────────────────────────────
@@ -286,6 +289,10 @@ async function fetchCryptoIndicatorsBulk(
           valueMiddleBand: bb.valueMiddleBand,
           valueUpperBand:  bb.valueUpperBand,
         };
+        // bb_width = (upper - lower) / middle — normalised band width
+        if (bb.valueMiddleBand > 0) {
+          result.bb_width = (bb.valueUpperBand - bb.valueLowerBand) / bb.valueMiddleBand;
+        }
       }
 
       const candle = current.get("candle");
@@ -307,10 +314,15 @@ async function fetchCryptoIndicatorsBulk(
     const prev = await fetchBulk(symbol, exchange, prevConstructs);
 
     if (prev) {
-      result.prevRsi   = prev.get("prevRsi")?.value       ?? null;
-      result.prevHist  = prev.get("prevMacd")?.valueMACDHist ?? null;
-      result.prevEma20 = prev.get("prevEma20")?.value     ?? null;
-      result.prevVolume = prev.get("prevCandle")?.volume  ?? null;
+      result.prevRsi   = prev.get("prevRsi")?.value          ?? null;
+      result.prevHist  = prev.get("prevMacd")?.valueMACDHist  ?? null;
+      result.prevEma20 = prev.get("prevEma20")?.value         ?? null;
+      result.prevVolume = prev.get("prevCandle")?.volume      ?? null;
+
+      const prevBb = prev.get("prevBb");
+      if (prevBb && prevBb.valueMiddleBand > 0) {
+        result.bb_width_prev = (prevBb.valueUpperBand - prevBb.valueLowerBand) / prevBb.valueMiddleBand;
+      }
     } else {
       console.warn(`[taapi] ${symbol} — prev-bar bulk returned null, prev values will be null`);
     }
