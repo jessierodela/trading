@@ -13,7 +13,7 @@
 
 import type { IndicatorValues } from "./taapi";
 
-export type SignalType = "buy" | "sell" | "watch" | "none";
+export type SignalType = "buy" | "sell" | "watch" | "neutral" | "none";
 
 /**
  * Phase 4 — Momentum tags give AI a structured funnel instead of raw buy/sell/watch.
