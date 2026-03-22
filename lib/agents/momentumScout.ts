@@ -55,7 +55,7 @@ const CLASSIFICATION_TO_SIGNAL: Record<MomentumClassification, Signal["type"]> =
   decelerating:        "watch",
   rollover_risk:       "sell",
   oversold_bounce:     "watch",
-  neutral:             "none",
+  neutral:             "neutral",
 };
 
 // ─── System prompt ─────────────────────────────────────────────────────────
