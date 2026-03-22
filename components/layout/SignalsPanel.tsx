@@ -31,7 +31,7 @@ interface SignalsPayload {
 
 export interface RichCard {
   symbol:          string;
-  type:            "buy" | "sell" | "watch" | "warn";
+  type:            "buy" | "sell" | "watch" | "warn" | "neutral";
   agent:           string;
   confidence:      number;
   confidenceLabel: string;
@@ -54,10 +54,11 @@ export interface RichCard {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 const TYPE_STYLES: Record<string, { label: string; color: string }> = {
-  buy:   { label: "BUY",   color: "text-[var(--color-accent-green)]"  },
-  sell:  { label: "SELL",  color: "text-[var(--color-accent-red)]"    },
-  watch: { label: "WATCH", color: "text-[var(--color-accent-blue)]"   },
-  warn:  { label: "WARN",  color: "text-[var(--color-accent-orange)]" },
+  buy:     { label: "BUY",     color: "text-[var(--color-accent-green)]"  },
+  sell:    { label: "SELL",    color: "text-[var(--color-accent-red)]"    },
+  watch:   { label: "WATCH",   color: "text-[var(--color-accent-blue)]"   },
+  warn:    { label: "WARN",    color: "text-[var(--color-accent-orange)]" },
+  neutral: { label: "NEUTRAL", color: "text-[var(--color-text-dim)]"      },
 };
 
 const CONFIDENCE_MAP: Record<string, number> = { high: 88, medium: 64, low: 42 };
@@ -90,7 +91,7 @@ function buildCards(payload: SignalsPayload): RichCard[] {
       if (sig.type === "none") continue;
       cards.push({
         symbol:          sig.symbol,
-        type:            sig.type as RichCard["type"],
+        type:            (sig.type === "neutral" ? "neutral" : sig.type) as RichCard["type"],
         agent:           sig.agent,
         confidence:      CONFIDENCE_MAP[sig.confidence] ?? 50,
         confidenceLabel: sig.confidence,
@@ -107,7 +108,7 @@ function buildCards(payload: SignalsPayload): RichCard[] {
     }
   }
 
-  const ORDER: Record<string, number> = { buy: 0, sell: 1, watch: 2, warn: 3 };
+  const ORDER: Record<string, number> = { buy: 0, sell: 1, watch: 2, warn: 3, neutral: 4 };
   return cards
     .sort((a, b) => (ORDER[a.type] - ORDER[b.type]) || (b.confidence - a.confidence))
     .slice(0, 12);
