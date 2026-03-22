@@ -104,11 +104,23 @@ export async function POST() {
   const durationMs  = Date.now() - startMs;
 
   // ── Step 3: Write to memCache ────────────────────────────────────────────
+  // Serialize indicators + derived from the snapshot so the response is
+  // self-contained — SignalsPanel reads everything from this one response
+  // and never needs a separate /api/cache fetch that could hit a cold instance.
+  const indicators = Object.fromEntries(
+    [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators])
+  );
+  const derived = Object.fromEntries(
+    [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.derived])
+  );
+
   const payload = {
     agentResults,
     stats,
     activity:    buildActivityLog(agentResults),
     generatedAt,
+    indicators,
+    derived,
   };
 
   memCache.response  = payload;
@@ -120,7 +132,7 @@ export async function POST() {
   );
 
   // ── Step 4: Return full payload ──────────────────────────────────────────
-  // RefreshButton receives this directly — no poll needed.
+  // RefreshButton receives signals + indicators in one atomic response.
   return NextResponse.json({
     success: true,
     durationMs,
