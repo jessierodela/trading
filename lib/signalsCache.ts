@@ -5,7 +5,7 @@
  * Written by POST /api/cache/refresh, read by GET /api/signals.
  */
 
-export const MEMORY_TTL_MS = 90_000;
+export const MEMORY_TTL_MS = 60 * 60 * 1000;
 
 export const memCache = {
   response:  null as object | null,
