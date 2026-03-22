@@ -160,22 +160,20 @@ export async function runBreakoutWatcher(
 
     // Skip symbols that don't have BB data fetched
     if (
-      indicators.bb_upper == null ||
-      indicators.bb_lower == null ||
-      indicators.bb_middle == null ||
+      indicators.bb == null ||
       indicators.bb_width == null
     ) {
       continue;
     }
 
-    const close        = indicators.currentClose ?? indicators.bb_middle;
-    const bbUpper      = indicators.bb_upper;
-    const bbLower      = indicators.bb_lower;
-    const bbMiddle     = indicators.bb_middle;
+    const bbUpper      = indicators.bb.valueUpperBand;
+    const bbLower      = indicators.bb.valueLowerBand;
+    const bbMiddle     = indicators.bb.valueMiddleBand;
     const bbWidth      = indicators.bb_width;
-    const bbWidthPrev  = indicators.bb_width_prev ?? bbWidth; // fallback if prev not cached
+    const bbWidthPrev  = indicators.bb_width_prev ?? bbWidth;
+    const close        = indicators.currentClose ?? bbMiddle;
     const volume       = indicators.volume ?? 0;
-    const volumeAvg20  = indicators.volume_avg_20 ?? volume;
+    const volumeAvg20  = indicators.volumeSma20 ?? volume;
     const relVol       = volumeAvg20 > 0 ? volume / volumeAvg20 : 1.0;
 
     const rangePosition = inferRangePosition(close, bbUpper, bbLower);
