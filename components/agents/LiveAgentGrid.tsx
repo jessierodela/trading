@@ -86,19 +86,19 @@ const AGENT_META: Record<string, AgentMeta> = {
   A2: {
     tagline: "Bollinger Band breakout detector",
     description:
-      "Monitors whether price is breaking above the upper or below the lower Bollinger Band. Breakouts with expanding band width and volume confirmation are flagged as high-conviction moves.",
+      "Monitors Bollinger Band structure, band-width compression/expansion, and relative volume to identify breakout, breakdown, or squeeze-watch conditions. Signals are classified as BUY, SELL, or WATCH based on band breach quality, volatility expansion, and confirmation strength.",
     indicators: ["Bollinger Bands (20, 2σ)", "Band width", "Volume"],
     logic: [
-      { label: "Upper band breach", detail: "Price closes above the upper band with expanding width — bullish breakout signal." },
-      { label: "Lower band breach", detail: "Price closes below the lower band — bearish signal, potential continuation down." },
-      { label: "Band squeeze",      detail: "Tight bands (low width) indicate consolidation. A breakout from a squeeze carries higher momentum." },
+      { label: "Structure", detail: "Price location relative to the Bollinger Bands, volatility state, and whether compression or expansion is present." },
+      { label: "Breakout Conditions", detail: "Confirms upper-band or lower-band breach using close quality, band-width expansion, volume confirmation, and extension risk." },
+      { label: "Implication",      detail: "Classifies the setup as BUY, SELL, or WATCH based on breakout quality and conviction." },
     ],
     signalTypes: [
-      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Upper band breakout with volume confirmation" },
-      { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "Lower band breakdown" },
-      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "Band squeeze forming" },
+      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Bullish breakout confirmed above the upper band with supportive expansion and volume" },
+      { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "Bearish breakdown confirmed below the lower band with supportive expansion and volume" },
+      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "Squeeze forming, weak confirmation, or setup not yet resolved" },
     ],
-    notes: "Currently scanning but not yet connected to live indicator data.",
+    notes: "Connected to live indicator data and evaluating breakout conditions in real time.",
   },
   A3: {
     tagline: "EMA 50/200 golden & death cross tracker",
