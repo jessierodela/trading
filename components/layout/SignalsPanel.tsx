@@ -12,7 +12,6 @@
 import { useEffect, useState, useCallback } from "react";
 import type { Signal }                      from "@/lib/signals";
 import type { IndicatorValues }             from "@/lib/taapi";
-import { SIGNALS_POLL_MS }                  from "@/config/polling";
 import { SignalDetailPanel }                from "@/components/layout/SignalDetailPanel";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -169,14 +168,12 @@ export function SignalsPanel() {
   }
 
   useEffect(() => {
-    // Initial poll
+    // Load once on mount — picks up any warm-instance cache on page load
     poll();
 
-    // Periodic poll — catches data from other serverless instances
-    const intervalId = setInterval(poll, SIGNALS_POLL_MS);
-
-    // Instant update from RefreshButton — fires before the next poll
-    // Also fetch /api/cache immediately to get indicator data for detail panel
+    // Instant update dispatched by RefreshButton after a successful run.
+    // No interval polling — polling across Vercel serverless instances returns
+    // stale data from whichever old instance responds, causing inconsistent panel state.
     function onUpdate(e: Event) {
       const payload = (e as CustomEvent<SignalsPayload>).detail;
       fetch("/api/cache")
@@ -195,7 +192,6 @@ export function SignalsPanel() {
     window.addEventListener("signals:update", onUpdate);
 
     return () => {
-      clearInterval(intervalId);
       window.removeEventListener("signals:update", onUpdate);
     };
   }, []);
