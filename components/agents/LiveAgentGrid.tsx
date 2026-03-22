@@ -68,12 +68,12 @@ const AGENT_META: Record<string, AgentMeta> = {
   A1: {
     tagline: "GPT-4o powered momentum classifier",
     description:
-      "Reads pre-fetched indicator data for each symbol and calls GPT-4o to classify the current momentum state into one of 8 categories. Never fetches data itself — all indicator computation happens upstream in the cache layer.",
+      "Reads pre-fetched indicator and volatility data for each symbol, then calls GPT-4o to classify short-term momentum into 1 of 8 market states. The agent never fetches market data itself — all indicator computation happens upstream in the cache layer.",
     indicators: ["RSI (1h)", "MACD histogram (1h)", "EMA20 (1h)", "ATR (1h)", "Volume / Relative Volume"],
     logic: [
-      { label: "1. Structure",   detail: "Is price above or below EMA20? Is the slope rising or falling? This establishes the directional bias." },
-      { label: "2. Momentum",    detail: "RSI level and bar-to-bar change. MACD histogram sign and direction. Volume participation (relativeVolume > 1.2 = strong confirmation)." },
-      { label: "3. Implication", detail: "GPT-4o synthesizes structure + momentum into a classification and 3-sentence reasoning. ATR normalizes how extended price is from EMA20." },
+      { label: "1. Structure",   detail: "Determines directional bias using price vs EMA20 and EMA20 slope." },
+      { label: "2. Momentum",    detail: "Evaluates RSI level and change, MACD histogram sign and direction, and whether volume confirms the move." },
+      { label: "3. Implication", detail: "Synthesizes structure and momentum into a final market-state classification and 3-sentence reasoning output. ATR helps normalize how extended price is from EMA20." },
     ],
     signalTypes: [
       { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "acceleration · trend_continuation · pullback_to_support" },
@@ -81,7 +81,7 @@ const AGENT_META: Record<string, AgentMeta> = {
       { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "rollover_risk" },
       { type: "—",     color: "text-[var(--color-text-dim)]",     condition: "neutral" },
     ],
-    notes: "Confidence set by GPT-4o: high = strong alignment across all indicators, medium = mixed signals, low = weak or missing data.",
+    notes: "Confidence is set by GPT-4o based on indicator alignment: high = strong agreement, medium = mixed evidence, low = weak or incomplete data.",
   },
   A2: {
     tagline: "Bollinger Band breakout detector",
