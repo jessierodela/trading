@@ -121,9 +121,21 @@ export function SignalsPanel() {
   const [lastFetch, setLastFetch] = useState<number | null>(null);
   const [selected, setSelected] = useState<RichCard | null>(null);
 
-  const applyPayload = useCallback((payload: SignalsPayload) => {
+  const applyPayload = useCallback((
+    payload: SignalsPayload,
+    indicatorMap?: Map<string, IndicatorValues>,
+    derivedMap?:   Map<string, RichCard["derived"]>,
+  ) => {
     if (payload.agentResults) {
-      setCards(buildCards(payload));
+      const cards = buildCards(payload);
+      // Overlay indicator + derived data if available
+      if (indicatorMap || derivedMap) {
+        for (const card of cards) {
+          if (indicatorMap) card.indicators = indicatorMap.get(card.symbol) ?? null;
+          if (derivedMap)   card.derived    = derivedMap.get(card.symbol)   ?? null;
+        }
+      }
+      setCards(cards);
       setLastFetch(Date.now());
     }
     setLoading(false);
@@ -131,9 +143,24 @@ export function SignalsPanel() {
 
   async function poll() {
     try {
-      const res  = await fetch("/api/signals");
-      const data = await res.json() as SignalsPayload;
-      applyPayload(data);
+      const [signalsRes, cacheRes] = await Promise.all([
+        fetch("/api/signals"),
+        fetch("/api/cache"),
+      ]);
+      const data      = await signalsRes.json() as SignalsPayload;
+      const cacheData = await cacheRes.json() as {
+        indicators?: Record<string, IndicatorValues>;
+        derived?:    Record<string, RichCard["derived"]>;
+      };
+
+      const indicatorMap = cacheData.indicators
+        ? new Map(Object.entries(cacheData.indicators))
+        : undefined;
+      const derivedMap = cacheData.derived
+        ? new Map(Object.entries(cacheData.derived))
+        : undefined;
+
+      applyPayload(data, indicatorMap, derivedMap);
     } catch (err) {
       console.error("[SignalsPanel] poll error", err);
       setLoading(false);
@@ -148,9 +175,21 @@ export function SignalsPanel() {
     const intervalId = setInterval(poll, SIGNALS_POLL_MS);
 
     // Instant update from RefreshButton — fires before the next poll
+    // Also fetch /api/cache immediately to get indicator data for detail panel
     function onUpdate(e: Event) {
       const payload = (e as CustomEvent<SignalsPayload>).detail;
-      applyPayload(payload);
+      fetch("/api/cache")
+        .then((r) => r.json())
+        .then((cacheData: { indicators?: Record<string, IndicatorValues>; derived?: Record<string, RichCard["derived"]> }) => {
+          const indicatorMap = cacheData.indicators
+            ? new Map(Object.entries(cacheData.indicators))
+            : undefined;
+          const derivedMap = cacheData.derived
+            ? new Map(Object.entries(cacheData.derived))
+            : undefined;
+          applyPayload(payload, indicatorMap, derivedMap);
+        })
+        .catch(() => applyPayload(payload));
     }
     window.addEventListener("signals:update", onUpdate);
 
