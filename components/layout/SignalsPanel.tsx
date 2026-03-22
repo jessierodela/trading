@@ -3,18 +3,17 @@
 /**
  * components/layout/SignalsPanel.tsx
  *
- * Displays clean 1-sentence signal cards.
- * Clicking a card opens SignalDetailPanel with full reasoning + raw data.
- *
- * RichCard is exported so SignalDetailPanel can import the type.
+ * Displays signal cards from the last agent run.
+ * Updates via two paths:
+ *   1. "signals:update" event dispatched by RefreshButton (instant)
+ *   2. Polling /api/signals every SIGNALS_POLL_MS (catches other instances)
  */
 
-import { useEffect, useState }      from "react";
-import type { Signal }              from "@/lib/signals";
-import type { IndicatorValues }     from "@/lib/taapi";
-import type { IndicatorSnapshot }   from "@/lib/signalStore";
-import { SIGNALS_POLL_MS }          from "@/config/polling";
-import { SignalDetailPanel }        from "@/components/layout/SignalDetailPanel";
+import { useEffect, useState, useCallback } from "react";
+import type { Signal }                      from "@/lib/signals";
+import type { IndicatorValues }             from "@/lib/taapi";
+import { SIGNALS_POLL_MS }                  from "@/config/polling";
+import { SignalDetailPanel }                from "@/components/layout/SignalDetailPanel";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -25,42 +24,31 @@ interface AgentResult {
   signals:     Signal[];
 }
 
-interface SignalsApiResponse {
-  agentResults:       AgentResult[];
-  indicatorSnapshots: IndicatorSnapshot[];
-  cacheLastUpdated?:  string;
+interface SignalsPayload {
+  agentResults: AgentResult[];
+  generatedAt:  string | null;
 }
 
-/** Full data shape passed to SignalDetailPanel — export for the panel to import */
 export interface RichCard {
-  // Card display
-  symbol:         string;
-  type:           "buy" | "sell" | "watch" | "warn";
-  agent:          string;
-  confidence:     number;       // numeric 0-100
-  confidenceLabel: string;      // "high" | "medium" | "low"
-  timeLabel:      string;
-
-  // Summary (1-sentence — shown on card)
-  summary:        string;
-
-  // Detail panel fields
-  classification: string | null;
-  fullReasoning:  string | null;
-  keyFactors:     string[];
-
-  // Raw indicator + derived data
-  indicators:     IndicatorValues | null;
-  derived:        {
+  symbol:          string;
+  type:            "buy" | "sell" | "watch" | "warn";
+  agent:           string;
+  confidence:      number;
+  confidenceLabel: string;
+  timeLabel:       string;
+  summary:         string;
+  classification:  string | null;
+  fullReasoning:   string | null;
+  keyFactors:      string[];
+  indicators:      IndicatorValues | null;
+  derived:         {
     priceAboveEma20: boolean | null;
     ema20Slope:      number  | null;
     ema20PctDist:    number  | null;
     histChange:      number  | null;
     rsiChange:       number  | null;
   } | null;
-
-  // Meta
-  cacheTimestamp: string | null;
+  cacheTimestamp:  string | null;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -72,11 +60,7 @@ const TYPE_STYLES: Record<string, { label: string; color: string }> = {
   warn:  { label: "WARN",  color: "text-[var(--color-accent-orange)]" },
 };
 
-const CONFIDENCE_MAP: Record<string, number> = {
-  high:   88,
-  medium: 64,
-  low:    42,
-};
+const CONFIDENCE_MAP: Record<string, number> = { high: 88, medium: 64, low: 42 };
 
 function extractClassification(reason: string): string | null {
   const match = reason.match(/^\[([^\]]+)\]/);
@@ -84,15 +68,11 @@ function extractClassification(reason: string): string | null {
 }
 
 function extractSummary(reason: string): string {
-  const withoutTag    = reason.replace(/^\[[^\]]+\]\s*/, "");
-  const beforeFactors = withoutTag.split(" — ")[0];
-  const firstSentence = beforeFactors.split(/\.\s/)[0];
-  return firstSentence.trim();
+  return reason.replace(/^\[[^\]]+\]\s*/, "").split(" — ")[0].split(/\.\s/)[0].trim();
 }
 
 function extractReasoning(reason: string): string {
-  const withoutTag = reason.replace(/^\[[^\]]+\]\s*/, "");
-  return withoutTag.split(" — ")[0].trim();
+  return reason.replace(/^\[[^\]]+\]\s*/, "").split(" — ")[0].trim();
 }
 
 function extractKeyFactors(reason: string): string[] {
@@ -101,60 +81,13 @@ function extractKeyFactors(reason: string): string[] {
   return parts[1].split(";").map((s) => s.trim()).filter(Boolean);
 }
 
-/**
- * Build indicator + derived maps from stored snapshots.
- * These come from Supabase via /api/signals and survive cold starts.
- */
-function snapshotsToMaps(snapshots: IndicatorSnapshot[]): {
-  indicatorMap: Map<string, IndicatorValues>;
-  derivedMap:   Map<string, RichCard["derived"]>;
-} {
-  const indicatorMap = new Map<string, IndicatorValues>();
-  const derivedMap   = new Map<string, RichCard["derived"]>();
-
-  for (const s of snapshots) {
-    indicatorMap.set(s.symbol, {
-      rsi:          s.rsi          ?? undefined,
-      prevRsi:      s.prev_rsi     ?? undefined,
-      prevHist:     s.prev_hist    ?? undefined,
-      ema20:        s.ema20        ?? undefined,
-      prevEma20:    s.prev_ema20   ?? undefined,
-      atr:          s.atr          ?? undefined,
-      currentClose: s.price        ?? undefined,
-      macd: (s.macd_value !== null || s.macd_signal !== null || s.macd_hist !== null)
-        ? {
-            valueMACD:       s.macd_value  ?? 0,
-            valueMACDSignal: s.macd_signal ?? 0,
-            valueMACDHist:   s.macd_hist   ?? 0,
-          }
-        : undefined,
-    } as IndicatorValues);
-
-    derivedMap.set(s.symbol, {
-      priceAboveEma20: s.price_above_ema20,
-      ema20Slope:      s.ema20_slope,
-      ema20PctDist:    s.ema20_pct_dist,
-      histChange:      s.hist_change,
-      rsiChange:       s.rsi_change,
-    });
-  }
-
-  return { indicatorMap, derivedMap };
-}
-
-function signalsToRichCards(
-  agentResults:     AgentResult[],
-  cacheTimestamp:   string | null,
-  indicatorMap:     Map<string, IndicatorValues>,
-  derivedMap:       Map<string, RichCard["derived"]>,
-): RichCard[] {
+function buildCards(payload: SignalsPayload): RichCard[] {
   const cards: RichCard[] = [];
   let offsetMin = 0;
 
-  for (const agent of agentResults) {
+  for (const agent of payload.agentResults) {
     for (const sig of agent.signals) {
       if (sig.type === "none") continue;
-
       cards.push({
         symbol:          sig.symbol,
         type:            sig.type as RichCard["type"],
@@ -162,17 +95,14 @@ function signalsToRichCards(
         confidence:      CONFIDENCE_MAP[sig.confidence] ?? 50,
         confidenceLabel: sig.confidence,
         timeLabel:       offsetMin === 0 ? "now" : `${offsetMin}m ago`,
-
         summary:         extractSummary(sig.reason),
         classification:  extractClassification(sig.reason),
         fullReasoning:   extractReasoning(sig.reason),
         keyFactors:      extractKeyFactors(sig.reason),
-
-        indicators:      indicatorMap.get(sig.symbol) ?? null,
-        derived:         derivedMap.get(sig.symbol)   ?? null,
-        cacheTimestamp,
+        indicators:      null, // populated from /api/cache if needed for detail panel
+        derived:         null,
+        cacheTimestamp:  payload.generatedAt,
       });
-
       offsetMin += 2;
     }
   }
@@ -186,69 +116,48 @@ function signalsToRichCards(
 // ─── Component ─────────────────────────────────────────────────────────────
 
 export function SignalsPanel() {
-  const [cards, setCards]         = useState<RichCard[]>([]);
-  const [loading, setLoading]     = useState(true);
+  const [cards, setCards]       = useState<RichCard[]>([]);
+  const [loading, setLoading]   = useState(true);
   const [lastFetch, setLastFetch] = useState<number | null>(null);
-  const [selected, setSelected]   = useState<RichCard | null>(null);
+  const [selected, setSelected] = useState<RichCard | null>(null);
 
-  async function fetchSignals() {
+  const applyPayload = useCallback((payload: SignalsPayload) => {
+    if (payload.agentResults) {
+      setCards(buildCards(payload));
+      setLastFetch(Date.now());
+    }
+    setLoading(false);
+  }, []);
+
+  async function poll() {
     try {
-      // /api/signals now returns indicatorSnapshots — no need to also fetch
-      // /api/cache for indicator data. We still fetch /api/cache for its
-      // lastUpdated timestamp and any live indicators that may be fresher,
-      // but fall back to the stored snapshots when the cache is cold.
-      const [signalsRes, cacheRes] = await Promise.all([
-        fetch("/api/signals"),
-        fetch("/api/cache"),
-      ]);
-
-      const signalsData = (await signalsRes.json()) as SignalsApiResponse;
-      const cacheData   = await cacheRes.json() as {
-        lastUpdated: string | null;
-        indicators?: Record<string, IndicatorValues>;
-        derived?:    Record<string, RichCard["derived"]>;
-      };
-
-      if (signalsData.agentResults) {
-        // Start with stored snapshots from Supabase (always available after a run)
-        const { indicatorMap, derivedMap } = snapshotsToMaps(
-          signalsData.indicatorSnapshots ?? []
-        );
-
-        // Overlay with live cache data if present — it's fresher
-        if (cacheData.indicators) {
-          for (const [sym, ind] of Object.entries(cacheData.indicators)) {
-            indicatorMap.set(sym, ind);
-          }
-        }
-        if (cacheData.derived) {
-          for (const [sym, der] of Object.entries(cacheData.derived)) {
-            derivedMap.set(sym, der);
-          }
-        }
-
-        // Prefer live cache timestamp, fall back to signal run timestamp
-        const timestamp = cacheData.lastUpdated ?? signalsData.cacheLastUpdated ?? null;
-
-        setCards(signalsToRichCards(
-          signalsData.agentResults,
-          timestamp,
-          indicatorMap,
-          derivedMap,
-        ));
-        setLastFetch(Date.now());
-      }
+      const res  = await fetch("/api/signals");
+      const data = await res.json() as SignalsPayload;
+      applyPayload(data);
     } catch (err) {
-      console.error("[SignalsPanel] fetch error", err);
-    } finally {
+      console.error("[SignalsPanel] poll error", err);
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    fetchSignals();
-    const id = setInterval(fetchSignals, SIGNALS_POLL_MS);
-    return () => clearInterval(id);
+    // Initial poll
+    poll();
+
+    // Periodic poll — catches data from other serverless instances
+    const intervalId = setInterval(poll, SIGNALS_POLL_MS);
+
+    // Instant update from RefreshButton — fires before the next poll
+    function onUpdate(e: Event) {
+      const payload = (e as CustomEvent<SignalsPayload>).detail;
+      applyPayload(payload);
+    }
+    window.addEventListener("signals:update", onUpdate);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener("signals:update", onUpdate);
+    };
   }, []);
 
   const ageLabel = lastFetch
@@ -283,7 +192,7 @@ export function SignalsPanel() {
           ) : cards.length === 0 ? (
             <div className="px-[14px] py-[20px] text-center">
               <p className="text-[9px] text-[var(--color-text-dim)] opacity-50">No signals yet</p>
-              <p className="text-[8px] text-[var(--color-text-dim)] opacity-30 mt-[4px]">Waiting for indicator data…</p>
+              <p className="text-[8px] text-[var(--color-text-dim)] opacity-30 mt-[4px]">Press refresh to run agents…</p>
             </div>
           ) : (
             cards.map((card, i) => {
@@ -294,32 +203,23 @@ export function SignalsPanel() {
                   onClick={() => setSelected(card)}
                   className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] last:border-b-0 cursor-pointer hover:bg-[var(--color-surface-hover,rgba(255,255,255,0.03))] transition-colors"
                 >
-                  {/* Symbol + type */}
                   <div className="flex items-center justify-between mb-[4px]">
                     <span className="text-[12px] font-medium text-[var(--color-text-primary)]">{card.symbol}</span>
                     <span className={`text-[9px] font-semibold tracking-wide ${style.color}`}>{style.label}</span>
                   </div>
-
-                  {/* 1-sentence summary */}
                   <p className="text-[10px] text-[var(--color-text-secondary)] leading-[1.4] mb-[5px] line-clamp-2">
                     {card.summary}
                   </p>
-
-                  {/* Agent + confidence */}
                   <div className="flex items-center justify-between mb-[2px]">
                     <span className="text-[9px] text-[var(--color-text-dim)]">{card.agent}</span>
                     <span className="text-[9px] text-[var(--color-text-dim)]">{card.confidence}%</span>
                   </div>
-
-                  {/* Confidence bar */}
                   <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden">
                     <div
                       className="h-full rounded-full bg-[var(--color-accent-green)] opacity-60"
                       style={{ width: `${card.confidence}%` }}
                     />
                   </div>
-
-                  {/* Time + tap hint */}
                   <div className="flex items-center justify-between mt-[4px]">
                     <span className="text-[9px] text-[var(--color-text-dim)] opacity-50">{card.timeLabel}</span>
                     <span className="text-[8px] text-[var(--color-text-dim)] opacity-30">details →</span>
@@ -331,11 +231,7 @@ export function SignalsPanel() {
         </div>
       </aside>
 
-      {/* Slide-over detail panel */}
-      <SignalDetailPanel
-        card={selected}
-        onClose={() => setSelected(null)}
-      />
+      <SignalDetailPanel card={selected} onClose={() => setSelected(null)} />
     </>
   );
 }
