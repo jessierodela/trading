@@ -216,7 +216,9 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
   try {
     const cutoff = new Date(Date.now() - HOLD_WINDOW_MS).toISOString();
 
-    const { data: run, error: runError } = await withRetry(
+    // Fetch up to 5 recent runs — walk forward until one has signal_results.
+    // Guards against orphaned runs (signal_run inserted but signal_results failed).
+    const { data: runs, error: runsError } = await withRetry(
       async () =>
         getSupabase()
           .from("signal_runs")
@@ -224,38 +226,49 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
           .eq("success", true)
           .gte("triggered_at", cutoff)
           .order("triggered_at", { ascending: false })
-          .limit(1)
-          .single(),
+          .limit(5),
       { label: "signal_runs read" }
     );
 
-    if (runError || !run) {
-      console.log("[signalStore] No recent run found in Supabase (within 1hr)");
+    if (runsError || !runs || runs.length === 0) {
+      console.log("[signalStore] No recent runs found in Supabase (within 1hr)");
       return null;
     }
 
-    const { data: results, error: resError } = await withRetry(
-      async () =>
-        getSupabase()
-          .from("signal_results")
-          .select("*")
-          .eq("run_id", run.id),
-      { label: "signal_results read" }
-    );
+    // Find the most recent run that actually has signal_results
+    let run: { id: string; triggered_at: string } | null = null;
+    let results: any[] | null = null; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-    if (resError || !results || results.length === 0) {
-      console.log("[signalStore] No signal_results for run", run.id);
+    for (const candidate of runs) {
+      const { data, error } = await withRetry(
+        async () =>
+          getSupabase()
+            .from("signal_results")
+            .select("*")
+            .eq("run_id", candidate.id),
+        { label: "signal_results read" }
+      );
+
+      if (!error && data && data.length > 0) {
+        run = candidate;
+        results = data;
+        break;
+      }
+
+      console.log(`[signalStore] Run ${candidate.id} has no signal_results — skipping`);
+    }
+
+    if (!run || !results) {
+      console.log("[signalStore] No runs with signal_results found (within 1hr)");
       return null;
     }
 
     // Map agent name → stable id + display name
-    // Matches the ids assigned in cache/refresh/route.ts
     const AGENT_META: Record<string, { id: string; name: string }> = {
       "Momentum Scout AI": { id: "A1", name: "Momentum Scout AI" },
       "Breakout Watcher":  { id: "A6", name: "Breakout Watcher"  },
     };
 
-    // Build Signal objects from DB rows
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const allSignals: Signal[] = results.map((row: any) => ({
       symbol:     row.symbol,
@@ -297,8 +310,6 @@ export async function loadLastSignalRun(): Promise<StoredResponse | null> {
       }
     );
 
-    // Also fetch indicator snapshots for this run so the panel
-    // can display indicator data even after a cold start / cache wipe
     const { data: snapshots } = await withRetry(
       async () =>
         getSupabase()
