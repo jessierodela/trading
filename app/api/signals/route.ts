@@ -1,17 +1,12 @@
 /**
  * app/api/signals/route.ts
  *
- * READ ONLY — never triggers GPT-4o directly.
- *
- * Always recomputes stats + activity from agentResults before responding
- * so StatsBar and AgentGrid always have accurate counts regardless of
- * whether data came from L1 memory, L2 Supabase, or a fresh run.
+ * READ ONLY — serves the in-memory cache written by POST /api/cache/refresh.
+ * No Supabase. No fallback. If the cache is empty, returns empty state.
  */
 
-import { NextResponse }             from "next/server";
+import { NextResponse }            from "next/server";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
-import { loadLastSignalRun }        from "@/lib/signalStore";
-import type { IndicatorSnapshot }   from "@/lib/signalStore";
 import {
   buildActivityLog,
   type AgentResult,
@@ -33,74 +28,23 @@ function computeStats(agentResults: AgentResult[]): DashboardStats {
   };
 }
 
-function buildResponse(
-  agentResults:       AgentResult[],
-  generatedAt:        string,
-  fromStore           = false,
-  indicatorSnapshots: IndicatorSnapshot[] = [],
-) {
-  return {
-    agentResults,
-    stats:              computeStats(agentResults),
-    activity:           buildActivityLog(agentResults),
-    generatedAt,
-    fromStore,
-    indicatorSnapshots,
-  };
-}
-
 export async function GET() {
   const reqId = Math.random().toString(36).slice(2, 7);
   console.log(`${TAG} [${reqId}] GET /api/signals`);
 
-  // ── L1: in-memory cache ──────────────────────────────────────────────────
   const now = Date.now();
   if (memCache.response && now < memCache.expiresAt) {
     const ttlLeft = ((memCache.expiresAt - now) / 1000).toFixed(1);
-    const cached = memCache.response as ReturnType<typeof buildResponse>;
-    console.log(`${TAG} [${reqId}] L1 HIT — returning memCache (expires in ${ttlLeft}s, generatedAt=${cached.generatedAt})`);
+    const cached  = memCache.response as { generatedAt: string };
+    console.log(`${TAG} [${reqId}] HIT — expires in ${ttlLeft}s, generatedAt=${cached.generatedAt}`);
     return NextResponse.json(memCache.response);
   }
 
-  if (memCache.response) {
-    console.log(`${TAG} [${reqId}] L1 MISS — memCache expired ${((now - memCache.expiresAt) / 1000).toFixed(1)}s ago`);
-  } else {
-    console.log(`${TAG} [${reqId}] L1 MISS — memCache is empty`);
-  }
-
-  // ── L2: Supabase ─────────────────────────────────────────────────────────
-  console.log(`${TAG} [${reqId}] L2 — calling loadLastSignalRun()...`);
-  let stored: Awaited<ReturnType<typeof loadLastSignalRun>>;
-  try {
-    stored = await loadLastSignalRun();
-  } catch (err) {
-    console.error(`${TAG} [${reqId}] L2 ERROR — loadLastSignalRun threw:`, err);
-    return NextResponse.json(
-      { agentResults: [], stats: null, activity: [], fromStore: false, indicatorSnapshots: [], error: "supabase_load_failed" },
-      { status: 200 }
-    );
-  }
-
-  if (stored) {
-    console.log(
-      `${TAG} [${reqId}] L2 HIT — generatedAt=${stored.generatedAt}, agents=${stored.agentResults.length}, snapshots=${stored.indicatorSnapshots.length}`
-    );
-    const response = buildResponse(
-      stored.agentResults,
-      stored.generatedAt,
-      true,
-      stored.indicatorSnapshots,
-    );
-    memCache.response  = response;
-    memCache.expiresAt = now + MEMORY_TTL_MS;
-    console.log(`${TAG} [${reqId}] L1 populated — expires in ${(MEMORY_TTL_MS / 1000).toFixed(0)}s`);
-    return NextResponse.json(response);
-  }
-
-  // ── L3: nothing yet ───────────────────────────────────────────────────────
-  console.warn(`${TAG} [${reqId}] L2 MISS — no stored run found in Supabase. Returning empty state.`);
-  return NextResponse.json(
-    { agentResults: [], stats: null, activity: [], fromStore: false, indicatorSnapshots: [] },
-    { status: 200 }
-  );
+  console.log(`${TAG} [${reqId}] MISS — cache empty or expired, returning empty state`);
+  return NextResponse.json({
+    agentResults: [],
+    stats:        null,
+    activity:     [],
+    generatedAt:  null,
+  });
 }
