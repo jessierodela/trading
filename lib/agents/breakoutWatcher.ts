@@ -13,11 +13,10 @@
  * BB data requires "bb" to be enabled in config/indicators.ts for the symbol.
  */
 
-import OpenAI from "openai";
 import type { Signal } from "@/lib/signals";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
 // ─── GPT-4o response shape ────────────────────────────────────────────────
 
@@ -202,17 +201,31 @@ export async function runBreakoutWatcher(
     };
 
     try {
-      const response = await openai.chat.completions.create({
-        model:       "gpt-4o",
-        temperature: 0,
-        max_tokens:  600,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user",   content: `Analyze this breakout setup:\n${JSON.stringify(payload, null, 2)}` },
-        ],
+      const res = await fetch(OPENAI_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type":  "application/json",
+          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model:       "gpt-4o",
+          temperature: 0,
+          max_tokens:  600,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user",   content: `Analyze this breakout setup:\n${JSON.stringify(payload, null, 2)}` },
+          ],
+        }),
       });
 
-      const raw   = response.choices[0]?.message?.content ?? "";
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`[breakoutWatcher] OpenAI error for ${symbol}: ${res.status} — ${errText}`);
+        continue;
+      }
+
+      const json = await res.json();
+      const raw   = json.choices?.[0]?.message?.content ?? "";
       const clean = raw.replace(/```json|```/g, "").trim();
       const result: BreakoutWatcherOutput = JSON.parse(clean);
 
