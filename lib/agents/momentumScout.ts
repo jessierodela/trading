@@ -220,9 +220,9 @@ rollover_risk:
 - multiple weakness signals
 
 oversold_bounce:
-- RSI low
+- RSI is low OR recently low (rising from sub-40 region)
 - histogram improving
-- weak unless structure recovers
+- structure still weak
 
 neutral:
 - mixed or unclear
@@ -420,7 +420,9 @@ function toSignal(
   symbol:   string,
   payload:  ReturnType<typeof buildPayload>
 ): Signal {
-  const type = CLASSIFICATION_TO_SIGNAL[response.classification] ?? "none";
+  // Every MomentumClassification is covered in CLASSIFICATION_TO_SIGNAL —
+  // the fallback is unreachable, but kept as a safety net for unexpected values.
+  const type = CLASSIFICATION_TO_SIGNAL[response.classification] ?? "neutral";
 
   // Use GPT-4o reasoning if present; fall back to local deterministic summary.
   // Prevents "no reasoning returned" from ever appearing in the UI.
