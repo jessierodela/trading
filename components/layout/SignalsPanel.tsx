@@ -26,6 +26,9 @@ interface AgentResult {
 interface SignalsPayload {
   agentResults: AgentResult[];
   generatedAt:  string | null;
+  // Included in refresh response — no separate /api/cache fetch needed
+  indicators?:  Record<string, IndicatorValues>;
+  derived?:     Record<string, RichCard["derived"]>;
 }
 
 export interface RichCard {
@@ -172,22 +175,17 @@ export function SignalsPanel() {
     poll();
 
     // Instant update dispatched by RefreshButton after a successful run.
-    // No interval polling — polling across Vercel serverless instances returns
-    // stale data from whichever old instance responds, causing inconsistent panel state.
+    // Indicators + derived are bundled in the payload — no /api/cache fetch
+    // needed, so we never risk hitting a different cold serverless instance.
     function onUpdate(e: Event) {
       const payload = (e as CustomEvent<SignalsPayload>).detail;
-      fetch("/api/cache")
-        .then((r) => r.json())
-        .then((cacheData: { indicators?: Record<string, IndicatorValues>; derived?: Record<string, RichCard["derived"]> }) => {
-          const indicatorMap = cacheData.indicators
-            ? new Map(Object.entries(cacheData.indicators))
-            : undefined;
-          const derivedMap = cacheData.derived
-            ? new Map(Object.entries(cacheData.derived))
-            : undefined;
-          applyPayload(payload, indicatorMap, derivedMap);
-        })
-        .catch(() => applyPayload(payload));
+      const indicatorMap = payload.indicators
+        ? new Map(Object.entries(payload.indicators))
+        : undefined;
+      const derivedMap = payload.derived
+        ? new Map(Object.entries(payload.derived))
+        : undefined;
+      applyPayload(payload, indicatorMap, derivedMap);
     }
     window.addEventListener("signals:update", onUpdate);
 
