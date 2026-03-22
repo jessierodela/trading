@@ -17,6 +17,7 @@
 import { NextResponse }                        from "next/server";
 import { getCache }                            from "@/lib/indicatorCache";
 import { runMomentumScoutAI }                  from "@/lib/agents/momentumScout";
+import { runBreakoutWatcher }                  from "@/lib/agents/breakoutWatcher";
 import { persistSignalRun }                    from "@/lib/signalStore";
 import { memCache, MEMORY_TTL_MS }             from "@/lib/signalsCache";
 import {
@@ -55,8 +56,9 @@ export async function POST() {
       .map(([sym, entry]) => [sym, { price: entry.quote!.price }])
   );
 
-  const [a1Signals, legacyResults] = await Promise.all([
+  const [a1Signals, bwSignals, legacyResults] = await Promise.all([
     runMomentumScoutAI(snapshot),
+    runBreakoutWatcher(snapshot, "1h"),
     evaluateSignals(
       indicatorMap,
       quoteMap,
@@ -76,8 +78,20 @@ export async function POST() {
     signals: a1Signals,
   };
 
+  const bwResult: AgentResult = {
+    id:          "A6",
+    name:        "Breakout Watcher",
+    signalCount: bwSignals.length,
+    alertCount:  bwSignals.filter((s) => s.confidence === "high").length,
+    lastAction:  bwSignals.length
+      ? `Flagged ${bwSignals[0].symbol} — ${bwSignals[0].reason.slice(0, 50)}…`
+      : "Scanning — no breakout conditions met",
+    signals: bwSignals,
+  };
+
   const agentResults: AgentResult[] = [
     a1Result,
+    bwResult,
     ...legacyResults.agentResults.slice(1),
   ];
 
@@ -108,17 +122,17 @@ export async function POST() {
   memCache.response  = freshResponse;
   memCache.expiresAt = Date.now() + MEMORY_TTL_MS;
 
-  console.log(`[cache/refresh] Complete — ${a1Signals.length} AI signals, ${durationMs}ms total`);
+  console.log(`[cache/refresh] Complete — ${a1Signals.length} AI signals, ${bwSignals.length} breakout signals, ${durationMs}ms total`);
 
   // ── Step 4: Persist to Supabase (non-blocking) ───────────────────────
-  persistSignalRun({ snapshot, a1Signals, agentResults, durationMs })
+  persistSignalRun({ snapshot, a1Signals: [...a1Signals, ...bwSignals], agentResults, durationMs })
     .catch((err) => console.error("[cache/refresh] Supabase persist failed:", err));
 
   return NextResponse.json({
     success:      true,
     lastUpdated:  snapshot.lastUpdated,
     symbolCount:  snapshot.data.size,
-    signalCount:  a1Signals.length,
+    signalCount:  a1Signals.length + bwSignals.length,
     durationMs,
   });
 }
