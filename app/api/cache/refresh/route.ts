@@ -39,15 +39,17 @@ export async function POST() {
   console.log("[cache/refresh] Manual refresh triggered");
 
   // ── Step 1: Fetch indicators + quotes ───────────────────────────────────
-  // Run 1h and 1D fetches in parallel — they use separate taapi calls and
-  // don't share rate-limit slots with each other.
+  // 1H fetch runs first. 1D fetch starts 15s after 1H completes so they
+  // don't compete for the same taapi rate-limit slot (1 req / 15s free plan).
   const cache   = getCache();
   const cache1d = getCache1d();
 
-  await Promise.all([
-    cache.forceRefresh(),
-    cache1d.forceRefresh(),
-  ]);
+  await cache.forceRefresh();
+
+  console.log("[cache/refresh] 1H fetch complete — waiting 15s before 1D fetch...");
+  await new Promise((r) => setTimeout(r, 15_000));
+
+  await cache1d.forceRefresh();
 
   const snapshot   = cache.read();
   const snapshot1d = cache1d.read();
