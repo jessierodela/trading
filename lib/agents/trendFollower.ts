@@ -4,21 +4,21 @@
  * Trend Follower Agent — GPT-4o powered.
  *
  * Pipeline (per symbol):
- *  1. Read pre-fetched EMA50 + EMA200 data from indicatorCache (instant)
+ *  1. Read pre-fetched EMA50 + EMA200 data from indicatorCache1d (instant)
  *  2. Build structured JSON payload matching the prompt schema
  *  3. Call GPT-4o with the Trend Follower system prompt + JSON schema enforcement
  *  4. Parse structured response → Signal[]
  *
- * The agent never fetches data. All indicator data lives in indicatorCache.ts.
- * Requires "ema50" and "ema200" to be enabled in config/indicators.ts for the symbol.
+ * The agent never fetches data. All indicator data lives in indicatorCache1d.ts.
+ * Requires "ema50" and "ema200" to be enabled in config/indicators1d.ts for the symbol.
  *
- * Role: Structural bias layer. Evaluates slower-moving EMA50/200 context on the
- * same 1h interval as all other agents. Output is consumed as directional backdrop
- * by Momentum Scout and Breakout Watcher — not used as a direct entry signal.
+ * Role: Structural bias layer. Evaluates EMA50/200 context on 1D bars — the
+ * intended timeframe for golden/death cross and trend regime classification.
+ * Output consumed as directional backdrop by Momentum Scout and Breakout Watcher.
  */
 
 import type { Signal } from "@/lib/signals";
-import type { CacheSnapshot } from "@/lib/indicatorCache";
+import type { CacheSnapshot1d } from "@/lib/indicatorCache1d";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -165,8 +165,8 @@ function deriveSlope(current: number, prev: number | null): "up" | "down" | "fla
  * Skips symbols where either EMA is null (not enabled in indicators config).
  */
 export async function runTrendFollower(
-  snapshot:  CacheSnapshot,
-  timeframe: string = "1h"
+  snapshot:  CacheSnapshot1d,
+  timeframe: string = "1d"
 ): Promise<Signal[]> {
   const results: Signal[] = [];
 
