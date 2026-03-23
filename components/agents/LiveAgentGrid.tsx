@@ -101,20 +101,22 @@ const AGENT_META: Record<string, AgentMeta> = {
     notes: "Connected to live indicator data and evaluating breakout conditions in real time.",
   },
   A3: {
-    tagline: "EMA 50/200 golden & death cross tracker",
+    tagline: "EMA 50/200 market structure & directional bias engine",
     description:
-      "Watches the relationship between EMA50 and EMA200 across the stock watchlist. Golden cross signals a long-term bullish shift. Death cross signals the opposite.",
+      "Maps broader trend structure using EMA50, EMA200, and price location relative to both. Classifies the market as bullish, bearish, mixed, or transitional and supplies directional context to the rest of the agent stack.",
     indicators: ["EMA50 (1d)", "EMA200 (1d)", "Price relative to both EMAs"],
     logic: [
-      { label: "Golden cross",  detail: "EMA50 crosses above EMA200 — long-term bullish structure confirmed." },
-      { label: "Death cross",   detail: "EMA50 crosses below EMA200 — long-term bearish structure shift." },
-      { label: "EMA alignment", detail: "Price > EMA50 > EMA200 = ideal bull alignment. Inverse = bear alignment." },
+      { label: "Structure",  detail: "Checks whether price is above both EMAs, below both, between them, or pressing into one." },
+      { label: "EMA alignment",   detail: "Measures whether EMA50 is above EMA200, below EMA200, or actively crossing." },
+      { label: "Trend conditions", detail: "Assesses trend strength, slope confirmation, spread quality, and whether structure is clean or transitional." },
+      { label: "Implication", detail: "Outputs bullish, bearish, or watch bias based on alignment quality rather than excitement." },
     ],
     signalTypes: [
-      { type: "BUY",  color: "text-[var(--color-accent-green)]", condition: "Golden cross or price above both EMAs" },
-      { type: "SELL", color: "text-[var(--color-accent-red)]",   condition: "Death cross or price below both EMAs" },
+      { type: "BUY",  color: "text-[var(--color-accent-green)]", condition: "Bullish structure supports long exposure" },
+      { type: "SELL", color: "text-[var(--color-accent-red)]",   condition: "Bearish structure supports short exposure" },
+      { type: "WATCH", color: "text-[var(--color-accent-blue)]",   condition: "Mixed, transitional, or low-conviction structure" },
     ],
-    notes: "Stocks only — EMA 50/200 crosses are less meaningful for crypto on shorter timeframes.",
+    notes: "Context layer only — not a trigger agent",
   },
   A4: {
     tagline: "Deep RSI oversold bounce detector",
