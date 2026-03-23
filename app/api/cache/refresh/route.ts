@@ -15,6 +15,7 @@
 
 import { NextResponse }            from "next/server";
 import { getCache }                from "@/lib/indicatorCache";
+import { getCache1d }              from "@/lib/indicatorCache1d";
 import { runMomentumScoutAI }      from "@/lib/agents/momentumScout";
 import { runBreakoutWatcher }      from "@/lib/agents/breakoutWatcher";
 import { runTrendFollower }        from "@/lib/agents/trendFollower";
@@ -32,16 +33,30 @@ export async function POST() {
   console.log("[cache/refresh] Manual refresh triggered");
 
   // ── Step 1: Fetch indicators + quotes ───────────────────────────────────
-  const cache = getCache();
-  await cache.forceRefresh();
+  // Run 1h and 1D fetches in parallel — they use separate taapi calls and
+  // don't share rate-limit slots with each other.
+  const cache   = getCache();
+  const cache1d = getCache1d();
 
-  const snapshot = cache.read();
+  await Promise.all([
+    cache.forceRefresh(),
+    cache1d.forceRefresh(),
+  ]);
+
+  const snapshot   = cache.read();
+  const snapshot1d = cache1d.read();
 
   if (snapshot.lastFetchFailed || snapshot.data.size === 0) {
     return NextResponse.json(
       { success: false, error: "Indicator fetch failed" },
       { status: 500 }
     );
+  }
+
+  // 1D fetch failure is non-fatal — Trend Follower will produce no signals
+  // but the rest of the pipeline continues normally.
+  if (snapshot1d.lastFetchFailed) {
+    console.warn("[cache/refresh] 1D fetch failed — Trend Follower will be skipped this cycle");
   }
 
   // ── Step 2: Run agents in parallel ──────────────────────────────────────
@@ -59,7 +74,7 @@ export async function POST() {
   const [a1Signals, bwSignals, tfSignals, vaSignals, legacyResults] = await Promise.all([
     runMomentumScoutAI(snapshot),
     runBreakoutWatcher(snapshot, "1h"),
-    runTrendFollower(snapshot, "1h"),
+    runTrendFollower(snapshot1d, "1d"),
     runVolatilityArbiter(snapshot, "1h"),
     evaluateSignals(indicatorMap, quoteMap, snapshot.stockSymbols, snapshot.cryptoSymbols),
   ]);
