@@ -1,7 +1,7 @@
 /**
  * lib/agents/momentumScout.ts
  *
- * Momentum Scout AI Agent — GPT-4o powered.
+ * Momentum Scout Agent — GPT-4o powered.
  *
  * Pipeline (per symbol):
  *  1. Read pre-fetched, pre-derived data from indicatorCache (instant)
@@ -61,7 +61,7 @@ const CLASSIFICATION_TO_SIGNAL: Record<MomentumClassification, Signal["type"]> =
 // ─── System prompt ─────────────────────────────────────────────────────────
 // Loaded once — do not inline into the per-symbol call to avoid repetition.
 
-const SYSTEM_PROMPT = `You are Momentum Scout AI, a technical momentum classification engine.
+const SYSTEM_PROMPT = `You are Momentum Scout, a technical momentum classification engine.
 
 Your job is to analyze structured technical indicator data for a single symbol on a single timeframe and classify the current momentum state using RSI, MACD, EMA20, volume context, and derived bar-to-bar changes.
 
@@ -435,7 +435,7 @@ function toSignal(
 
   return {
     symbol,
-    agent:      "Momentum Scout AI",
+    agent:      "Momentum Scout",
     type,
     reason:     `[${response.classification}] ${reasoning}${keyFactorStr}`,
     confidence: response.confidence,
@@ -446,7 +446,7 @@ function toSignal(
 // ─── Public API ───────────────────────────────────────────────────────────
 
 /**
- * Run Momentum Scout AI across all symbols in the cache.
+ * Run Momentum Scout across all symbols in the cache.
  * Calls GPT-4o once per symbol — results are independent.
  * Returns Signal[] compatible with the existing evaluateSignals() shape.
  */
