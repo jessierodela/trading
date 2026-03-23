@@ -5,7 +5,7 @@
  *
  * Full pipeline:
  *  1. Fetch indicators (taapi) + quotes (yahoo-finance2)
- *  2. Run Momentum Scout AI + Breakout Watcher (GPT-4o) in parallel
+ *  2. Run Momentum Scout, Breakout Watcher, Trend Follower (GPT-4o) in parallel
  *  3. Write result to memCache
  *  4. Return full signal payload in the response
  *
@@ -17,6 +17,7 @@ import { NextResponse }            from "next/server";
 import { getCache }                from "@/lib/indicatorCache";
 import { runMomentumScoutAI }      from "@/lib/agents/momentumScout";
 import { runBreakoutWatcher }      from "@/lib/agents/breakoutWatcher";
+import { runTrendFollower }        from "@/lib/agents/trendFollower";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
 import {
   evaluateSignals,
@@ -54,9 +55,10 @@ export async function POST() {
       .map(([sym, entry]) => [sym, { price: entry.quote!.price }])
   );
 
-  const [a1Signals, bwSignals, legacyResults] = await Promise.all([
+  const [a1Signals, bwSignals, tfSignals, legacyResults] = await Promise.all([
     runMomentumScoutAI(snapshot),
     runBreakoutWatcher(snapshot, "1h"),
+    runTrendFollower(snapshot, "1h"),
     evaluateSignals(indicatorMap, quoteMap, snapshot.stockSymbols, snapshot.cryptoSymbols),
   ]);
 
@@ -82,9 +84,21 @@ export async function POST() {
     signals: bwSignals,
   };
 
+  const tfResult: AgentResult = {
+    id:          "A7",
+    name:        "Trend Follower",
+    signalCount: tfSignals.length,
+    alertCount:  tfSignals.filter((s) => s.confidence === "high").length,
+    lastAction:  tfSignals.length
+      ? `Flagged ${tfSignals[0].symbol} — ${tfSignals[0].reason.slice(0, 50)}…`
+      : "Scanning — no trend structure available",
+    signals: tfSignals,
+  };
+
   const agentResults: AgentResult[] = [
     a1Result,
     bwResult,
+    tfResult,
     ...legacyResults.agentResults.slice(1),
   ];
 
@@ -128,7 +142,7 @@ export async function POST() {
 
   console.log(
     `[cache/refresh] Complete — ${a1Signals.length} momentum signals, ` +
-    `${bwSignals.length} breakout signals, ${durationMs}ms`
+    `${bwSignals.length} breakout signals, ${tfSignals.length} trend signals, ${durationMs}ms`
   );
 
   // ── Step 4: Return full payload ──────────────────────────────────────────
