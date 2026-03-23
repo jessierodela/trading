@@ -18,6 +18,7 @@ import { getCache }                from "@/lib/indicatorCache";
 import { runMomentumScoutAI }      from "@/lib/agents/momentumScout";
 import { runBreakoutWatcher }      from "@/lib/agents/breakoutWatcher";
 import { runTrendFollower }        from "@/lib/agents/trendFollower";
+import { runVolatilityArbiter }    from "@/lib/agents/volatilityArbiter";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
 import {
   evaluateSignals,
@@ -55,10 +56,11 @@ export async function POST() {
       .map(([sym, entry]) => [sym, { price: entry.quote!.price }])
   );
 
-  const [a1Signals, bwSignals, tfSignals, legacyResults] = await Promise.all([
+  const [a1Signals, bwSignals, tfSignals, vaSignals, legacyResults] = await Promise.all([
     runMomentumScoutAI(snapshot),
     runBreakoutWatcher(snapshot, "1h"),
     runTrendFollower(snapshot, "1h"),
+    runVolatilityArbiter(snapshot, "1h"),
     evaluateSignals(indicatorMap, quoteMap, snapshot.stockSymbols, snapshot.cryptoSymbols),
   ]);
 
@@ -95,10 +97,22 @@ export async function POST() {
     signals: tfSignals,
   };
 
+  const vaResult: AgentResult = {
+    id:          "A8",
+    name:        "Volatility Arbiter",
+    signalCount: vaSignals.length,
+    alertCount:  vaSignals.filter((s) => s.confidence === "high").length,
+    lastAction:  vaSignals.length
+      ? `Flagged ${vaSignals[0].symbol} — ${vaSignals[0].reason.slice(0, 50)}…`
+      : "Scanning — no volatility conditions met",
+    signals: vaSignals,
+  };
+
   const agentResults: AgentResult[] = [
     a1Result,
     bwResult,
     tfResult,
+    vaResult,
     ...legacyResults.agentResults.slice(1),
   ];
 
@@ -142,7 +156,8 @@ export async function POST() {
 
   console.log(
     `[cache/refresh] Complete — ${a1Signals.length} momentum signals, ` +
-    `${bwSignals.length} breakout signals, ${tfSignals.length} trend signals, ${durationMs}ms`
+    `${bwSignals.length} breakout signals, ${tfSignals.length} trend signals, ` +
+    `${vaSignals.length} volatility signals, ${durationMs}ms`
   );
 
   // ── Step 4: Return full payload ──────────────────────────────────────────
