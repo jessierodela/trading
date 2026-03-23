@@ -5,7 +5,12 @@
  *
  * Full pipeline:
  *  1. Fetch indicators (taapi) + quotes (yahoo-finance2)
- *  2. Run Momentum Scout, Breakout Watcher, Trend Follower (GPT-4o) in parallel
+ *  2. Run all agents (GPT-4o) in parallel:
+ *       A1  — Momentum Scout
+ *       A6  — Breakout Watcher
+ *       A7  — Trend Follower
+ *       A8  — Volatility Arbiter
+ *       A9  — Mean Reversion          ← new
  *  3. Write result to memCache
  *  4. Return full signal payload in the response
  *
@@ -20,6 +25,7 @@ import { runMomentumScoutAI }      from "@/lib/agents/momentumScout";
 import { runBreakoutWatcher }      from "@/lib/agents/breakoutWatcher";
 import { runTrendFollower }        from "@/lib/agents/trendFollower";
 import { runVolatilityArbiter }    from "@/lib/agents/volatilityArbiter";
+import { runMeanReversion }        from "@/lib/agents/meanReversion";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
 import {
   evaluateSignals,
@@ -71,13 +77,16 @@ export async function POST() {
       .map(([sym, entry]) => [sym, { price: entry.quote!.price }])
   );
 
-  const [a1Signals, bwSignals, tfSignals, vaSignals, legacyResults] = await Promise.all([
+  const [a1Signals, bwSignals, tfSignals, vaSignals, mrSignals, legacyResults] = await Promise.all([
     runMomentumScoutAI(snapshot),
     runBreakoutWatcher(snapshot, "1h"),
     runTrendFollower(snapshot1d, "1d"),
     runVolatilityArbiter(snapshot, "1h"),
+    runMeanReversion(snapshot),
     evaluateSignals(indicatorMap, quoteMap, snapshot.stockSymbols, snapshot.cryptoSymbols),
   ]);
+
+  // ── Step 3: Build AgentResult records ───────────────────────────────────
 
   const a1Result: AgentResult = {
     id:          "A1",
@@ -123,13 +132,27 @@ export async function POST() {
     signals: vaSignals,
   };
 
+  const mrResult: AgentResult = {
+    id:          "A9",
+    name:        "Mean Reversion",
+    signalCount: mrSignals.length,
+    alertCount:  mrSignals.filter((s) => s.confidence === "high").length,
+    lastAction:  mrSignals.length
+      ? `Flagged ${mrSignals[0].symbol} — ${mrSignals[0].reason.slice(0, 50)}…`
+      : "Scanning — no oversold bounce conditions met",
+    signals: mrSignals,
+  };
+
   const agentResults: AgentResult[] = [
     a1Result,
     bwResult,
     tfResult,
     vaResult,
+    mrResult,
     ...legacyResults.agentResults.slice(1),
   ];
+
+  // ── Step 4: Compute dashboard stats ─────────────────────────────────────
 
   const allSignals   = agentResults.flatMap((a) => a.signals);
   const buySignals   = allSignals.filter((s) => s.type === "buy");
@@ -146,10 +169,7 @@ export async function POST() {
   const generatedAt = new Date().toISOString();
   const durationMs  = Date.now() - startMs;
 
-  // ── Step 3: Write to memCache ────────────────────────────────────────────
-  // Serialize indicators + derived from the snapshot so the response is
-  // self-contained — SignalsPanel reads everything from this one response
-  // and never needs a separate /api/cache fetch that could hit a cold instance.
+  // ── Step 5: Write to memCache ────────────────────────────────────────────
   const indicators = Object.fromEntries(
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators])
   );
@@ -170,13 +190,13 @@ export async function POST() {
   memCache.expiresAt = Date.now() + MEMORY_TTL_MS;
 
   console.log(
-    `[cache/refresh] Complete — ${a1Signals.length} momentum signals, ` +
-    `${bwSignals.length} breakout signals, ${tfSignals.length} trend signals, ` +
-    `${vaSignals.length} volatility signals, ${durationMs}ms`
+    `[cache/refresh] Complete — ${a1Signals.length} momentum, ` +
+    `${bwSignals.length} breakout, ${tfSignals.length} trend, ` +
+    `${vaSignals.length} volatility, ${mrSignals.length} mean-reversion signals, ` +
+    `${durationMs}ms`
   );
 
-  // ── Step 4: Return full payload ──────────────────────────────────────────
-  // RefreshButton receives signals + indicators in one atomic response.
+  // ── Step 6: Return full payload ──────────────────────────────────────────
   return NextResponse.json({
     success: true,
     durationMs,
