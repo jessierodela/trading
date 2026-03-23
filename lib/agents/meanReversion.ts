@@ -173,17 +173,15 @@ Return ONLY valid JSON — no markdown, no preamble:
 async function runMeanReversionForSymbol(
   symbol:    string,
   timestamp: string,
-  rsi:                         number | null,
-  macd_histogram:              number | null,
-  macd_histogram_prev:         number | null,
-  ema20:                       number | null,
-  price:                       number | null,
+  rsi:                           number | null,
+  macd_histogram:                number | null,
+  macd_histogram_prev:           number | null,
+  ema20:                         number | null,
+  price:                         number | null,
+  // Pre-computed by indicatorCache.ts — ((currentClose - ema20) / ema20) * 100
+  // Using the cached value keeps this consistent with what other agents see.
+  price_distance_from_ema20_pct: number | null,
 ): Promise<MeanReversionOutput | null> {
-  // Pre-compute price distance from EMA20
-  const price_distance_from_ema20_pct =
-    price !== null && ema20 !== null && ema20 !== 0
-      ? parseFloat((((price - ema20) / ema20) * 100).toFixed(4))
-      : null;
 
   const thresholds = classifyThresholds(rsi, macd_histogram, macd_histogram_prev, price_distance_from_ema20_pct);
 
@@ -281,16 +279,29 @@ export async function runMeanReversion(
       const entry = snapshot.data.get(symbol);
       if (!entry) return Promise.resolve(null);
 
-      const { indicators } = entry;
+      const { indicators, derived } = entry;
+
+      // ── Field mapping — indicatorCache.ts shape ──────────────────────────
+      // indicators.macd is the full MACD object; histogram lives at .valueMACDHist
+      // indicators.prevHist is the previous-bar histogram value (set by taapi.ts)
+      // indicators.currentClose is the yahoo-finance2-overridden close price
+      // derived.ema20PctDist is pre-computed ((close - ema20) / ema20) * 100
+      const macd_histogram      = indicators.macd?.valueMACDHist ?? null;
+      const macd_histogram_prev = indicators.prevHist             ?? null;
+      const price               = indicators.currentClose         ?? null;
+
       return runMeanReversionForSymbol(
         symbol,
         timestamp,
-        indicators.rsi           ?? null,
-        indicators.macd_histogram      ?? null,
-        // prev bar: taapi stores it as macd_histogram_prev on the entry
-        indicators.macd_histogram_prev ?? null,
-        indicators.ema20         ?? null,
-        entry.quote?.price       ?? null,
+        indicators.rsi  ?? null,
+        macd_histogram,
+        macd_histogram_prev,
+        indicators.ema20 ?? null,
+        price,
+        // Pass pre-computed distance so the agent doesn't recompute from
+        // a potentially stale price — derived was computed with the same
+        // yahoo-finance2-overridden close that agents use.
+        derived.ema20PctDist ?? null,
       );
     })
   );
