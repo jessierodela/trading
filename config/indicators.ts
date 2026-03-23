@@ -94,7 +94,7 @@ export const DEFAULT_INDICATOR_CONFIG: AssetIndicatorConfig[] = [
   { symbol: "MSFT", enabled: [] },
   { symbol: "AMZN", enabled: [] },
   { symbol: "SPY",  enabled: [] },
-  { symbol: "BTC",  enabled: ["rsi", "macd", "ema20", "atr", "volumeSma20", "candle", "bb"] },
+  { symbol: "BTC",  enabled: ["rsi", "macd", "ema20", "ema50", "ema200", "atr", "volumeSma20", "candle", "bb"] },
   { symbol: "ETH",  enabled: [] },
   { symbol: "SOL",  enabled: [] },
   { symbol: "BNB",  enabled: [] },
