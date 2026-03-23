@@ -7,14 +7,17 @@
  * Clicking a card expands it in-place (col-span-3) to show a full breakdown.
  * Clicking × or the same card again collapses it.
  *
- * The Confluence Engine card (AC) is rendered separately — it shows the
- * per-symbol verdict summary from confluence[] rather than signal counts.
- * It is not expandable (no per-agent logic to explain) and not part of AGENTS.
+ * The Confluence Engine (id "AC") is rendered as a sixth card alongside
+ * A1–A5. It participates in the same expand/collapse pattern. Its expanded
+ * view shows scoring logic, verdict types, and live per-symbol results
+ * rather than indicator lists.
  *
  * CHANGE LOG:
- *  - Added ConfluenceCard component — reads confluence[] from signals:update
- *    and /api/signals, renders verdict + score per symbol.
- *  - Added AC entry in AGENT_META for grid display.
+ *  - Replaced standalone ConfluenceCard with a full expand/collapse card
+ *    matching the same pattern as A1–A5.
+ *  - Added "AC" to AGENT_META with scoring logic, verdict types, and notes.
+ *  - ExpandedAgentCard detects id="AC" and renders confluence-specific layout.
+ *  - CollapsedAgentCard detects id="AC" and renders live verdict summary.
  *  - SignalsResponse extended to include confluence[].
  */
 
@@ -54,12 +57,12 @@ interface SignalsResponse {
 // ─── Verdict display helpers ────────────────────────────────────────────────
 
 const VERDICT_STYLE: Record<string, { label: string; color: string }> = {
-  aligned_bullish:      { label: "Aligned Bullish",      color: "text-[var(--color-accent-green)]"  },
-  bullish_but_extended: { label: "Bullish / Extended",   color: "text-[var(--color-accent-blue)]"   },
-  mixed_structure:      { label: "Mixed Structure",      color: "text-[var(--color-accent-orange)]" },
-  bearish_structure:    { label: "Bearish Structure",    color: "text-[var(--color-accent-red)]"    },
-  countertrend_only:    { label: "Countertrend Only",    color: "text-[var(--color-accent-orange)]" },
-  no_trade:             { label: "No Trade",             color: "text-[var(--color-text-dim)]"      },
+  aligned_bullish:      { label: "Aligned Bullish",    color: "text-[var(--color-accent-green)]"  },
+  bullish_but_extended: { label: "Bullish / Extended", color: "text-[var(--color-accent-blue)]"   },
+  mixed_structure:      { label: "Mixed Structure",    color: "text-[var(--color-accent-orange)]" },
+  bearish_structure:    { label: "Bearish Structure",  color: "text-[var(--color-accent-red)]"    },
+  countertrend_only:    { label: "Countertrend Only",  color: "text-[var(--color-accent-orange)]" },
+  no_trade:             { label: "No Trade",           color: "text-[var(--color-text-dim)]"      },
 };
 
 // ─── Merge live counts into static config ──────────────────────────────────
@@ -136,9 +139,9 @@ const AGENT_META: Record<string, AgentMeta> = {
       "Extension risk",
     ],
     logic: [
-      { label: "Structure", detail: "Price location relative to the Bollinger Bands, volatility state, and whether compression or expansion is present." },
+      { label: "Structure",           detail: "Price location relative to the Bollinger Bands, volatility state, and whether compression or expansion is present." },
       { label: "Breakout Conditions", detail: "Confirms upper-band or lower-band breach using close quality, band-width expansion, volume confirmation, and extension risk." },
-      { label: "Implication",      detail: "Classifies the setup as BUY, SELL, or WATCH based on breakout quality and conviction." },
+      { label: "Implication",         detail: "Classifies the setup as BUY, SELL, or WATCH based on breakout quality and conviction." },
     ],
     signalTypes: [
       { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Bullish breakout confirmed above the upper band with supportive expansion and volume" },
@@ -162,15 +165,15 @@ const AGENT_META: Record<string, AgentMeta> = {
       "Cross state",
     ],
     logic: [
-      { label: "Structure",  detail: "Checks whether price is above both EMAs, below both, between them, or pressing into one." },
-      { label: "EMA alignment",   detail: "Measures whether EMA50 is above EMA200, below EMA200, or actively crossing." },
+      { label: "Structure",        detail: "Checks whether price is above both EMAs, below both, between them, or pressing into one." },
+      { label: "EMA alignment",    detail: "Measures whether EMA50 is above EMA200, below EMA200, or actively crossing." },
       { label: "Trend conditions", detail: "Assesses trend strength, slope confirmation, spread quality, and whether structure is clean or transitional." },
-      { label: "Implication", detail: "Outputs bullish, bearish, or watch bias based on alignment quality rather than excitement." },
+      { label: "Implication",      detail: "Outputs bullish, bearish, or watch bias based on alignment quality rather than excitement." },
     ],
     signalTypes: [
-      { type: "BUY",  color: "text-[var(--color-accent-green)]", condition: "Bullish structure supports long exposure" },
-      { type: "SELL", color: "text-[var(--color-accent-red)]",   condition: "Bearish structure supports short exposure" },
-      { type: "WATCH", color: "text-[var(--color-accent-blue)]",   condition: "Mixed, transitional, or low-conviction structure" },
+      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Bullish structure supports long exposure" },
+      { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "Bearish structure supports short exposure" },
+      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "Mixed, transitional, or low-conviction structure" },
     ],
     notes: "Context layer only — not a trigger agent",
   },
@@ -205,10 +208,10 @@ const AGENT_META: Record<string, AgentMeta> = {
       "Relative volume",
     ],
     logic: [
-      { label: "Structure",       detail: "Classifies the volatility regime as compressed, normal, expanding, or extreme." },
+      { label: "Structure",             detail: "Classifies the volatility regime as compressed, normal, expanding, or extreme." },
       { label: "Volatility conditions", detail: "Measures whether ATR is below, near, above, or far above baseline, and whether the current candle is normal, elevated, or outsized relative to ATR." },
-      { label: "Directional quality",  detail: "Checks whether expansion is supportive bullish, supportive bearish, non-directional, or exhaustive." },
-      { label: "Implication",  detail: "Decides whether volatility is still tradeable or whether chase and reversal risk are too high." },
+      { label: "Directional quality",   detail: "Checks whether expansion is supportive bullish, supportive bearish, non-directional, or exhaustive." },
+      { label: "Implication",           detail: "Decides whether volatility is still tradeable or whether chase and reversal risk are too high." },
     ],
     signalTypes: [
       { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "Volatility is unclear, chaotic, non-directional, or too extended to chase" },
@@ -217,122 +220,49 @@ const AGENT_META: Record<string, AgentMeta> = {
     ],
     notes: "Execution-risk layer only — not a trigger agent.",
   },
+  AC: {
+    tagline: "Multi-agent verdict synthesis layer",
+    description:
+      "Reads the Signal[] outputs from all five agents after each refresh cycle and computes a single weighted directional verdict per symbol. It never fetches indicators — it only reasons over structured agent outputs. A deterministic scorer runs first, then GPT-4o writes a concise narrative explaining what the combined read means.",
+    indicators: [
+      "A1 signal + confidence",
+      "A2 signal + confidence",
+      "A3 signal + confidence",
+      "A4 signal + confidence",
+      "A5 modifier (when present)",
+    ],
+    logic: [
+      { label: "Gate check",       detail: "A1 (Momentum Scout) and A3 (Trend Follower) must both have signals for a symbol. If either is absent, the verdict is no_trade." },
+      { label: "Weighted scoring", detail: "A1 and A3 carry weight 3 each (structural importance). A2 and A4 carry weight 2 each (trigger and execution quality). Confidence multipliers: high = 1.0, medium = 0.7, low = 0.4. Buy = +1, sell = −1, watch = 0." },
+      { label: "A4 veto",          detail: "If Volatility Arbiter signals WATCH with extreme or high_risk tags, it flags an active veto — this prevents aligned_bullish even when the score is high enough." },
+      { label: "A5 modifier",      detail: "Mean Reversion is not scored. If it fires a BUY into a mixed_structure verdict, the verdict downgrades to countertrend_only. If it fires into aligned_bullish, a mean_reversion_confluence tag is added." },
+      { label: "GPT narrative",    detail: "After the deterministic verdict is set, GPT-4o writes a 3–5 sentence paragraph explaining the confluence read, which agents agree, which conflict, and what would need to change for a cleaner setup." },
+    ],
+    signalTypes: [
+      { type: "Aligned Bullish",    color: "text-[var(--color-accent-green)]",  condition: "Weighted score ≥ +3.0, no A4 veto, A1 + A3 gate met" },
+      { type: "Bullish / Extended", color: "text-[var(--color-accent-blue)]",   condition: "Score ≥ +1.5 — bullish lean with chase or extension risk present" },
+      { type: "Mixed Structure",    color: "text-[var(--color-accent-orange)]", condition: "Score between −1.5 and +1.5 — agents disagree, no clear edge" },
+      { type: "Bearish Structure",  color: "text-[var(--color-accent-red)]",    condition: "Weighted score ≤ −3.0" },
+      { type: "Countertrend Only",  color: "text-[var(--color-accent-orange)]", condition: "A5 bounce signal firing into mixed structure — no trend support" },
+      { type: "No Trade",           color: "text-[var(--color-text-dim)]",      condition: "Gate not met, hard A1/A3 conflict, or insufficient data" },
+    ],
+    notes: "Score range: −8 (all agents sell at high confidence) to +8 (all agents buy at high confidence). The gate threshold of ±3.0 requires meaningful agreement — a single high-confidence buy from one agent is not enough.",
+  },
 };
-
-// ─── Confluence card ────────────────────────────────────────────────────────
-// Distinct from agent cards — shows per-symbol verdict + score.
-// Not expandable. Spans full row (col-span-3) to visually separate it
-// from the five agent cards below.
-
-function ConfluenceCard({ results }: { results: ConfluenceResult[] }) {
-  const hasResults = results.length > 0;
-
-  return (
-    <div className="col-span-3 rounded-[6px] border border-[var(--color-border-default)] bg-[var(--color-surface-card)] px-[18px] py-[12px]">
-
-      {/* Header */}
-      <div className="flex items-center gap-[8px] mb-[10px]">
-        <span className="w-[5px] h-[5px] rounded-full bg-[var(--color-accent-blue)] opacity-70" />
-        <span className="text-[10px] font-semibold text-[var(--color-text-primary)]">
-          Confluence Engine
-        </span>
-        <span className="text-[9px] text-[var(--color-text-dim)]">
-          — multi-agent verdict synthesis
-        </span>
-        <span className="ml-auto text-[8px] text-[var(--color-text-dim)] opacity-40 tracking-widest uppercase">
-          A1 + A3 gate · A2 A4 weighted · A5 modifier
-        </span>
-      </div>
-
-      {!hasResults ? (
-        <p className="text-[9px] text-[var(--color-text-dim)] opacity-50">
-          No verdicts yet — run a refresh to evaluate agent confluence.
-        </p>
-      ) : (
-        <div className="grid grid-cols-3 gap-[10px]">
-          {results.map((r) => {
-            const vs = VERDICT_STYLE[r.verdict] ?? { label: r.verdict, color: "text-[var(--color-text-dim)]" };
-            // Score bar: range -8 to +8, normalise to 0–100%
-            const scoreNorm = Math.round(((r.weightedScore + 8) / 16) * 100);
-
-            return (
-              <div
-                key={r.symbol}
-                className="border border-[var(--color-border-subtle)] rounded-[5px] px-[12px] py-[10px]"
-              >
-                {/* Symbol + verdict */}
-                <div className="flex items-center justify-between mb-[5px]">
-                  <span className="text-[12px] font-medium text-[var(--color-text-primary)]">
-                    {r.symbol}
-                  </span>
-                  <span className={`text-[9px] font-semibold tracking-wide ${vs.color}`}>
-                    {vs.label}
-                  </span>
-                </div>
-
-                {/* Score bar */}
-                <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden mb-[6px]">
-                  <div
-                    className={`h-full rounded-full ${
-                      r.weightedScore >= 1.5
-                        ? "bg-[var(--color-accent-green)]"
-                        : r.weightedScore <= -1.5
-                        ? "bg-[var(--color-accent-red)]"
-                        : "bg-[var(--color-accent-blue)]"
-                    } opacity-60`}
-                    style={{ width: `${scoreNorm}%` }}
-                  />
-                </div>
-
-                {/* Narrative */}
-                <p className="text-[9px] text-[var(--color-text-secondary)] leading-[1.5] mb-[6px]">
-                  {r.narrative}
-                </p>
-
-                {/* Tags + score */}
-                <div className="flex items-center justify-between">
-                  <div className="flex flex-wrap gap-[3px]">
-                    {r.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="text-[7px] border border-[var(--color-border-default)] rounded-[2px] px-[4px] py-[1px] text-[var(--color-text-dim)]"
-                      >
-                        {tag.replace(/_/g, " ")}
-                      </span>
-                    ))}
-                  </div>
-                  <span className="text-[8px] text-[var(--color-text-dim)] opacity-50">
-                    score {r.weightedScore > 0 ? "+" : ""}{r.weightedScore}
-                  </span>
-                </div>
-
-                {/* Agent vote breakdown */}
-                <div className="mt-[6px] pt-[6px] border-t border-[var(--color-border-subtle)] flex flex-wrap gap-x-[8px] gap-y-[2px]">
-                  {r.agentVotes.map((v) => (
-                    <span key={v.agent} className="text-[7px] text-[var(--color-text-dim)] opacity-60">
-                      {v.agent.split(" ")[0]}: {v.signal} ({v.score > 0 ? "+" : ""}{v.score.toFixed(1)})
-                    </span>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─── Expanded card ─────────────────────────────────────────────────────────
 
 function ExpandedAgentCard({
   agent,
+  confluence,
   onClose,
 }: {
-  agent:   Agent;
-  onClose: () => void;
+  agent:      Agent;
+  confluence: ConfluenceResult[];
+  onClose:    () => void;
 }) {
   const meta     = AGENT_META[agent.id];
+  const isAC     = agent.id === "AC";
   const isActive = agent.status === "active" || agent.status === "scanning";
 
   return (
@@ -353,16 +283,22 @@ function ExpandedAgentCard({
             <span className="text-[9px] text-[var(--color-text-dim)]">— {meta.tagline}</span>
           )}
         </div>
-
         <div className="flex items-center gap-[14px]">
-          <div className="flex gap-[10px]">
+          {!isAC && (
+            <div className="flex gap-[10px]">
+              <span className="text-[9px] text-[var(--color-text-muted)]">
+                SIGNALS <span className="text-[10px] text-[#4a8a6a]">{agent.signalCount}</span>
+              </span>
+              <span className="text-[9px] text-[var(--color-text-muted)]">
+                ALERTS <span className="text-[10px] text-[#4a8a6a]">{agent.alertCount}</span>
+              </span>
+            </div>
+          )}
+          {isAC && (
             <span className="text-[9px] text-[var(--color-text-muted)]">
-              SIGNALS <span className="text-[10px] text-[#4a8a6a]">{agent.signalCount}</span>
+              VERDICTS <span className="text-[10px] text-[#4a8a6a]">{confluence.length}</span>
             </span>
-            <span className="text-[9px] text-[var(--color-text-muted)]">
-              ALERTS <span className="text-[10px] text-[#4a8a6a]">{agent.alertCount}</span>
-            </span>
-          </div>
+          )}
           <button
             onClick={onClose}
             className="text-[var(--color-text-dim)] hover:text-[var(--color-text-primary)] text-[16px] leading-none transition-colors"
@@ -380,7 +316,7 @@ function ExpandedAgentCard({
       {meta ? (
         <div className="grid grid-cols-3 gap-[20px]">
 
-          {/* Col 1 — How it works + indicators */}
+          {/* Col 1 — How it works + inputs */}
           <div className="space-y-[12px]">
             <div>
               <p className="text-[8px] font-semibold tracking-widest text-[var(--color-text-dim)] uppercase mb-[5px]">
@@ -392,7 +328,7 @@ function ExpandedAgentCard({
             </div>
             <div>
               <p className="text-[8px] font-semibold tracking-widest text-[var(--color-text-dim)] uppercase mb-[5px]">
-                Indicators
+                {isAC ? "Inputs" : "Indicators"}
               </p>
               <div className="flex flex-wrap gap-[4px]">
                 {meta.indicators.map((ind) => (
@@ -410,7 +346,7 @@ function ExpandedAgentCard({
           {/* Col 2 — Reasoning steps */}
           <div>
             <p className="text-[8px] font-semibold tracking-widest text-[var(--color-text-dim)] uppercase mb-[5px]">
-              Reasoning Steps
+              {isAC ? "Scoring Logic" : "Reasoning Steps"}
             </p>
             <div className="space-y-[8px]">
               {meta.logic.map(({ label, detail }) => (
@@ -426,16 +362,17 @@ function ExpandedAgentCard({
             </div>
           </div>
 
-          {/* Col 3 — Signal outputs + notes */}
+          {/* Col 3 — Verdict types OR signal outputs + notes + live results */}
           <div className="space-y-[12px]">
             <div>
               <p className="text-[8px] font-semibold tracking-widest text-[var(--color-text-dim)] uppercase mb-[5px]">
-                Signal Outputs
+                {isAC ? "Verdict Types" : "Signal Outputs"}
               </p>
               <div className="space-y-[5px]">
                 {meta.signalTypes.map(({ type, color, condition }) => (
                   <div key={type} className="flex items-start gap-[8px]">
-                    <span className={`text-[9px] font-semibold w-[36px] flex-shrink-0 ${color}`}>
+                    <span className={`text-[9px] font-semibold flex-shrink-0 ${color}`}
+                      style={{ minWidth: isAC ? "110px" : "36px" }}>
                       {type}
                     </span>
                     <span className="text-[9px] text-[var(--color-text-dim)] leading-[1.4]">
@@ -445,10 +382,63 @@ function ExpandedAgentCard({
                 ))}
               </div>
             </div>
+
             {meta.notes && (
               <div className="border-t border-[var(--color-border-subtle)] pt-[10px]">
                 <p className="text-[9px] text-[var(--color-text-dim)] leading-[1.5] italic">
                   {meta.notes}
+                </p>
+              </div>
+            )}
+
+            {/* Live results — AC only */}
+            {isAC && confluence.length > 0 && (
+              <div className="border-t border-[var(--color-border-subtle)] pt-[10px]">
+                <p className="text-[8px] font-semibold tracking-widest text-[var(--color-text-dim)] uppercase mb-[6px]">
+                  Current Verdicts
+                </p>
+                <div className="space-y-[8px]">
+                  {confluence.map((r) => {
+                    const vs = VERDICT_STYLE[r.verdict] ?? { label: r.verdict, color: "text-[var(--color-text-dim)]" };
+                    const scoreNorm = Math.round(((r.weightedScore + 8) / 16) * 100);
+                    return (
+                      <div key={r.symbol}>
+                        <div className="flex items-center justify-between mb-[3px]">
+                          <span className="text-[10px] font-medium text-[var(--color-text-primary)]">{r.symbol}</span>
+                          <span className={`text-[8px] font-semibold ${vs.color}`}>{vs.label}</span>
+                        </div>
+                        <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden mb-[4px]">
+                          <div
+                            className={`h-full rounded-full opacity-60 ${
+                              r.weightedScore >= 1.5 ? "bg-[var(--color-accent-green)]"
+                              : r.weightedScore <= -1.5 ? "bg-[var(--color-accent-red)]"
+                              : "bg-[var(--color-accent-blue)]"
+                            }`}
+                            style={{ width: `${scoreNorm}%` }}
+                          />
+                        </div>
+                        <p className="text-[8px] text-[var(--color-text-secondary)] leading-[1.4] mb-[3px]">
+                          {r.narrative}
+                        </p>
+                        {/* Agent vote breakdown */}
+                        <div className="flex flex-wrap gap-x-[6px] gap-y-[1px]">
+                          {r.agentVotes.map((v) => (
+                            <span key={v.agent} className="text-[7px] text-[var(--color-text-dim)] opacity-60">
+                              {v.agent.split(" ")[0]}: {v.signal} ({v.score > 0 ? "+" : ""}{v.score.toFixed(1)})
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {isAC && confluence.length === 0 && (
+              <div className="border-t border-[var(--color-border-subtle)] pt-[10px]">
+                <p className="text-[9px] text-[var(--color-text-dim)] opacity-50">
+                  No verdicts yet — run a refresh to evaluate agent confluence.
                 </p>
               </div>
             )}
@@ -462,16 +452,27 @@ function ExpandedAgentCard({
   );
 }
 
-// ─── Collapsed card ────────────────────────────────────────────────────────
+// ─── Collapsed card ─────────────────────────────────────────────────────────
 
 function CollapsedAgentCard({
   agent,
+  confluence,
   onClick,
 }: {
-  agent:   Agent;
-  onClick: () => void;
+  agent:      Agent;
+  confluence: ConfluenceResult[];
+  onClick:    () => void;
 }) {
   const isActive = agent.status === "active" || agent.status === "scanning";
+  const isAC     = agent.id === "AC";
+
+  // For the AC collapsed card, show live verdicts instead of signal counts
+  const verdictSummary = isAC && confluence.length > 0
+    ? confluence.map((r) => {
+        const vs = VERDICT_STYLE[r.verdict] ?? { label: r.verdict, color: "text-[var(--color-text-dim)]" };
+        return { symbol: r.symbol, ...vs };
+      })
+    : [];
 
   return (
     <div
@@ -497,14 +498,33 @@ function CollapsedAgentCard({
 
       <div className="text-[9px] text-[var(--color-text-dim)] mb-2">{agent.focus}</div>
 
-      <div className="flex gap-3">
-        <div className="text-[9px] text-[var(--color-text-muted)]">
-          SIGNALS <span className="text-[10px] text-[#4a8a6a]">{agent.signalCount}</span>
+      {isAC ? (
+        // Confluence collapsed: show live verdict per symbol
+        verdictSummary.length > 0 ? (
+          <div className="space-y-[3px]">
+            {verdictSummary.map(({ symbol, label, color }) => (
+              <div key={symbol} className="flex items-center justify-between">
+                <span className="text-[9px] text-[var(--color-text-muted)]">{symbol}</span>
+                <span className={`text-[9px] font-semibold ${color}`}>{label}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-[9px] text-[var(--color-text-dim)] opacity-40">
+            Awaiting refresh…
+          </div>
+        )
+      ) : (
+        // Standard agent collapsed: signal + alert counts
+        <div className="flex gap-3">
+          <div className="text-[9px] text-[var(--color-text-muted)]">
+            SIGNALS <span className="text-[10px] text-[#4a8a6a]">{agent.signalCount}</span>
+          </div>
+          <div className="text-[9px] text-[var(--color-text-muted)]">
+            ALERTS <span className="text-[10px] text-[#4a8a6a]">{agent.alertCount}</span>
+          </div>
         </div>
-        <div className="text-[9px] text-[var(--color-text-muted)]">
-          ALERTS <span className="text-[10px] text-[#4a8a6a]">{agent.alertCount}</span>
-        </div>
-      </div>
+      )}
 
       <div className="mt-[6px] pt-[6px] border-t border-[var(--color-border-subtle)] text-[8px] text-[var(--color-text-dim)]">
         {agent.lastAction}
@@ -513,19 +533,42 @@ function CollapsedAgentCard({
   );
 }
 
+// ─── Static AC agent definition ─────────────────────────────────────────────
+// Not in config/agents.ts (it has no signals, no alertCount).
+// Defined here and appended to the merged agent list for rendering only.
+
+const CONFLUENCE_AGENT: Agent = {
+  id:          "AC",
+  name:        "Confluence Engine",
+  status:      "active",
+  focus:       "Weighted verdict synthesis across all agents",
+  signalCount: 0,
+  alertCount:  0,
+  lastAction:  "Awaiting next refresh cycle…",
+};
+
 // ─── Main component ────────────────────────────────────────────────────────
 
 export function LiveAgentGrid() {
-  const [agents, setAgents]           = useState<Agent[]>(AGENTS);
-  const [expandedId, setExpandedId]   = useState<string | null>(null);
-  const [confluence, setConfluence]   = useState<ConfluenceResult[]>([]);
+  const [agents, setAgents]         = useState<Agent[]>([...AGENTS, CONFLUENCE_AGENT]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [confluence, setConfluence] = useState<ConfluenceResult[]>([]);
 
   async function fetchAndMerge() {
     try {
       const res  = await fetch("/api/signals");
       const data = (await res.json()) as SignalsResponse;
       if (data.agentResults?.length) {
-        setAgents(mergeAgents(AGENTS, data.agentResults));
+        // Merge A1–A5 live counts, keep AC appended at the end
+        setAgents([...mergeAgents(AGENTS, data.agentResults), {
+          ...CONFLUENCE_AGENT,
+          signalCount: 0,
+          alertCount:  0,
+          lastAction:  data.confluence?.length
+            ? `${data.confluence.length} verdict${data.confluence.length !== 1 ? "s" : ""} issued this cycle`
+            : "Awaiting next refresh cycle…",
+          status: data.confluence?.length ? "active" : "scanning",
+        }]);
       }
       if (data.confluence) {
         setConfluence(data.confluence);
@@ -546,7 +589,15 @@ export function LiveAgentGrid() {
     function onSignalsUpdate(e: Event) {
       const data = (e as CustomEvent).detail as SignalsResponse;
       if (data.agentResults?.length) {
-        setAgents(mergeAgents(AGENTS, data.agentResults));
+        setAgents([...mergeAgents(AGENTS, data.agentResults), {
+          ...CONFLUENCE_AGENT,
+          signalCount: 0,
+          alertCount:  0,
+          lastAction:  data.confluence?.length
+            ? `${data.confluence.length} verdict${data.confluence.length !== 1 ? "s" : ""} issued this cycle`
+            : "Awaiting next refresh cycle…",
+          status: data.confluence?.length ? "active" : "scanning",
+        }]);
       }
       if (data.confluence) {
         setConfluence(data.confluence);
@@ -562,22 +613,21 @@ export function LiveAgentGrid() {
   return (
     <div className="grid grid-cols-3 gap-[10px]">
 
-      {/* Confluence card — always full-width at top */}
-      <ConfluenceCard results={confluence} />
-
-      {/* Expanded agent card — spans full row */}
+      {/* Expanded card spans full row */}
       {expandedAgent && (
         <ExpandedAgentCard
           agent={expandedAgent}
+          confluence={confluence}
           onClose={() => setExpandedId(null)}
         />
       )}
 
-      {/* Five agent cards */}
+      {/* All six cards — A1–A5 + AC */}
       {collapsedAgents.map((agent) => (
         <CollapsedAgentCard
           key={agent.id}
           agent={agent}
+          confluence={confluence}
           onClick={() => setExpandedId((prev) => (prev === agent.id ? null : agent.id))}
         />
       ))}
