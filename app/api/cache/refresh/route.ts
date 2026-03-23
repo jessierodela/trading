@@ -7,15 +7,21 @@
  *  1. Fetch indicators (taapi) + quotes (yahoo-finance2)
  *  2. Run all agents (GPT-4o) in parallel:
  *       A1  — Momentum Scout
- *       A6  — Breakout Watcher
- *       A7  — Trend Follower
- *       A8  — Volatility Arbiter
- *       A9  — Mean Reversion          ← new
+ *       A2  — Breakout Watcher
+ *       A3  — Trend Follower
+ *       A4  — Volatility Arbiter
+ *       A5  — Mean Reversion
  *  3. Write result to memCache
  *  4. Return full signal payload in the response
  *
  * The response includes the complete dashboard data so RefreshButton
  * can push it straight to the panel — no poll delay.
+ *
+ * CHANGE LOG:
+ *  - Removed evaluateSignals() (legacy hardcoded agent path). GPT agents are
+ *    now the single source of truth. signals.ts still owns shared types
+ *    (Signal, AgentResult, DashboardStats, buildActivityLog).
+ *  - Agent IDs renumbered A1–A5 to match config/agents.ts.
  */
 
 import { NextResponse }            from "next/server";
@@ -28,7 +34,6 @@ import { runVolatilityArbiter }    from "@/lib/agents/volatilityArbiter";
 import { runMeanReversion }        from "@/lib/agents/meanReversion";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
 import {
-  evaluateSignals,
   buildActivityLog,
   type AgentResult,
   type DashboardStats,
@@ -68,24 +73,16 @@ export async function POST() {
   }
 
   // ── Step 2: Run agents in parallel ──────────────────────────────────────
+  // All five GPT agents are the sole source of truth.
+  // No legacy evaluateSignals() path — that has been removed.
   console.log("[cache/refresh] Running agents...");
 
-  const indicatorMap = new Map(
-    [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators])
-  );
-  const quoteMap = new Map(
-    [...snapshot.data.entries()]
-      .filter(([, entry]) => entry.quote !== null)
-      .map(([sym, entry]) => [sym, { price: entry.quote!.price }])
-  );
-
-  const [a1Signals, bwSignals, tfSignals, vaSignals, mrSignals, legacyResults] = await Promise.all([
+  const [a1Signals, a2Signals, a3Signals, a4Signals, a5Signals] = await Promise.all([
     runMomentumScoutAI(snapshot),
     runBreakoutWatcher(snapshot, "1h"),
     runTrendFollower(snapshot1d, "1d"),
     runVolatilityArbiter(snapshot, "1h"),
     runMeanReversion(snapshot),
-    evaluateSignals(indicatorMap, quoteMap, snapshot.stockSymbols, snapshot.cryptoSymbols),
   ]);
 
   // ── Step 3: Build AgentResult records ───────────────────────────────────
@@ -101,57 +98,56 @@ export async function POST() {
     signals: a1Signals,
   };
 
-  const bwResult: AgentResult = {
-    id:          "A6",
+  const a2Result: AgentResult = {
+    id:          "A2",
     name:        "Breakout Watcher",
-    signalCount: bwSignals.length,
-    alertCount:  bwSignals.filter((s) => s.confidence === "high").length,
-    lastAction:  bwSignals.length
-      ? `Flagged ${bwSignals[0].symbol} — ${bwSignals[0].reason.slice(0, 50)}…`
+    signalCount: a2Signals.length,
+    alertCount:  a2Signals.filter((s) => s.confidence === "high").length,
+    lastAction:  a2Signals.length
+      ? `Flagged ${a2Signals[0].symbol} — ${a2Signals[0].reason.slice(0, 50)}…`
       : "Scanning — no breakout conditions met",
-    signals: bwSignals,
+    signals: a2Signals,
   };
 
-  const tfResult: AgentResult = {
-    id:          "A7",
+  const a3Result: AgentResult = {
+    id:          "A3",
     name:        "Trend Follower",
-    signalCount: tfSignals.length,
-    alertCount:  tfSignals.filter((s) => s.confidence === "high").length,
-    lastAction:  tfSignals.length
-      ? `Flagged ${tfSignals[0].symbol} — ${tfSignals[0].reason.slice(0, 50)}…`
+    signalCount: a3Signals.length,
+    alertCount:  a3Signals.filter((s) => s.confidence === "high").length,
+    lastAction:  a3Signals.length
+      ? `Flagged ${a3Signals[0].symbol} — ${a3Signals[0].reason.slice(0, 50)}…`
       : "Scanning — no trend structure available",
-    signals: tfSignals,
+    signals: a3Signals,
   };
 
-  const vaResult: AgentResult = {
-    id:          "A8",
+  const a4Result: AgentResult = {
+    id:          "A4",
     name:        "Volatility Arbiter",
-    signalCount: vaSignals.length,
-    alertCount:  vaSignals.filter((s) => s.confidence === "high").length,
-    lastAction:  vaSignals.length
-      ? `Flagged ${vaSignals[0].symbol} — ${vaSignals[0].reason.slice(0, 50)}…`
+    signalCount: a4Signals.length,
+    alertCount:  a4Signals.filter((s) => s.confidence === "high").length,
+    lastAction:  a4Signals.length
+      ? `Flagged ${a4Signals[0].symbol} — ${a4Signals[0].reason.slice(0, 50)}…`
       : "Scanning — no volatility conditions met",
-    signals: vaSignals,
+    signals: a4Signals,
   };
 
-  const mrResult: AgentResult = {
-    id:          "A9",
+  const a5Result: AgentResult = {
+    id:          "A5",
     name:        "Mean Reversion",
-    signalCount: mrSignals.length,
-    alertCount:  mrSignals.filter((s) => s.confidence === "high").length,
-    lastAction:  mrSignals.length
-      ? `Flagged ${mrSignals[0].symbol} — ${mrSignals[0].reason.slice(0, 50)}…`
+    signalCount: a5Signals.length,
+    alertCount:  a5Signals.filter((s) => s.confidence === "high").length,
+    lastAction:  a5Signals.length
+      ? `Flagged ${a5Signals[0].symbol} — ${a5Signals[0].reason.slice(0, 50)}…`
       : "Scanning — no oversold bounce conditions met",
-    signals: mrSignals,
+    signals: a5Signals,
   };
 
   const agentResults: AgentResult[] = [
     a1Result,
-    bwResult,
-    tfResult,
-    vaResult,
-    mrResult,
-    ...legacyResults.agentResults.slice(1),
+    a2Result,
+    a3Result,
+    a4Result,
+    a5Result,
   ];
 
   // ── Step 4: Compute dashboard stats ─────────────────────────────────────
@@ -193,8 +189,8 @@ export async function POST() {
 
   console.log(
     `[cache/refresh] Complete — ${a1Signals.length} momentum, ` +
-    `${bwSignals.length} breakout, ${tfSignals.length} trend, ` +
-    `${vaSignals.length} volatility, ${mrSignals.length} mean-reversion signals, ` +
+    `${a2Signals.length} breakout, ${a3Signals.length} trend, ` +
+    `${a4Signals.length} volatility, ${a5Signals.length} mean-reversion signals, ` +
     `${durationMs}ms`
   );
 
