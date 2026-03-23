@@ -145,20 +145,20 @@ const AGENT_META: Record<string, AgentMeta> = {
     notes: "Context layer only — not a trigger agent",
   },
   A4: {
-    tagline: "Deep RSI oversold bounce detector",
+    tagline: "Oversold bounce detector",
     description:
-      "Looks for extreme RSI readings (sub-30) combined with MACD histogram improvement. Designed to catch capitulation events where selling is exhausted and a short-term bounce is likely.",
-    indicators: ["RSI (1h or 4h)", "MACD histogram", "Price distance from EMA20"],
+      "Looks for short-term downside exhaustion using RSI oversold conditions, improving MACD histogram, and price stretched below EMA20. Designed to catch reflex bounce setups after aggressive selling — not long-term trend reversals.",
+    indicators: ["RSI (1h)", "MACD histogram (1h)", "Price distance from EMA20"],
     logic: [
-      { label: "Oversold condition", detail: "RSI < 30 — price is deeply oversold relative to recent history." },
-      { label: "Histogram turning",  detail: "MACD histogram ticking up from negative — early sign of momentum shift." },
-      { label: "Mean distance",      detail: "Price far below EMA20 increases reversion probability — but also bearish risk in strong downtrends." },
+      { label: "Oversold condition", detail: "Checks whether RSI is meaningfully oversold. Below 30 is notable; below 25 is deep oversold and stronger for bounce setups." },
+      { label: "Histogram turning",  detail: "Evaluates whether the MACD histogram is becoming less negative or turning positive, signaling downside momentum may be fading." },
+      { label: "Mean distance",      detail: "Measures how far price is stretched below EMA20. Greater downside extension increases bounce potential, but also raises risk in strong downtrends" },
     ],
     signalTypes: [
-      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "RSI < 30 + histogram improving" },
-      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "RSI < 25 + histogram turning positive" },
+      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "RSI oversold + downside momentum stabilizing + price below EMA20" },
+      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Deeply oversold RSI + histogram improving/turning + meaningful stretch below EMA20" },
     ],
-    notes: "High false-positive rate in strong downtrends. Use with broader structure confirmation.",
+    notes: "Countertrend by design. Best used for tactical bounce setups, not trend reversal calls.",
   },
   A5: {
     tagline: "ATR expansion and move-quality risk interpreter",
