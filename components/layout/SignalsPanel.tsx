@@ -3,10 +3,15 @@
 /**
  * components/layout/SignalsPanel.tsx
  *
- * Displays signal cards from the last agent run.
+ * Displays confluence verdicts and signal cards from the last agent run.
  * Updates via two paths:
  *   1. "signals:update" event dispatched by RefreshButton (instant)
  *   2. Polling /api/signals every SIGNALS_POLL_MS (catches other instances)
+ *
+ * CHANGE LOG:
+ *  - Added confluence[] to SignalsPayload type.
+ *  - Added ConfluenceSection rendered above signal cards.
+ *  - applyPayload now reads and stores confluence results.
  */
 
 import { useEffect, useState, useCallback } from "react";
@@ -23,10 +28,20 @@ interface AgentResult {
   signals:     Signal[];
 }
 
+interface ConfluenceResult {
+  symbol:        string;
+  verdict:       string;
+  weightedScore: number;
+  narrative:     string;
+  tags:          string[];
+  gateMet:       boolean;
+  hasHardConflict: boolean;
+}
+
 interface SignalsPayload {
   agentResults: AgentResult[];
+  confluence?:  ConfluenceResult[];
   generatedAt:  string | null;
-  // Included in refresh response — no separate /api/cache fetch needed
   indicators?:  Record<string, IndicatorValues>;
   derived?:     Record<string, RichCard["derived"]>;
 }
@@ -61,6 +76,15 @@ const TYPE_STYLES: Record<string, { label: string; color: string }> = {
   watch:   { label: "WATCH",   color: "text-[var(--color-accent-blue)]"   },
   warn:    { label: "WARN",    color: "text-[var(--color-accent-orange)]" },
   neutral: { label: "NEUTRAL", color: "text-[var(--color-text-dim)]"      },
+};
+
+const VERDICT_STYLES: Record<string, { label: string; color: string; barColor: string }> = {
+  aligned_bullish:      { label: "Aligned Bullish",    color: "text-[var(--color-accent-green)]",  barColor: "bg-[var(--color-accent-green)]"  },
+  bullish_but_extended: { label: "Bullish / Extended", color: "text-[var(--color-accent-blue)]",   barColor: "bg-[var(--color-accent-blue)]"   },
+  mixed_structure:      { label: "Mixed Structure",    color: "text-[var(--color-accent-orange)]", barColor: "bg-[var(--color-accent-blue)]"   },
+  bearish_structure:    { label: "Bearish Structure",  color: "text-[var(--color-accent-red)]",    barColor: "bg-[var(--color-accent-red)]"    },
+  countertrend_only:    { label: "Countertrend",       color: "text-[var(--color-accent-orange)]", barColor: "bg-[var(--color-accent-orange)]" },
+  no_trade:             { label: "No Trade",           color: "text-[var(--color-text-dim)]",      barColor: "bg-[var(--color-border-default)]"},
 };
 
 const CONFIDENCE_MAP: Record<string, number> = { high: 88, medium: 64, low: 42 };
@@ -102,7 +126,7 @@ function buildCards(payload: SignalsPayload): RichCard[] {
         classification:  extractClassification(sig.reason),
         fullReasoning:   extractReasoning(sig.reason),
         keyFactors:      extractKeyFactors(sig.reason),
-        indicators:      null, // populated from /api/cache if needed for detail panel
+        indicators:      null,
         derived:         null,
         cacheTimestamp:  payload.generatedAt,
       });
@@ -116,13 +140,84 @@ function buildCards(payload: SignalsPayload): RichCard[] {
     .slice(0, 12);
 }
 
+// ─── Confluence section ─────────────────────────────────────────────────────
+// Rendered at the top of the panel, above signal cards.
+// One compact row per symbol showing verdict label + narrative.
+
+function ConfluenceSection({ results }: { results: ConfluenceResult[] }) {
+  if (results.length === 0) return null;
+
+  return (
+    <div className="border-b border-[var(--color-border-default)]">
+      {/* Section label */}
+      <div className="px-[14px] py-[6px] flex items-center gap-[5px]">
+        <span className="w-[4px] h-[4px] rounded-full bg-[var(--color-accent-blue)] opacity-70" />
+        <span className="text-[8px] tracking-[.14em] text-[var(--color-text-dim)] uppercase">
+          Confluence
+        </span>
+      </div>
+
+      {/* One row per symbol */}
+      {results.map((r) => {
+        const vs = VERDICT_STYLES[r.verdict] ?? VERDICT_STYLES.no_trade;
+        const scoreNorm = Math.round(((r.weightedScore + 8) / 16) * 100);
+
+        return (
+          <div
+            key={r.symbol}
+            className="px-[14px] pb-[10px] border-b border-[var(--color-border-subtle)] last:border-b-0"
+          >
+            {/* Symbol + verdict */}
+            <div className="flex items-center justify-between mb-[4px]">
+              <span className="text-[11px] font-medium text-[var(--color-text-primary)]">
+                {r.symbol}
+              </span>
+              <span className={`text-[8px] font-semibold tracking-wide ${vs.color}`}>
+                {vs.label}
+              </span>
+            </div>
+
+            {/* Score bar */}
+            <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden mb-[5px]">
+              <div
+                className={`h-full rounded-full ${vs.barColor} opacity-60`}
+                style={{ width: `${scoreNorm}%` }}
+              />
+            </div>
+
+            {/* Narrative */}
+            <p className="text-[9px] text-[var(--color-text-secondary)] leading-[1.45] mb-[4px]">
+              {r.narrative}
+            </p>
+
+            {/* Tags */}
+            {r.tags.length > 0 && (
+              <div className="flex flex-wrap gap-[3px]">
+                {r.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="text-[7px] border border-[var(--color-border-default)] rounded-[2px] px-[3px] py-[1px] text-[var(--color-text-dim)]"
+                  >
+                    {tag.replace(/_/g, " ")}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Component ─────────────────────────────────────────────────────────────
 
 export function SignalsPanel() {
-  const [cards, setCards]       = useState<RichCard[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [lastFetch, setLastFetch] = useState<number | null>(null);
-  const [selected, setSelected] = useState<RichCard | null>(null);
+  const [cards, setCards]           = useState<RichCard[]>([]);
+  const [confluence, setConfluence] = useState<ConfluenceResult[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [lastFetch, setLastFetch]   = useState<number | null>(null);
+  const [selected, setSelected]     = useState<RichCard | null>(null);
 
   const applyPayload = useCallback((
     payload: SignalsPayload,
@@ -131,7 +226,6 @@ export function SignalsPanel() {
   ) => {
     if (payload.agentResults) {
       const cards = buildCards(payload);
-      // Overlay indicator + derived data if available
       if (indicatorMap || derivedMap) {
         for (const card of cards) {
           if (indicatorMap) card.indicators = indicatorMap.get(card.symbol) ?? null;
@@ -140,6 +234,9 @@ export function SignalsPanel() {
       }
       setCards(cards);
       setLastFetch(Date.now());
+    }
+    if (payload.confluence) {
+      setConfluence(payload.confluence);
     }
     setLoading(false);
   }, []);
@@ -171,12 +268,8 @@ export function SignalsPanel() {
   }
 
   useEffect(() => {
-    // Load once on mount — picks up any warm-instance cache on page load
     poll();
 
-    // Instant update dispatched by RefreshButton after a successful run.
-    // Indicators + derived are bundled in the payload — no /api/cache fetch
-    // needed, so we never risk hitting a different cold serverless instance.
     function onUpdate(e: Event) {
       const payload = (e as CustomEvent<SignalsPayload>).detail;
       const indicatorMap = payload.indicators
@@ -188,10 +281,7 @@ export function SignalsPanel() {
       applyPayload(payload, indicatorMap, derivedMap);
     }
     window.addEventListener("signals:update", onUpdate);
-
-    return () => {
-      window.removeEventListener("signals:update", onUpdate);
-    };
+    return () => window.removeEventListener("signals:update", onUpdate);
   }, []);
 
   const ageLabel = lastFetch
@@ -201,6 +291,7 @@ export function SignalsPanel() {
   return (
     <>
       <aside className="w-[200px] shrink-0 border-l border-[var(--color-border-default)] flex flex-col overflow-hidden">
+
         {/* Header */}
         <div className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] shrink-0 flex items-center gap-[6px]">
           <span className="w-[5px] h-[5px] rounded-full bg-[var(--color-accent-green)] opacity-80" />
@@ -210,7 +301,6 @@ export function SignalsPanel() {
           )}
         </div>
 
-        {/* Cards */}
         <div className="overflow-y-auto flex-1">
           {loading ? (
             Array.from({ length: 4 }).map((_, i) => (
@@ -223,44 +313,62 @@ export function SignalsPanel() {
                 <div className="h-[8px] w-3/4 bg-[var(--color-border-default)] rounded" />
               </div>
             ))
-          ) : cards.length === 0 ? (
-            <div className="px-[14px] py-[20px] text-center">
-              <p className="text-[9px] text-[var(--color-text-dim)] opacity-50">No signals yet</p>
-              <p className="text-[8px] text-[var(--color-text-dim)] opacity-30 mt-[4px]">Press refresh to run agents…</p>
-            </div>
           ) : (
-            cards.map((card, i) => {
-              const style = TYPE_STYLES[card.type] ?? TYPE_STYLES.watch;
-              return (
-                <div
-                  key={i}
-                  onClick={() => setSelected(card)}
-                  className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] last:border-b-0 cursor-pointer hover:bg-[var(--color-surface-hover,rgba(255,255,255,0.03))] transition-colors"
-                >
-                  <div className="flex items-center justify-between mb-[4px]">
-                    <span className="text-[12px] font-medium text-[var(--color-text-primary)]">{card.symbol}</span>
-                    <span className={`text-[9px] font-semibold tracking-wide ${style.color}`}>{style.label}</span>
-                  </div>
-                  <p className="text-[10px] text-[var(--color-text-secondary)] leading-[1.4] mb-[5px] line-clamp-2">
-                    {card.summary}
-                  </p>
-                  <div className="flex items-center justify-between mb-[2px]">
-                    <span className="text-[9px] text-[var(--color-text-dim)]">{card.agent}</span>
-                    <span className="text-[9px] text-[var(--color-text-dim)]">{card.confidence}%</span>
-                  </div>
-                  <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-[var(--color-accent-green)] opacity-60"
-                      style={{ width: `${card.confidence}%` }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between mt-[4px]">
-                    <span className="text-[9px] text-[var(--color-text-dim)] opacity-50">{card.timeLabel}</span>
-                    <span className="text-[8px] text-[var(--color-text-dim)] opacity-30">details →</span>
-                  </div>
+            <>
+              {/* Confluence verdicts — above signal cards */}
+              <ConfluenceSection results={confluence} />
+
+              {/* Signal cards */}
+              {cards.length === 0 ? (
+                <div className="px-[14px] py-[20px] text-center">
+                  <p className="text-[9px] text-[var(--color-text-dim)] opacity-50">No signals yet</p>
+                  <p className="text-[8px] text-[var(--color-text-dim)] opacity-30 mt-[4px]">Press refresh to run agents…</p>
                 </div>
-              );
-            })
+              ) : (
+                <>
+                  {/* Divider label before individual agent signals */}
+                  <div className="px-[14px] py-[6px] flex items-center gap-[5px] border-b border-[var(--color-border-default)]">
+                    <span className="w-[4px] h-[4px] rounded-full bg-[var(--color-accent-green)] opacity-70" />
+                    <span className="text-[8px] tracking-[.14em] text-[var(--color-text-dim)] uppercase">
+                      Agent Signals
+                    </span>
+                  </div>
+
+                  {cards.map((card, i) => {
+                    const style = TYPE_STYLES[card.type] ?? TYPE_STYLES.watch;
+                    return (
+                      <div
+                        key={i}
+                        onClick={() => setSelected(card)}
+                        className="px-[14px] py-[10px] border-b border-[var(--color-border-default)] last:border-b-0 cursor-pointer hover:bg-[var(--color-surface-hover,rgba(255,255,255,0.03))] transition-colors"
+                      >
+                        <div className="flex items-center justify-between mb-[4px]">
+                          <span className="text-[12px] font-medium text-[var(--color-text-primary)]">{card.symbol}</span>
+                          <span className={`text-[9px] font-semibold tracking-wide ${style.color}`}>{style.label}</span>
+                        </div>
+                        <p className="text-[10px] text-[var(--color-text-secondary)] leading-[1.4] mb-[5px] line-clamp-2">
+                          {card.summary}
+                        </p>
+                        <div className="flex items-center justify-between mb-[2px]">
+                          <span className="text-[9px] text-[var(--color-text-dim)]">{card.agent}</span>
+                          <span className="text-[9px] text-[var(--color-text-dim)]">{card.confidence}%</span>
+                        </div>
+                        <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-[var(--color-accent-green)] opacity-60"
+                            style={{ width: `${card.confidence}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between mt-[4px]">
+                          <span className="text-[9px] text-[var(--color-text-dim)] opacity-50">{card.timeLabel}</span>
+                          <span className="text-[8px] text-[var(--color-text-dim)] opacity-30">details →</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
+            </>
           )}
         </div>
       </aside>
