@@ -260,19 +260,25 @@ function toSignal(output: MeanReversionOutput): Signal {
     NEUTRAL: "neutral",
   };
 
+  // Pack structured reasoning into reason string — same pattern as breakoutWatcher.
+  // Signal.reason is the only free-text field; context carries numeric values only.
+  const reason = [
+    `[${output.signal}] ${output.summary}`,
+    `Oversold: ${output.structure.oversold_condition}`,
+    `Histogram: ${output.structure.histogram_turning}`,
+    `Distance: ${output.structure.mean_distance}`,
+    ...(output.notes ? [`Note: ${output.notes}`] : []),
+  ].join(" — ");
+
   return {
     symbol:     output.symbol,
     type:       typeMap[output.signal],
     confidence: confidenceMap[output.confidence],
-    reason:     output.summary,
+    reason,
     agent:      "Mean Reversion",
-    timestamp:  output.timestamp,
-    // Pass through the full structured output for the detail panel
-    meta: {
-      structure:   output.structure,
-      thresholds:  output.thresholds,
-      inputs_used: output.inputs_used,
-      notes:       output.notes,
+    tags:       output.signal === "BUY" ? ["oversold_bounce"] : undefined,
+    context: {
+      ema20PctDistance: output.inputs_used.price_distance_from_ema20_pct ?? undefined,
     },
   };
 }
