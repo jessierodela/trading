@@ -10,11 +10,10 @@
  *  - GPT-4o provides the structured narrative; enums are enforced post-response.
  */
 
-import OpenAI from "openai";
-import type { IndicatorCacheSnapshot } from "@/lib/indicatorCache";
+import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { Signal } from "@/lib/signals";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
 // ─── Internal types ────────────────────────────────────────────────────────────
 
@@ -209,20 +208,33 @@ ${JSON.stringify(thresholds, null, 2)}
 
 Return structured JSON only.`.trim();
 
-  const completion = await openai.chat.completions.create({
-    model:           "gpt-4o",
-    temperature:     0.2,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user",   content: userMessage },
-    ],
+  const res = await fetch(OPENAI_API_URL, {
+    method:  "POST",
+    headers: {
+      "Content-Type":  "application/json",
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model:       "gpt-4o",
+      temperature: 0.2,
+      max_tokens:  600,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user",   content: userMessage },
+      ],
+    }),
   });
 
-  const raw = completion.choices[0]?.message?.content;
-  if (!raw) throw new Error(`[mean-reversion] Empty GPT response for ${symbol}`);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`[mean-reversion] OpenAI error for ${symbol}: ${res.status} — ${errText}`);
+  }
 
-  const parsed: MeanReversionOutput = JSON.parse(raw);
+  const json = await res.json();
+  const raw   = json.choices?.[0]?.message?.content ?? "";
+  const clean = raw.replace(/```json|```/g, "").trim();
+
+  const parsed: MeanReversionOutput = JSON.parse(clean);
 
   // Enforce deterministic fields — GPT cannot override these
   parsed.agent      = "mean_reversion";
@@ -268,7 +280,7 @@ function toSignal(output: MeanReversionOutput): Signal {
 // ─── Public entry point ────────────────────────────────────────────────────────
 
 export async function runMeanReversion(
-  snapshot: IndicatorCacheSnapshot
+  snapshot: CacheSnapshot
 ): Promise<Signal[]> {
   const timestamp = new Date().toISOString();
   const symbols   = [...snapshot.data.keys()];
