@@ -403,6 +403,18 @@ export function LiveAgentGrid() {
     return () => clearInterval(id);
   }, []);
 
+  // Listen for instant push from RefreshButton — no poll delay after manual refresh
+  useEffect(() => {
+    function onSignalsUpdate(e: Event) {
+      const data = (e as CustomEvent).detail as SignalsResponse;
+      if (data.agentResults?.length) {
+        setAgents(mergeAgents(AGENTS, data.agentResults));
+      }
+    }
+    window.addEventListener("signals:update", onSignalsUpdate);
+    return () => window.removeEventListener("signals:update", onSignalsUpdate);
+  }, []);
+
   const expandedAgent   = agents.find((a) => a.id === expandedId) ?? null;
   const collapsedAgents = agents.filter((a) => a.id !== expandedId);
 
