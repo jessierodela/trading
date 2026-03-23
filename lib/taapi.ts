@@ -43,6 +43,8 @@ export interface IndicatorValues {
   prevRsi:      number | null;
   prevHist:     number | null;
   prevEma20:    number | null;
+  prevEma50:    number | null;
+  prevEma200:   number | null;
   currentClose: number | null;
 
   // ── Volume + candle range ─────────────────────────────────────────────
@@ -67,8 +69,8 @@ function emptyResult(symbol: string): IndicatorValues {
   return {
     symbol, rsi: null, macd: null, ema20: null, ema50: null,
     ema200: null, bb: null, bb_width: null, bb_width_prev: null, atr: null,
-    prevRsi: null, prevHist: null, prevEma20: null, currentClose: null,
-    volume: null, prevVolume: null, volumeSma20: null, high: null, low: null,
+    prevRsi: null, prevHist: null, prevEma20: null, prevEma50: null, prevEma200: null,
+    currentClose: null, volume: null, prevVolume: null, volumeSma20: null, high: null, low: null,
   };
 }
 
@@ -255,7 +257,9 @@ async function fetchCryptoIndicatorsBulk(
 
   if (enabled.includes("rsi"))    prevConstructs.push({ id: "prevRsi",    indicator: "rsi",    params: { backtrack: 1 } });
   if (enabled.includes("macd"))   prevConstructs.push({ id: "prevMacd",   indicator: "macd",   params: { backtrack: 1 } });
-  if (enabled.includes("ema20"))  prevConstructs.push({ id: "prevEma20",  indicator: "ema",    params: { period: 20, backtrack: 1 } });
+  if (enabled.includes("ema20"))  prevConstructs.push({ id: "prevEma20",  indicator: "ema",    params: { period: 20,  backtrack: 1 } });
+  if (enabled.includes("ema50"))  prevConstructs.push({ id: "prevEma50",  indicator: "ema",    params: { period: 50,  backtrack: 1 } });
+  if (enabled.includes("ema200")) prevConstructs.push({ id: "prevEma200", indicator: "ema",    params: { period: 200, backtrack: 1 } });
   if (enabled.includes("bb"))     prevConstructs.push({ id: "prevBb",     indicator: "bbands", params: { backtrack: 1 } });
   if (enabled.includes("candle")) prevConstructs.push({ id: "prevCandle", indicator: "candle", params: { backtrack: 1 } });
 
@@ -314,10 +318,12 @@ async function fetchCryptoIndicatorsBulk(
     const prev = await fetchBulk(symbol, exchange, prevConstructs);
 
     if (prev) {
-      result.prevRsi   = prev.get("prevRsi")?.value          ?? null;
-      result.prevHist  = prev.get("prevMacd")?.valueMACDHist  ?? null;
-      result.prevEma20 = prev.get("prevEma20")?.value         ?? null;
-      result.prevVolume = prev.get("prevCandle")?.volume      ?? null;
+      result.prevRsi    = prev.get("prevRsi")?.value          ?? null;
+      result.prevHist   = prev.get("prevMacd")?.valueMACDHist  ?? null;
+      result.prevEma20  = prev.get("prevEma20")?.value         ?? null;
+      result.prevEma50  = prev.get("prevEma50")?.value         ?? null;
+      result.prevEma200 = prev.get("prevEma200")?.value        ?? null;
+      result.prevVolume = prev.get("prevCandle")?.volume       ?? null;
 
       const prevBb = prev.get("prevBb");
       if (prevBb && prevBb.valueMiddleBand > 0) {
