@@ -79,9 +79,9 @@ const AGENT_META: Record<string, AgentMeta> = {
       "Candle range (ATR)",
     ],
     logic: [
-      { label: "1. Structure",   detail: "Determines directional bias using price vs EMA20 and EMA20 slope." },
-      { label: "2. Momentum",    detail: "Evaluates RSI level and change, MACD histogram sign and direction, and whether volume confirms momentum." },
-      { label: "3. Implication", detail: "Synthesizes structure and momentum into a final market-state classification and 3-sentence reasoning output. ATR helps normalize how extended price is from EMA20." },
+      { label: "Structure",   detail: "Determines directional bias using price vs EMA20 and EMA20 slope." },
+      { label: "Momentum",    detail: "Evaluates RSI level and change, MACD histogram sign and direction, and whether volume confirms momentum." },
+      { label: "Implication", detail: "Synthesizes structure and momentum into a final market-state classification and 3-sentence reasoning output. ATR helps normalize how extended price is from EMA20." },
     ],
     signalTypes: [
       { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "acceleration · trend_continuation · pullback_to_support" },
