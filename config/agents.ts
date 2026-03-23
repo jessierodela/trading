@@ -2,12 +2,16 @@ import type { Agent } from "@/types/agent";
 
 /**
  * config/agents.ts
+ *
  * Static agent definitions used by AgentGrid.
  * signalCount / alertCount / lastAction are placeholder defaults —
- * AgentGrid should override these with live data from /api/signals.
+ * AgentGrid overrides these with live data from /api/signals.
  *
- * Crypto Ranger removed — it was an alias of Momentum Scout with no
- * distinct logic. Momentum Scout now covers both stocks and crypto.
+ * CHANGE LOG:
+ *  - IDs corrected to A1–A5 matching route.ts AgentResult records.
+ *  - focus strings updated to reflect each agent's actual indicators and role.
+ *  - status values set to reflect real runtime behavior.
+ *  - lastAction defaults updated to match each agent's scanning behavior.
  */
 
 export const AGENTS: Agent[] = [
@@ -15,7 +19,7 @@ export const AGENTS: Agent[] = [
     id:          "A1",
     name:        "Momentum Scout",
     status:      "active",
-    focus:       "RSI + MACD + EMA20 — (1h)",
+    focus:       "1H structure, momentum, volume, and ATR context",
     signalCount: 0,
     alertCount:  0,
     lastAction:  "Scanning all symbols…",
@@ -23,37 +27,37 @@ export const AGENTS: Agent[] = [
   {
     id:          "A2",
     name:        "Breakout Watcher",
-    status:      "scanning",
-    focus:       "Bollinger Band breakouts",
+    status:      "active",
+    focus:       "Bollinger Band breakout and squeeze analysis (1H)",
     signalCount: 0,
     alertCount:  0,
-    lastAction:  "Monitoring BB levels",
+    lastAction:  "Monitoring BB levels…",
   },
   {
     id:          "A3",
     name:        "Trend Follower",
     status:      "active",
-    focus:       "EMA 50/200 golden cross — stocks",
+    focus:       "1D structural bias via EMA50 / EMA200",
     signalCount: 0,
     alertCount:  0,
-    lastAction:  "Monitoring MA trends",
+    lastAction:  "Evaluating daily trend structure…",
   },
   {
     id:          "A4",
-    name:        "Mean Reversion",
-    status:      "idle",
-    focus:       "Deep RSI oversold bounce",
+    name:        "Volatility Arbiter",
+    status:      "active",
+    focus:       "ATR-based move quality and chase risk (1H)",
     signalCount: 0,
     alertCount:  0,
-    lastAction:  "Idle — no setups",
+    lastAction:  "Assessing volatility conditions…",
   },
   {
     id:          "A5",
-    name:        "Volatility Arbiter",
-    status:      "idle",
-    focus:       "ATR spike detection",
+    name:        "Mean Reversion",
+    status:      "scanning",
+    focus:       "Short-horizon oversold bounce context (1H)",
     signalCount: 0,
     alertCount:  0,
-    lastAction:  "Waiting for vol spike",
+    lastAction:  "Scanning for oversold conditions…",
   },
 ];
