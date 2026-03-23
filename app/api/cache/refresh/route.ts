@@ -11,17 +11,18 @@
  *       A3  — Trend Follower
  *       A4  — Volatility Arbiter
  *       A5  — Mean Reversion
- *  3. Write result to memCache
- *  4. Return full signal payload in the response
+ *  3. Run confluence engine (deterministic score + GPT narrative per symbol)
+ *  4. Write result to memCache
+ *  5. Return full signal payload in the response
  *
  * The response includes the complete dashboard data so RefreshButton
  * can push it straight to the panel — no poll delay.
  *
  * CHANGE LOG:
- *  - Removed evaluateSignals() (legacy hardcoded agent path). GPT agents are
- *    now the single source of truth. signals.ts still owns shared types
- *    (Signal, AgentResult, DashboardStats, buildActivityLog).
+ *  - Removed evaluateSignals() (legacy hardcoded agent path).
  *  - Agent IDs renumbered A1–A5 to match config/agents.ts.
+ *  - Added runConfluenceEngine() — runs after agents, before memCache write.
+ *    confluence[] is included in the payload and response.
  */
 
 import { NextResponse }            from "next/server";
@@ -32,6 +33,7 @@ import { runBreakoutWatcher }      from "@/lib/agents/breakoutWatcher";
 import { runTrendFollower }        from "@/lib/agents/trendFollower";
 import { runVolatilityArbiter }    from "@/lib/agents/volatilityArbiter";
 import { runMeanReversion }        from "@/lib/agents/meanReversion";
+import { runConfluenceEngine }     from "@/lib/confluence/confluenceEngine";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
 import {
   buildActivityLog,
@@ -74,7 +76,6 @@ export async function POST() {
 
   // ── Step 2: Run agents in parallel ──────────────────────────────────────
   // All five GPT agents are the sole source of truth.
-  // No legacy evaluateSignals() path — that has been removed.
   console.log("[cache/refresh] Running agents...");
 
   const [a1Signals, a2Signals, a3Signals, a4Signals, a5Signals] = await Promise.all([
@@ -150,9 +151,18 @@ export async function POST() {
     a5Result,
   ];
 
-  // ── Step 4: Compute dashboard stats ─────────────────────────────────────
+  // ── Step 4: Run confluence engine ────────────────────────────────────────
+  // Collects all agent signals, scores per symbol, calls GPT for narrative.
+  // Runs after agents complete — reads Signal[] only, no indicator fetching.
+  console.log("[cache/refresh] Running confluence engine...");
 
-  const allSignals   = agentResults.flatMap((a) => a.signals);
+  const allSignals = agentResults.flatMap((a) => a.signals);
+  const confluence = await runConfluenceEngine(allSignals);
+
+  console.log(`[cache/refresh] Confluence complete — ${confluence.length} symbol(s) evaluated`);
+
+  // ── Step 5: Compute dashboard stats ─────────────────────────────────────
+
   const buySignals   = allSignals.filter((s) => s.type === "buy");
   const highConf     = buySignals.filter((s) => s.confidence === "high");
   const activeAgents = agentResults.filter((a) => a.signalCount > 0).length;
@@ -167,7 +177,7 @@ export async function POST() {
   const generatedAt = new Date().toISOString();
   const durationMs  = Date.now() - startMs;
 
-  // ── Step 5: Write to memCache ────────────────────────────────────────────
+  // ── Step 6: Write to memCache ────────────────────────────────────────────
   const indicators = Object.fromEntries(
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators])
   );
@@ -177,6 +187,7 @@ export async function POST() {
 
   const payload = {
     agentResults,
+    confluence,   // ConfluenceResult[] — one entry per symbol that met the gate
     stats,
     activity:    buildActivityLog(agentResults),
     generatedAt,
@@ -191,10 +202,10 @@ export async function POST() {
     `[cache/refresh] Complete — ${a1Signals.length} momentum, ` +
     `${a2Signals.length} breakout, ${a3Signals.length} trend, ` +
     `${a4Signals.length} volatility, ${a5Signals.length} mean-reversion signals, ` +
-    `${durationMs}ms`
+    `${confluence.length} confluence verdicts, ${durationMs}ms`
   );
 
-  // ── Step 6: Return full payload ──────────────────────────────────────────
+  // ── Step 7: Return full payload ──────────────────────────────────────────
   return NextResponse.json({
     success: true,
     durationMs,
