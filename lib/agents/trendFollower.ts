@@ -12,8 +12,9 @@
  * The agent never fetches data. All indicator data lives in indicatorCache.ts.
  * Requires "ema50" and "ema200" to be enabled in config/indicators.ts for the symbol.
  *
- * Role: Higher-timeframe bias filter. Output is consumed as context by
- * Momentum Scout and Breakout Watcher — not used as a direct entry signal.
+ * Role: Structural bias layer. Evaluates slower-moving EMA50/200 context on the
+ * same 1h interval as all other agents. Output is consumed as directional backdrop
+ * by Momentum Scout and Breakout Watcher — not used as a direct entry signal.
  */
 
 import type { Signal } from "@/lib/signals";
@@ -178,12 +179,8 @@ export async function runTrendFollower(
     const ema50      = indicators.ema50;
     const ema200     = indicators.ema200;
     const close      = indicators.currentClose ?? null;
-    // prevEma50 / prevEma200 don't exist in IndicatorValues yet — handled below.
-    // For now we fall back to null, which means slope = "flat" and no fresh cross detection.
-    // Add prevEma50 / prevEma200 to IndicatorValues and the taapi prev-bar bulk call
-    // when you're ready to enable that precision.
-    const prevEma50  = (indicators as any).prevEma50  ?? null;
-    const prevEma200 = (indicators as any).prevEma200 ?? null;
+    const prevEma50  = indicators.prevEma50  ?? null;
+    const prevEma200 = indicators.prevEma200 ?? null;
 
     if (close === null) {
       console.warn(`[trendFollower] ${symbol} — skipping, currentClose is null`);
