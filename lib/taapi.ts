@@ -54,6 +54,8 @@ export interface IndicatorValues {
   volumeSma20: number | null;
   high:        number | null;
   low:         number | null;
+  open:        number | null; // from taapi candle endpoint
+  atrAvg20:    number | null; // ATR with period 20 — used as baseline for volatility comparison
 }
 
 export type AssetType = "stock" | "crypto";
@@ -70,7 +72,8 @@ function emptyResult(symbol: string): IndicatorValues {
     symbol, rsi: null, macd: null, ema20: null, ema50: null,
     ema200: null, bb: null, bb_width: null, bb_width_prev: null, atr: null,
     prevRsi: null, prevHist: null, prevEma20: null, prevEma50: null, prevEma200: null,
-    currentClose: null, volume: null, prevVolume: null, volumeSma20: null, high: null, low: null,
+    currentClose: null, volume: null, prevVolume: null, volumeSma20: null,
+    high: null, low: null, open: null, atrAvg20: null,
   };
 }
 
@@ -245,6 +248,10 @@ async function fetchCryptoIndicatorsBulk(
   if (enabled.includes("ema200"))    currentConstructs.push({ id: "ema200",    indicator: "ema",       params: { period: 200 } });
   if (enabled.includes("bb"))        currentConstructs.push({ id: "bb",        indicator: "bbands" });
   if (enabled.includes("atr"))       currentConstructs.push({ id: "atr",       indicator: "atr" });
+  // atrAvg20: ATR with period 20 — fetched alongside current ATR as the baseline comparator.
+  // Volatility Arbiter uses atr (period 14, current) vs atrAvg20 (period 20, slower) to
+  // determine whether volatility is expanding above its recent norm.
+  if (enabled.includes("atr"))       currentConstructs.push({ id: "atrAvg20",  indicator: "atr",  params: { period: 20 } });
   // taapi does not have a "volumesma" endpoint. Use "vwma" (Volume Weighted Moving Average)
   // as the closest proxy for a volume-smoothed average, or swap for "obv" / "volume" if preferred.
   if (enabled.includes("volumeSma20")) currentConstructs.push({ id: "volsma",  indicator: "vwma", params: { period: 20 } });
@@ -269,13 +276,14 @@ async function fetchCryptoIndicatorsBulk(
     const current = await fetchBulk(symbol, exchange, currentConstructs);
 
     if (current) {
-      result.rsi   = current.get("rsi")?.value   ?? null;
-      result.ema20 = current.get("ema20")?.value  ?? null;
-      result.ema50 = current.get("ema50")?.value  ?? null;
-      result.ema200 = current.get("ema200")?.value ?? null;
-      result.atr   = current.get("atr")?.value   ?? null;
-      result.volumeSma20 = current.get("volsma")?.value ?? null;
-      result.currentClose = current.get("price")?.value ?? null;
+      result.rsi      = current.get("rsi")?.value    ?? null;
+      result.ema20    = current.get("ema20")?.value   ?? null;
+      result.ema50    = current.get("ema50")?.value   ?? null;
+      result.ema200   = current.get("ema200")?.value  ?? null;
+      result.atr      = current.get("atr")?.value     ?? null;
+      result.atrAvg20 = current.get("atrAvg20")?.value ?? null;
+      result.volumeSma20  = current.get("volsma")?.value  ?? null;
+      result.currentClose = current.get("price")?.value   ?? null;
 
       const m = current.get("macd");
       if (m) {
@@ -301,8 +309,9 @@ async function fetchCryptoIndicatorsBulk(
 
       const candle = current.get("candle");
       if (candle) {
-        result.high = candle.high ?? null;
-        result.low  = candle.low  ?? null;
+        result.open = candle.open   ?? null;
+        result.high = candle.high   ?? null;
+        result.low  = candle.low    ?? null;
         if (result.volume == null) result.volume = candle.volume ?? null;
       }
     } else {
@@ -399,6 +408,7 @@ async function fetchAssetIndicatorsSequential(
       }
       case "candle": {
         const r = await fetchIndicator("candle", symbol, exchange);
+        result.open = r?.open ?? null;
         result.high = r?.high ?? null;
         result.low  = r?.low  ?? null;
         if (result.volume == null) result.volume = r?.volume ?? null;
@@ -434,6 +444,13 @@ async function fetchAssetIndicatorsSequential(
     await sleep(INDICATOR_DELAY_MS);
     const r = await fetchIndicator("candle", symbol, exchange, { backtrack: 1 });
     result.prevVolume = r?.volume ?? null;
+  }
+  // atrAvg20: ATR period 20 as a slower baseline to compare against ATR period 14.
+  // Fetched sequentially here since bulk is not available for stocks.
+  if (enabled.includes("atr")) {
+    await sleep(INDICATOR_DELAY_MS);
+    const r = await fetchIndicator("atr", symbol, exchange, { period: 20 });
+    result.atrAvg20 = r?.value ?? null;
   }
 
   return result;
