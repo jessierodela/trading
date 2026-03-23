@@ -173,13 +173,15 @@ export async function runVolatilityArbiter(
     const high         = indicators.high;
     const low          = indicators.low;
     const close        = indicators.currentClose ?? null;
-    const open         = indicators.open ?? close; // fallback to close (doji) if candle open unavailable
     const atr_avg_20   = indicators.atrAvg20 ?? atr; // fallback to current ATR if baseline unavailable
 
     if (close === null) {
       console.warn(`[volatilityArbiter] ${symbol} — skipping, currentClose is null`);
       continue;
     }
+
+    // close is narrowed to number here — safe to use as open fallback
+    const open = indicators.open ?? close; // fallback to close (doji) if candle open unavailable
 
     // Derived candle structure
     const candle_range         = parseFloat((high - low).toFixed(4));
