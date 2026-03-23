@@ -9,9 +9,10 @@
  *   2. Polling /api/signals every SIGNALS_POLL_MS (catches other instances)
  *
  * CHANGE LOG:
- *  - Added confluence[] to SignalsPayload type.
- *  - Added ConfluenceSection rendered above signal cards.
- *  - applyPayload now reads and stores confluence results.
+ *  - Confluence items are now clickable — open SignalDetailPanel with full
+ *    narrative, vote breakdown, score, and tags.
+ *  - ConfluenceResult extended with agentVotes for detail panel.
+ *  - RichCard extended with confluenceData for the detail panel to read.
  */
 
 import { useEffect, useState, useCallback } from "react";
@@ -36,6 +37,7 @@ interface ConfluenceResult {
   tags:          string[];
   gateMet:       boolean;
   hasHardConflict: boolean;
+  agentVotes?:   { agent: string; signal: string; confidence: string; score: number }[];
 }
 
 interface SignalsPayload {
@@ -66,6 +68,15 @@ export interface RichCard {
     rsiChange:       number  | null;
   } | null;
   cacheTimestamp:  string | null;
+  // Populated for confluence cards — null for regular agent signal cards
+  confluenceData?: {
+    verdict:       string;
+    weightedScore: number;
+    narrative:     string;
+    tags:          string[];
+    agentVotes:    { agent: string; signal: string; confidence: string; score: number }[];
+    hasHardConflict: boolean;
+  } | null;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -79,12 +90,12 @@ const TYPE_STYLES: Record<string, { label: string; color: string }> = {
 };
 
 const VERDICT_STYLES: Record<string, { label: string; color: string; barColor: string }> = {
-  aligned_bullish:      { label: "Aligned Bullish",    color: "text-[var(--color-accent-green)]",  barColor: "bg-[var(--color-accent-green)]"  },
-  bullish_but_extended: { label: "Bullish / Extended", color: "text-[var(--color-accent-blue)]",   barColor: "bg-[var(--color-accent-blue)]"   },
-  mixed_structure:      { label: "Mixed Structure",    color: "text-[var(--color-accent-orange)]", barColor: "bg-[var(--color-accent-blue)]"   },
-  bearish_structure:    { label: "Bearish Structure",  color: "text-[var(--color-accent-red)]",    barColor: "bg-[var(--color-accent-red)]"    },
-  countertrend_only:    { label: "Countertrend",       color: "text-[var(--color-accent-orange)]", barColor: "bg-[var(--color-accent-orange)]" },
-  no_trade:             { label: "No Trade",           color: "text-[var(--color-text-dim)]",      barColor: "bg-[var(--color-border-default)]"},
+  aligned_bullish:      { label: "Aligned Bullish",    color: "text-[var(--color-accent-green)]",  barColor: "bg-[var(--color-accent-green)]"   },
+  bullish_but_extended: { label: "Bullish / Extended", color: "text-[var(--color-accent-blue)]",   barColor: "bg-[var(--color-accent-blue)]"    },
+  mixed_structure:      { label: "Mixed Structure",    color: "text-[var(--color-accent-orange)]", barColor: "bg-[var(--color-accent-blue)]"    },
+  bearish_structure:    { label: "Bearish Structure",  color: "text-[var(--color-accent-red)]",    barColor: "bg-[var(--color-accent-red)]"     },
+  countertrend_only:    { label: "Countertrend",       color: "text-[var(--color-accent-orange)]", barColor: "bg-[var(--color-accent-orange)]"  },
+  no_trade:             { label: "No Trade",           color: "text-[var(--color-text-dim)]",      barColor: "bg-[var(--color-border-default)]" },
 };
 
 const CONFIDENCE_MAP: Record<string, number> = { high: 88, medium: 64, low: 42 };
@@ -129,6 +140,7 @@ function buildCards(payload: SignalsPayload): RichCard[] {
         indicators:      null,
         derived:         null,
         cacheTimestamp:  payload.generatedAt,
+        confluenceData:  null,
       });
       offsetMin += 2;
     }
@@ -140,16 +152,49 @@ function buildCards(payload: SignalsPayload): RichCard[] {
     .slice(0, 12);
 }
 
-// ─── Confluence section ─────────────────────────────────────────────────────
-// Rendered at the top of the panel, above signal cards.
-// One compact row per symbol showing verdict label + narrative.
+/** Build a RichCard from a ConfluenceResult for the detail panel */
+function buildConfluenceCard(r: ConfluenceResult, generatedAt: string | null): RichCard {
+  const vs = VERDICT_STYLES[r.verdict] ?? VERDICT_STYLES.no_trade;
+  return {
+    symbol:          r.symbol,
+    type:            "neutral", // confluence cards don't map to buy/sell/watch directly
+    agent:           "Confluence Engine",
+    confidence:      Math.round(((r.weightedScore + 8) / 16) * 100),
+    confidenceLabel: r.weightedScore >= 3 ? "high" : r.weightedScore >= 1 ? "medium" : "low",
+    timeLabel:       "now",
+    summary:         vs.label,
+    classification:  r.verdict.replace(/_/g, " "),
+    fullReasoning:   r.narrative,
+    keyFactors:      r.tags.map((t) => t.replace(/_/g, " ")),
+    indicators:      null,
+    derived:         null,
+    cacheTimestamp:  generatedAt,
+    confluenceData: {
+      verdict:         r.verdict,
+      weightedScore:   r.weightedScore,
+      narrative:       r.narrative,
+      tags:            r.tags,
+      agentVotes:      r.agentVotes ?? [],
+      hasHardConflict: r.hasHardConflict,
+    },
+  };
+}
 
-function ConfluenceSection({ results }: { results: ConfluenceResult[] }) {
+// ─── Confluence section ─────────────────────────────────────────────────────
+
+function ConfluenceSection({
+  results,
+  generatedAt,
+  onSelect,
+}: {
+  results:     ConfluenceResult[];
+  generatedAt: string | null;
+  onSelect:    (card: RichCard) => void;
+}) {
   if (results.length === 0) return null;
 
   return (
     <div className="border-b border-[var(--color-border-default)]">
-      {/* Section label */}
       <div className="px-[14px] py-[6px] flex items-center gap-[5px]">
         <span className="w-[4px] h-[4px] rounded-full bg-[var(--color-accent-blue)] opacity-70" />
         <span className="text-[8px] tracking-[.14em] text-[var(--color-text-dim)] uppercase">
@@ -157,15 +202,15 @@ function ConfluenceSection({ results }: { results: ConfluenceResult[] }) {
         </span>
       </div>
 
-      {/* One row per symbol */}
       {results.map((r) => {
-        const vs = VERDICT_STYLES[r.verdict] ?? VERDICT_STYLES.no_trade;
-        const scoreNorm = Math.round(((r.weightedScore + 8) / 16) * 100);
+        const vs         = VERDICT_STYLES[r.verdict] ?? VERDICT_STYLES.no_trade;
+        const scoreNorm  = Math.round(((r.weightedScore + 8) / 16) * 100);
 
         return (
           <div
             key={r.symbol}
-            className="px-[14px] pb-[10px] border-b border-[var(--color-border-subtle)] last:border-b-0"
+            onClick={() => onSelect(buildConfluenceCard(r, generatedAt))}
+            className="px-[14px] pb-[10px] border-b border-[var(--color-border-subtle)] last:border-b-0 cursor-pointer hover:bg-[var(--color-surface-hover,rgba(255,255,255,0.03))] transition-colors"
           >
             {/* Symbol + verdict */}
             <div className="flex items-center justify-between mb-[4px]">
@@ -185,24 +230,27 @@ function ConfluenceSection({ results }: { results: ConfluenceResult[] }) {
               />
             </div>
 
-            {/* Narrative */}
-            <p className="text-[9px] text-[var(--color-text-secondary)] leading-[1.45] mb-[4px]">
+            {/* Narrative — truncated, full text in detail panel */}
+            <p className="text-[9px] text-[var(--color-text-secondary)] leading-[1.45] mb-[4px] line-clamp-2">
               {r.narrative}
             </p>
 
-            {/* Tags */}
-            {r.tags.length > 0 && (
-              <div className="flex flex-wrap gap-[3px]">
-                {r.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-[7px] border border-[var(--color-border-default)] rounded-[2px] px-[3px] py-[1px] text-[var(--color-text-dim)]"
-                  >
-                    {tag.replace(/_/g, " ")}
-                  </span>
-                ))}
-              </div>
-            )}
+            <div className="flex items-center justify-between">
+              {/* Tags */}
+              {r.tags.length > 0 && (
+                <div className="flex flex-wrap gap-[3px]">
+                  {r.tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="text-[7px] border border-[var(--color-border-default)] rounded-[2px] px-[3px] py-[1px] text-[var(--color-text-dim)]"
+                    >
+                      {tag.replace(/_/g, " ")}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <span className="text-[8px] text-[var(--color-text-dim)] opacity-30 ml-auto">details →</span>
+            </div>
           </div>
         );
       })}
@@ -215,6 +263,7 @@ function ConfluenceSection({ results }: { results: ConfluenceResult[] }) {
 export function SignalsPanel() {
   const [cards, setCards]           = useState<RichCard[]>([]);
   const [confluence, setConfluence] = useState<ConfluenceResult[]>([]);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [loading, setLoading]       = useState(true);
   const [lastFetch, setLastFetch]   = useState<number | null>(null);
   const [selected, setSelected]     = useState<RichCard | null>(null);
@@ -237,6 +286,9 @@ export function SignalsPanel() {
     }
     if (payload.confluence) {
       setConfluence(payload.confluence);
+    }
+    if (payload.generatedAt) {
+      setGeneratedAt(payload.generatedAt);
     }
     setLoading(false);
   }, []);
@@ -315,10 +367,14 @@ export function SignalsPanel() {
             ))
           ) : (
             <>
-              {/* Confluence verdicts — above signal cards */}
-              <ConfluenceSection results={confluence} />
+              {/* Confluence verdicts — clickable, open detail panel */}
+              <ConfluenceSection
+                results={confluence}
+                generatedAt={generatedAt}
+                onSelect={setSelected}
+              />
 
-              {/* Signal cards */}
+              {/* Agent signal cards */}
               {cards.length === 0 ? (
                 <div className="px-[14px] py-[20px] text-center">
                   <p className="text-[9px] text-[var(--color-text-dim)] opacity-50">No signals yet</p>
@@ -326,7 +382,6 @@ export function SignalsPanel() {
                 </div>
               ) : (
                 <>
-                  {/* Divider label before individual agent signals */}
                   <div className="px-[14px] py-[6px] flex items-center gap-[5px] border-b border-[var(--color-border-default)]">
                     <span className="w-[4px] h-[4px] rounded-full bg-[var(--color-accent-green)] opacity-70" />
                     <span className="text-[8px] tracking-[.14em] text-[var(--color-text-dim)] uppercase">
