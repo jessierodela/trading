@@ -7,8 +7,15 @@
  * Clicking a card expands it in-place (col-span-3) to show a full breakdown.
  * Clicking × or the same card again collapses it.
  *
- * AgentGrid and AgentCard are intentionally left untouched — this component
- * replaces them in the render path when expansion is needed.
+ * The Confluence Engine card (AC) is rendered separately — it shows the
+ * per-symbol verdict summary from confluence[] rather than signal counts.
+ * It is not expandable (no per-agent logic to explain) and not part of AGENTS.
+ *
+ * CHANGE LOG:
+ *  - Added ConfluenceCard component — reads confluence[] from signals:update
+ *    and /api/signals, renders verdict + score per symbol.
+ *  - Added AC entry in AGENT_META for grid display.
+ *  - SignalsResponse extended to include confluence[].
  */
 
 import { useEffect, useState } from "react";
@@ -28,9 +35,32 @@ interface AgentResult {
   signals:     { type: string }[];
 }
 
+interface ConfluenceResult {
+  symbol:        string;
+  verdict:       string;
+  weightedScore: number;
+  narrative:     string;
+  tags:          string[];
+  agentVotes:    { agent: string; signal: string; confidence: string; score: number }[];
+  gateMet:       boolean;
+  hasHardConflict: boolean;
+}
+
 interface SignalsResponse {
   agentResults: AgentResult[];
+  confluence?:  ConfluenceResult[];
 }
+
+// ─── Verdict display helpers ────────────────────────────────────────────────
+
+const VERDICT_STYLE: Record<string, { label: string; color: string }> = {
+  aligned_bullish:      { label: "Aligned Bullish",      color: "text-[var(--color-accent-green)]"  },
+  bullish_but_extended: { label: "Bullish / Extended",   color: "text-[var(--color-accent-blue)]"   },
+  mixed_structure:      { label: "Mixed Structure",      color: "text-[var(--color-accent-orange)]" },
+  bearish_structure:    { label: "Bearish Structure",    color: "text-[var(--color-accent-red)]"    },
+  countertrend_only:    { label: "Countertrend Only",    color: "text-[var(--color-accent-orange)]" },
+  no_trade:             { label: "No Trade",             color: "text-[var(--color-text-dim)]"      },
+};
 
 // ─── Merge live counts into static config ──────────────────────────────────
 
@@ -189,6 +219,110 @@ const AGENT_META: Record<string, AgentMeta> = {
   },
 };
 
+// ─── Confluence card ────────────────────────────────────────────────────────
+// Distinct from agent cards — shows per-symbol verdict + score.
+// Not expandable. Spans full row (col-span-3) to visually separate it
+// from the five agent cards below.
+
+function ConfluenceCard({ results }: { results: ConfluenceResult[] }) {
+  const hasResults = results.length > 0;
+
+  return (
+    <div className="col-span-3 rounded-[6px] border border-[var(--color-border-default)] bg-[var(--color-surface-card)] px-[18px] py-[12px]">
+
+      {/* Header */}
+      <div className="flex items-center gap-[8px] mb-[10px]">
+        <span className="w-[5px] h-[5px] rounded-full bg-[var(--color-accent-blue)] opacity-70" />
+        <span className="text-[10px] font-semibold text-[var(--color-text-primary)]">
+          Confluence Engine
+        </span>
+        <span className="text-[9px] text-[var(--color-text-dim)]">
+          — multi-agent verdict synthesis
+        </span>
+        <span className="ml-auto text-[8px] text-[var(--color-text-dim)] opacity-40 tracking-widest uppercase">
+          A1 + A3 gate · A2 A4 weighted · A5 modifier
+        </span>
+      </div>
+
+      {!hasResults ? (
+        <p className="text-[9px] text-[var(--color-text-dim)] opacity-50">
+          No verdicts yet — run a refresh to evaluate agent confluence.
+        </p>
+      ) : (
+        <div className="grid grid-cols-3 gap-[10px]">
+          {results.map((r) => {
+            const vs = VERDICT_STYLE[r.verdict] ?? { label: r.verdict, color: "text-[var(--color-text-dim)]" };
+            // Score bar: range -8 to +8, normalise to 0–100%
+            const scoreNorm = Math.round(((r.weightedScore + 8) / 16) * 100);
+
+            return (
+              <div
+                key={r.symbol}
+                className="border border-[var(--color-border-subtle)] rounded-[5px] px-[12px] py-[10px]"
+              >
+                {/* Symbol + verdict */}
+                <div className="flex items-center justify-between mb-[5px]">
+                  <span className="text-[12px] font-medium text-[var(--color-text-primary)]">
+                    {r.symbol}
+                  </span>
+                  <span className={`text-[9px] font-semibold tracking-wide ${vs.color}`}>
+                    {vs.label}
+                  </span>
+                </div>
+
+                {/* Score bar */}
+                <div className="h-[2px] w-full bg-[var(--color-border-default)] rounded-full overflow-hidden mb-[6px]">
+                  <div
+                    className={`h-full rounded-full ${
+                      r.weightedScore >= 1.5
+                        ? "bg-[var(--color-accent-green)]"
+                        : r.weightedScore <= -1.5
+                        ? "bg-[var(--color-accent-red)]"
+                        : "bg-[var(--color-accent-blue)]"
+                    } opacity-60`}
+                    style={{ width: `${scoreNorm}%` }}
+                  />
+                </div>
+
+                {/* Narrative */}
+                <p className="text-[9px] text-[var(--color-text-secondary)] leading-[1.5] mb-[6px]">
+                  {r.narrative}
+                </p>
+
+                {/* Tags + score */}
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap gap-[3px]">
+                    {r.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="text-[7px] border border-[var(--color-border-default)] rounded-[2px] px-[4px] py-[1px] text-[var(--color-text-dim)]"
+                      >
+                        {tag.replace(/_/g, " ")}
+                      </span>
+                    ))}
+                  </div>
+                  <span className="text-[8px] text-[var(--color-text-dim)] opacity-50">
+                    score {r.weightedScore > 0 ? "+" : ""}{r.weightedScore}
+                  </span>
+                </div>
+
+                {/* Agent vote breakdown */}
+                <div className="mt-[6px] pt-[6px] border-t border-[var(--color-border-subtle)] flex flex-wrap gap-x-[8px] gap-y-[2px]">
+                  {r.agentVotes.map((v) => (
+                    <span key={v.agent} className="text-[7px] text-[var(--color-text-dim)] opacity-60">
+                      {v.agent.split(" ")[0]}: {v.signal} ({v.score > 0 ? "+" : ""}{v.score.toFixed(1)})
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Expanded card ─────────────────────────────────────────────────────────
 
 function ExpandedAgentCard({
@@ -328,7 +462,7 @@ function ExpandedAgentCard({
   );
 }
 
-// ─── Collapsed card — mirrors AgentCard exactly ────────────────────────────
+// ─── Collapsed card ────────────────────────────────────────────────────────
 
 function CollapsedAgentCard({
   agent,
@@ -382,8 +516,9 @@ function CollapsedAgentCard({
 // ─── Main component ────────────────────────────────────────────────────────
 
 export function LiveAgentGrid() {
-  const [agents, setAgents]         = useState<Agent[]>(AGENTS);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [agents, setAgents]           = useState<Agent[]>(AGENTS);
+  const [expandedId, setExpandedId]   = useState<string | null>(null);
+  const [confluence, setConfluence]   = useState<ConfluenceResult[]>([]);
 
   async function fetchAndMerge() {
     try {
@@ -391,6 +526,9 @@ export function LiveAgentGrid() {
       const data = (await res.json()) as SignalsResponse;
       if (data.agentResults?.length) {
         setAgents(mergeAgents(AGENTS, data.agentResults));
+      }
+      if (data.confluence) {
+        setConfluence(data.confluence);
       }
     } catch (err) {
       console.error("[LiveAgentGrid] fetch error", err);
@@ -403,12 +541,15 @@ export function LiveAgentGrid() {
     return () => clearInterval(id);
   }, []);
 
-  // Listen for instant push from RefreshButton — no poll delay after manual refresh
+  // Instant push from RefreshButton — no poll delay after manual refresh
   useEffect(() => {
     function onSignalsUpdate(e: Event) {
       const data = (e as CustomEvent).detail as SignalsResponse;
       if (data.agentResults?.length) {
         setAgents(mergeAgents(AGENTS, data.agentResults));
+      }
+      if (data.confluence) {
+        setConfluence(data.confluence);
       }
     }
     window.addEventListener("signals:update", onSignalsUpdate);
@@ -420,7 +561,11 @@ export function LiveAgentGrid() {
 
   return (
     <div className="grid grid-cols-3 gap-[10px]">
-      {/* Expanded card spans full row, rendered at top */}
+
+      {/* Confluence card — always full-width at top */}
+      <ConfluenceCard results={confluence} />
+
+      {/* Expanded agent card — spans full row */}
       {expandedAgent && (
         <ExpandedAgentCard
           agent={expandedAgent}
@@ -428,7 +573,7 @@ export function LiveAgentGrid() {
         />
       )}
 
-      {/* Remaining 4 cards fill the next row normally */}
+      {/* Five agent cards */}
       {collapsedAgents.map((agent) => (
         <CollapsedAgentCard
           key={agent.id}
