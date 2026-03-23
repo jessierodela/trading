@@ -66,10 +66,18 @@ interface AgentMeta {
 
 const AGENT_META: Record<string, AgentMeta> = {
   A1: {
-    tagline: "GPT-4o powered momentum classifier",
+    tagline: "Momentum classifier with structure-first reasoning",
     description:
       "Reads pre-fetched indicator and volatility data for each symbol, then calls GPT-4o to classify short-term momentum into 1 of 8 market states. The agent never fetches data itself — all indicator computation happens upstream in the cache layer.",
-    indicators: ["RSI (1h)", "MACD histogram (1h)", "EMA20 (1h)", "ATR (1h)", "Volume / Relative Volume"],
+    indicators: [
+      "RSI (1h)",
+      "MACD histogram (1h)",
+      "EMA20 (1h)",
+      "Relative volume",
+      "ATR (1h)",
+      "Distance from EMA20 (ATR)",
+      "Candle range (ATR)",
+    ],
     logic: [
       { label: "1. Structure",   detail: "Determines directional bias using price vs EMA20 and EMA20 slope." },
       { label: "2. Momentum",    detail: "Evaluates RSI level and change, MACD histogram sign and direction, and whether volume confirms momentum." },
@@ -81,13 +89,22 @@ const AGENT_META: Record<string, AgentMeta> = {
       { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "rollover_risk" },
       { type: "—",     color: "text-[var(--color-text-dim)]",     condition: "neutral" },
     ],
-    notes: "Confidence is set by GPT-4o based on indicator alignment: high = strong agreement, medium = mixed evidence, low = weak or incomplete data.",
+    notes: "Confidence reflects the quality of alignment across structure, momentum, and implication: high = broad confirmation, medium = mixed but usable evidence, low = weak, conflicting, or incomplete data.",
   },
   A2: {
-    tagline: "Bollinger Band breakout detector",
+    tagline: "Bollinger Band breakout setup interpreter",
     description:
       "Monitors Bollinger Band structure, band-width compression/expansion, and relative volume to identify breakout, breakdown, or squeeze-watch conditions. Signals are classified as BUY, SELL, or WATCH based on band breach quality, volatility expansion, and confirmation strength.",
-    indicators: ["Bollinger Bands (20, 2σ)", "Band width", "Volume"],
+    indicators: [
+      "Bollinger Bands (20, 2σ)",
+      "Band width",
+      "Band width direction",
+      "Price vs bands",
+      "Close quality",
+      "Relative volume",
+      "Range context",
+      "Extension risk",
+    ],
     logic: [
       { label: "Structure", detail: "Price location relative to the Bollinger Bands, volatility state, and whether compression or expansion is present." },
       { label: "Breakout Conditions", detail: "Confirms upper-band or lower-band breach using close quality, band-width expansion, volume confirmation, and extension risk." },
@@ -104,7 +121,16 @@ const AGENT_META: Record<string, AgentMeta> = {
     tagline: "EMA 50/200 market structure & directional bias engine",
     description:
       "Maps broader trend structure using EMA50, EMA200, and price location relative to both. Classifies the market as bullish, bearish, mixed, or transitional and supplies directional context to the rest of the agent stack.",
-    indicators: ["EMA50 (1d)", "EMA200 (1d)", "Price relative to both EMAs"],
+    indicators: [
+      "EMA50 (1D)",
+      "EMA200 (1D)",
+      "Price vs EMA50",
+      "Price vs EMA200",
+      "EMA spread",
+      "EMA50 slope",
+      "EMA200 slope",
+      "Cross state",
+    ],
     logic: [
       { label: "Structure",  detail: "Checks whether price is above both EMAs, below both, between them, or pressing into one." },
       { label: "EMA alignment",   detail: "Measures whether EMA50 is above EMA200, below EMA200, or actively crossing." },
@@ -135,21 +161,31 @@ const AGENT_META: Record<string, AgentMeta> = {
     notes: "High false-positive rate in strong downtrends. Use with broader structure confirmation.",
   },
   A5: {
-    tagline: "ATR volatility spike detector",
+    tagline: "ATR expansion and move-quality risk interpreter",
     description:
-      "Flags symbols where ATR is spiking relative to its recent baseline. Volatility expansions often precede or accompany major directional moves.",
-    indicators: ["ATR (1h)", "ATR% of price", "Candle range relative to ATR"],
+      "Evaluates whether current volatility is healthy and tradeable, or unstable, late, and dangerous to chase. It compares ATR to its recent baseline, measures candle expansion versus ATR, and judges whether the move is directional, non-directional, or exhaustive. This agent frames execution quality, not trend direction.",
+    indicators: [
+      "ATR (1h)",
+      "ATR baseline (20)",
+      "ATR% of price",
+      "Candle range vs ATR",
+      "Bar direction",
+      "Body % of range",
+      "Close position in bar",
+      "Relative volume",
+    ],
     logic: [
-      { label: "ATR spike",       detail: "Current ATR significantly above its 20-period average — volatility expanding." },
-      { label: "Range expansion", detail: "Candle high–low range exceeds 1.5× ATR — unusual single-bar move." },
-      { label: "Direction bias",  detail: "Spike on bullish candle = expansion. Spike on bearish candle = breakdown risk." },
+      { label: "Structure",       detail: "Classifies the volatility regime as compressed, normal, expanding, or extreme." },
+      { label: "Volatility conditions", detail: "Measures whether ATR is below, near, above, or far above baseline, and whether the current candle is normal, elevated, or outsized relative to ATR." },
+      { label: "Directional quality",  detail: "Checks whether expansion is supportive bullish, supportive bearish, non-directional, or exhaustive." },
+      { label: "Implication",  detail: "Decides whether volatility is still tradeable or whether chase and reversal risk are too high." },
     ],
     signalTypes: [
-      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "ATR spike without directional bias" },
-      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "ATR spike on bullish candle" },
-      { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "ATR spike on bearish candle" },
+      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "Volatility is unclear, chaotic, non-directional, or too extended to chase" },
+      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Bullish volatility expansion is present and still tradeable" },
+      { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "Bearish volatility expansion is present and still tradeable" },
     ],
-    notes: "Idle until ATR threshold is crossed. Most useful during earnings or macro events.",
+    notes: "Execution-risk layer only — not a trigger agent.",
   },
 };
 
