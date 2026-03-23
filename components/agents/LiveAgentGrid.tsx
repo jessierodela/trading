@@ -152,7 +152,7 @@ const AGENT_META: Record<string, AgentMeta> = {
     logic: [
       { label: "Oversold condition", detail: "Checks whether RSI is meaningfully oversold. Below 30 is notable; below 25 is deep oversold and stronger for bounce setups." },
       { label: "Histogram turning",  detail: "Evaluates whether the MACD histogram is becoming less negative or turning positive, signaling downside momentum may be fading." },
-      { label: "Mean distance",      detail: "Measures how far price is stretched below EMA20. Greater downside extension increases bounce potential, but also raises risk in strong downtrends" },
+      { label: "Mean distance",      detail: "Measures how far price is stretched below EMA20. Greater downside extension increases bounce potential, but also raises risk in strong downtrends." },
     ],
     signalTypes: [
       { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "RSI oversold + downside momentum stabilizing + price below EMA20" },
