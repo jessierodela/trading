@@ -62,7 +62,7 @@ export async function POST() {
 
   const a1Result: AgentResult = {
     id:          "A1",
-    name:        "Momentum Scout AI",
+    name:        "Momentum Scout",
     signalCount: a1Signals.length,
     alertCount:  a1Signals.filter((s) => s.confidence === "high").length,
     lastAction:  a1Signals.length
