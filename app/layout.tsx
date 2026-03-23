@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { DM_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -11,6 +11,13 @@ const dmMono = DM_Mono({
 export const metadata: Metadata = {
   title: "Trading — Agent Dashboard",
   description: "AI agent trading signal dashboard",
+};
+
+// Tells mobile browsers to use the device's actual width
+// instead of zooming out to fit a desktop layout
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
