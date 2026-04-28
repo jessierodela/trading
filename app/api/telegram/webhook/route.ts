@@ -226,15 +226,18 @@ function extractSignalPayload(data: unknown, symbol: string): TelegramSignalPayl
     ) ?? confluenceArr[0]; // fall back to first if only one symbol in cache
 
     // Derive confidence label from score
-    const MAX_SCORE = 13;
-    const ratio = entry.weightedScore / MAX_SCORE;
-    const confidence = ratio >= 0.7 ? "high" : ratio >= 0.4 ? "medium" : "low";
+    const MAX_SCORE = 8;
+    const MIN_SCORE = -8;
+    const rawScore = entry.weightedScore ?? 0;
+    // Normalize [-8, 8] → [0, 1] for display and confidence
+    const normalized = (rawScore - MIN_SCORE) / (MAX_SCORE - MIN_SCORE); // 0.0–1.0
+    const confidence = normalized >= 0.75 ? "high" : normalized >= 0.5 ? "medium" : "low";
 
     return {
       symbol:     entry.symbol,
       direction:  entry.verdict ?? "NEUTRAL",
       confidence,
-      score:      entry.weightedScore,
+      score:      rawScore,
       maxScore:   MAX_SCORE,
       summary:    entry.narrative ?? "",
       agents:     (entry.agentVotes ?? []).map((v) => ({
