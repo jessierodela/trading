@@ -61,12 +61,13 @@ const AGENT_EMOJI: Record<string, string> = {
 export function formatSignalMessage(payload: TelegramSignalPayload): string {
   const dirEmoji = DIRECTION_EMOJI[payload.direction] ?? "⚪";
   const confEmoji = CONFIDENCE_EMOJI[payload.confidence] ?? "📊";
-  const scoreBar = buildScoreBar(payload.score, payload.maxScore);
+  const scoreBar = buildScoreBar(payload.score, -8, 8);
+  const scoreLabel = `${payload.score > 0 ? "+" : ""}${payload.score}/8`;
   const time = payload.fetchedAt
     ? new Date(payload.fetchedAt).toLocaleTimeString("en-US", {
         hour: "2-digit",
         minute: "2-digit",
-        timeZone: "America/Chicago", // Houston / CT
+        timeZone: "America/Chicago",
       })
     : "—";
 
@@ -83,7 +84,7 @@ export function formatSignalMessage(payload: TelegramSignalPayload): string {
     `<b>🔭 ${payload.symbol} Signal</b>  <i>${time} CT</i>`,
     ``,
     `${dirEmoji} <b>${payload.direction}</b>  ${confEmoji} ${payload.confidence.toUpperCase()}`,
-    `${scoreBar}  <code>${payload.score}/${payload.maxScore}</code>`,
+    `${scoreBar}  <code>${scoreLabel}</code>`,
     ``,
     `<b>Agents:</b>`,
     agentLines,
@@ -111,7 +112,9 @@ export function formatStatusMessage(cachedSymbols: string[]): string {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildScoreBar(score: number, max: number): string {
-  const filled = Math.round((score / max) * 8);
+// Score range is -8 to +8. Bar shows position within that full range.
+function buildScoreBar(score: number, min: number, max: number): string {
+  const normalized = (score - min) / (max - min); // 0.0–1.0
+  const filled = Math.min(8, Math.max(0, Math.round(normalized * 8)));
   return "█".repeat(filled) + "░".repeat(8 - filled);
 }
