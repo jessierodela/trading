@@ -5,24 +5,23 @@
  *
  * Full pipeline:
  *  1. Fetch indicators (taapi) + quotes (yahoo-finance2)
- *  2. Run all agents (GPT-4o) in parallel:
- *       A1  — Momentum Scout
- *       A2  — Breakout Watcher
- *       A3  — Trend Follower
- *       A4  — Volatility Arbiter
- *       A5  — Mean Reversion
- *  3. Run confluence engine (deterministic score + GPT narrative per symbol)
- *  4. Write result to memCache
- *  5. Return full signal payload in the response
+ *  2. Run Regime Detector (A6) FIRST — emits regime labels + reliability scores
+ *  3. Run all other agents (A1–A5) in parallel with regime context available
+ *  4. Run confluence engine (deterministic score + GPT narrative per symbol)
+ *  5. Write result to memCache
+ *  6. Return full signal payload in the response
  *
- * The response includes the complete dashboard data so RefreshButton
- * can push it straight to the panel — no poll delay.
+ * Regime Detector runs before A1–A5 so downstream agents and the confluence
+ * engine can read regime context. Reliability scores are passed through to the
+ * confluence engine for signal gating.
  *
  * CHANGE LOG:
  *  - Removed evaluateSignals() (legacy hardcoded agent path).
  *  - Agent IDs renumbered A1–A5 to match config/agents.ts.
  *  - Added runConfluenceEngine() — runs after agents, before memCache write.
  *    confluence[] is included in the payload and response.
+ *  - Added runRegimeDetector() (A6) — runs before A1–A5, regime context
+ *    passed to confluence engine. regimeSignals[] included in payload.
  */
 
 import { NextResponse }            from "next/server";
@@ -33,6 +32,7 @@ import { runBreakoutWatcher }      from "@/lib/agents/breakoutWatcher";
 import { runTrendFollower }        from "@/lib/agents/trendFollower";
 import { runVolatilityArbiter }    from "@/lib/agents/volatilityArbiter";
 import { runMeanReversion }        from "@/lib/agents/meanReversion";
+import { runRegimeDetector }       from "@/lib/agents/regimeDetector";
 import { runConfluenceEngine }     from "@/lib/confluence/confluenceEngine";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
 import {
@@ -45,7 +45,7 @@ export async function POST() {
   const startMs = Date.now();
   console.log("[cache/refresh] Manual refresh triggered");
 
-  // ── Step 1: Fetch indicators + quotes ───────────────────────────────────
+  // ── Step 1: Fetch indicators + quotes ─────────────────────────────────────
   // 1H fetch runs first. 1D fetch starts 15s after 1H completes so they
   // don't compete for the same taapi rate-limit slot (1 req / 15s free plan).
   const cache   = getCache();
@@ -71,12 +71,26 @@ export async function POST() {
   // 1D fetch failure is non-fatal — Trend Follower will produce no signals
   // but the rest of the pipeline continues normally.
   if (snapshot1d.lastFetchFailed) {
-    console.warn("[cache/refresh] 1D fetch failed — Trend Follower will be skipped this cycle");
+    console.warn("[cache/refresh] 1D fetch failed — Trend Follower and Regime Detector will have reduced 1D context");
   }
 
-  // ── Step 2: Run agents in parallel ──────────────────────────────────────
-  // All five GPT agents are the sole source of truth.
-  console.log("[cache/refresh] Running agents...");
+  // ── Step 2: Run Regime Detector (A6) FIRST ────────────────────────────────
+  // Must complete before A1–A5 so regime context is available for gating.
+  // RegimeSignal[] is a superset of Signal[] — safe to pass to buildActivityLog.
+  console.log("[cache/refresh] Running Regime Detector (A6)...");
+
+  const a6Signals = await runRegimeDetector(snapshot, snapshot1d);
+
+  console.log(
+    `[cache/refresh] Regime Detector complete — ` +
+    `${a6Signals.length} regime(s) classified: ` +
+    a6Signals.map((s) => `${s.symbol}=${s.regime}(${s.reliability.toFixed(2)})`).join(", ")
+  );
+
+  // ── Step 3: Run agents A1–A5 in parallel ──────────────────────────────────
+  // All five GPT agents are the sole source of truth for directional signals.
+  // Regime context is available in a6Signals if any agent needs it in future.
+  console.log("[cache/refresh] Running agents A1–A5...");
 
   const [a1Signals, a2Signals, a3Signals, a4Signals, a5Signals] = await Promise.all([
     runMomentumScoutAI(snapshot),
@@ -86,7 +100,7 @@ export async function POST() {
     runMeanReversion(snapshot),
   ]);
 
-  // ── Step 3: Build AgentResult records ───────────────────────────────────
+  // ── Step 4: Build AgentResult records ─────────────────────────────────────
 
   const a1Result: AgentResult = {
     id:          "A1",
@@ -143,17 +157,31 @@ export async function POST() {
     signals: a5Signals,
   };
 
+  const a6Result: AgentResult = {
+    id:          "A6",
+    name:        "Regime Detector",
+    signalCount: a6Signals.length,
+    alertCount:  a6Signals.filter((s) => s.reliability >= 0.8).length,
+    lastAction:  a6Signals.length
+      ? a6Signals
+          .map((s) => `${s.symbol}→${s.regime}`)
+          .join(", ") + ` (reliability avg: ${(a6Signals.reduce((acc, s) => acc + s.reliability, 0) / a6Signals.length).toFixed(2)})`
+      : "No regime data — cache empty",
+    signals: a6Signals,
+  };
+
   const agentResults: AgentResult[] = [
     a1Result,
     a2Result,
     a3Result,
     a4Result,
     a5Result,
+    a6Result,
   ];
 
-  // ── Step 4: Run confluence engine ────────────────────────────────────────
+  // ── Step 5: Run confluence engine ──────────────────────────────────────────
   // Collects all agent signals, scores per symbol, calls GPT for narrative.
-  // Runs after agents complete — reads Signal[] only, no indicator fetching.
+  // a6Signals are included — confluence engine can read regime + reliability.
   console.log("[cache/refresh] Running confluence engine...");
 
   const allSignals = agentResults.flatMap((a) => a.signals);
@@ -161,15 +189,20 @@ export async function POST() {
 
   console.log(`[cache/refresh] Confluence complete — ${confluence.length} symbol(s) evaluated`);
 
-  // ── Step 5: Compute dashboard stats ─────────────────────────────────────
+  // ── Step 6: Compute dashboard stats ───────────────────────────────────────
 
-  const buySignals   = allSignals.filter((s) => s.type === "buy");
-  const highConf     = buySignals.filter((s) => s.confidence === "high");
-  const activeAgents = agentResults.filter((a) => a.signalCount > 0).length;
+  // Exclude A6 regime signals from buy/alert counts (they are context, not trades)
+  const tradingSignals = allSignals.filter((s) => s.agent !== "Regime Detector");
+  const buySignals     = tradingSignals.filter((s) => s.type === "buy");
+  const highConf       = buySignals.filter((s) => s.confidence === "high");
+
+  // activeAgents: count A1–A5 only; A6 active = it produced regime classifications
+  const tradingAgents  = agentResults.filter((a) => a.id !== "A6");
+  const activeAgents   = tradingAgents.filter((a) => a.signalCount > 0).length;
 
   const stats: DashboardStats = {
     activeAgents,
-    alertsToday:    allSignals.length,
+    alertsToday:    tradingSignals.length,
     buySignals:     buySignals.length,
     highConfidence: highConf.length,
   };
@@ -177,7 +210,7 @@ export async function POST() {
   const generatedAt = new Date().toISOString();
   const durationMs  = Date.now() - startMs;
 
-  // ── Step 6: Write to memCache ────────────────────────────────────────────
+  // ── Step 7: Write to memCache ──────────────────────────────────────────────
   const indicators = Object.fromEntries(
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators])
   );
@@ -185,9 +218,20 @@ export async function POST() {
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.derived])
   );
 
+  // Extract regime map for easy consumption by front-end
+  const regimeMap = Object.fromEntries(
+    a6Signals.map((s) => [s.symbol, {
+      regime:      s.regime,
+      reliability: s.reliability,
+      emaContext:  s.emaContext,
+      volContext:  s.volContext,
+    }])
+  );
+
   const payload = {
     agentResults,
-    confluence,   // ConfluenceResult[] — one entry per symbol that met the gate
+    confluence,
+    regimeMap,   // { [symbol]: { regime, reliability, emaContext, volContext } }
     stats,
     activity:    buildActivityLog(agentResults),
     generatedAt,
@@ -201,11 +245,12 @@ export async function POST() {
   console.log(
     `[cache/refresh] Complete — ${a1Signals.length} momentum, ` +
     `${a2Signals.length} breakout, ${a3Signals.length} trend, ` +
-    `${a4Signals.length} volatility, ${a5Signals.length} mean-reversion signals, ` +
+    `${a4Signals.length} volatility, ${a5Signals.length} mean-reversion, ` +
+    `${a6Signals.length} regime signals, ` +
     `${confluence.length} confluence verdicts, ${durationMs}ms`
   );
 
-  // ── Step 7: Return full payload ──────────────────────────────────────────
+  // ── Step 8: Return full payload ────────────────────────────────────────────
   return NextResponse.json({
     success: true,
     durationMs,
