@@ -12,6 +12,9 @@ import type { Agent } from "@/types/agent";
  *  - focus strings updated to reflect each agent's actual indicators and role.
  *  - status values set to reflect real runtime behavior.
  *  - lastAction defaults updated to match each agent's scanning behavior.
+ *  - A6 — Regime Detector added. Multi-timeframe regime classifier.
+ *    Consumes 1H + 1D indicator data. Emits regime label + reliability score.
+ *    Runs before all other agents — gates signal quality downstream.
  */
 
 export const AGENTS: Agent[] = [
@@ -59,5 +62,14 @@ export const AGENTS: Agent[] = [
     signalCount: 0,
     alertCount:  0,
     lastAction:  "Scanning for oversold conditions…",
+  },
+  {
+    id:          "A6",
+    name:        "Regime Detector",
+    status:      "active",
+    focus:       "Multi-timeframe regime classification: TREND_UP · TREND_DOWN · LOW_VOL · HIGH_VOL · CHOP · NEWS_SHOCK",
+    signalCount: 0,
+    alertCount:  0,
+    lastAction:  "Classifying market regime (1H + 1D)…",
   },
 ];
