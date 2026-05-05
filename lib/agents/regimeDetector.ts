@@ -109,9 +109,8 @@ export interface RegimeSignal extends Signal {
   };
   /** Volatility context */
   volContext: {
-    atrPct:          number | null;
-    atrRegime:       "compressed" | "normal" | "elevated" | "extreme";
-    volumeChangePct: number | null;  // bar-over-bar % — replaces relVol
+    atrPct:    number | null;
+    atrRegime: "compressed" | "normal" | "elevated" | "extreme";
   };
 }
 
@@ -219,7 +218,6 @@ Typical context: range-bound sideways market, no exploitable edge
 ### NEWS_SHOCK
 Requirements (any two or more):
 - candleRangeInAtr > 2.0 (bar range > 2× ATR baseline)
-- volumeChangePct > 200% (bar volume tripled vs prior bar)
 - atrPct > 3.0% in a single bar
 - RSI moves > 15 points in a single bar (rsiChange extreme)
 - No established trend context before the shock
@@ -300,14 +298,13 @@ Return ONLY a valid JSON object — no markdown, no preamble — matching this e
 function prescreen(
   atrPct: number | null,
   candleRangeInAtr: number | null,
-  volumeChangePct: number | null,  // bar-over-bar % change — valid signal
 ): { shockCandidate: boolean; lowVolCandidate: boolean } {
-  // volumeChangePct > 200% = volume more than tripled vs prior bar — shock signal.
-  // This replaces relativeVolume which was dimensionally broken (VWMA price / coin volume).
+  // Volume-based shock detection removed — yahoo session volume and taapi 1H bar
+  // volume are incompatible units; all derived ratios produce garbage values.
+  // ATR and candleRangeInAtr are the reliable shock signals.
   const shockCandidate =
     (atrPct != null && atrPct > 3.0) ||
-    (candleRangeInAtr != null && candleRangeInAtr > 2.0) ||
-    (volumeChangePct != null && volumeChangePct > 200);
+    (candleRangeInAtr != null && candleRangeInAtr > 2.0);
 
   const lowVolCandidate =
     (atrPct != null && atrPct < 0.5) &&
@@ -362,13 +359,9 @@ function buildPayload(
     distanceFromEmaInAtr: derived.distanceFromEmaInAtr,
 
     // ── 1H: Volume ────────────────────────────────────────────────────────
-    // taapi "vwma" returns a price value, not a volume count — volumeSma20
-    // and relativeVolume are dimensionally broken and excluded.
-    // volumeChangePct (bar-over-bar %) is the valid volume shock signal.
-    volume:           ind.volume  ?? null,
-    prevVolume:       ind.prevVolume ?? null,
-    volumeChangePct:  derived.volumeChangePct ?? null,
-    volumeExpanding:  derived.volumeExpanding ?? null,
+    // Volume fields excluded: yahoo-finance2 session volume vs taapi 1H bar volume
+    // are incompatible units — all volume-derived ratios produce garbage values.
+    // ATR and candleRangeInAtr are the reliable volatility signals here.
 
     // ── 1D: EMA stack ─────────────────────────────────────────────────────
     ema50:           ind1d?.ema50                ?? null,
@@ -495,9 +488,8 @@ function toRegimeSignal(
     volContext: {
       atrPct,
       atrRegime,
-      // volumeChangePct: bar-over-bar % change — valid volume signal.
-      // relVol excluded — VWMA (price) / yahoo volume = wrong units.
-      volumeChangePct: derived?.volumeChangePct ?? null,
+      // No volume field: yahoo session vol and taapi 1H bar vol are incompatible.
+      // ATR regime and atrPct carry the volatility signal reliably.
     },
   };
 }
@@ -535,7 +527,6 @@ export async function runRegimeDetector(
       const { shockCandidate, lowVolCandidate } = prescreen(
         derived?.atrPct ?? null,
         derived?.candleRangeInAtr ?? null,
-        derived?.volumeChangePct ?? null,
       );
       if (shockCandidate)  console.log(`[regimeDetector] ${symbol} — NEWS_SHOCK pre-screen triggered`);
       if (lowVolCandidate) console.log(`[regimeDetector] ${symbol} — LOW_VOL pre-screen triggered`);
