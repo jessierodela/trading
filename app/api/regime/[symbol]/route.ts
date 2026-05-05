@@ -115,19 +115,10 @@ function mapRegimeToPermission(regime: RegimeLabel, reliability: number): Regime
 
 export async function GET(
   _req: Request,
-  context: { params: Promise<{ symbol: string }> | { symbol: string } }
+  { params }: { params: Promise<{ symbol: string }> }
 ) {
-  let upper: string;
-  try {
-    // Next.js 15+: params is a Promise. Next.js 14: params is a plain object.
-    const params = await Promise.resolve(context.params);
-    upper = (params as { symbol: string }).symbol.toUpperCase();
-  } catch (e) {
-    return NextResponse.json(
-      { success: false, error: "Failed to resolve route params", detail: String(e) },
-      { status: 500 }
-    );
-  }
+  const { symbol } = await params;
+  const upper = symbol.toUpperCase();
 
   try {
 
