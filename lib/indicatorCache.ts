@@ -132,16 +132,16 @@ function computeDerived(ind: IndicatorValues): CachedSymbolData["derived"] {
       ? +(((( volume - prevVolume) / prevVolume) * 100).toFixed(2))
       : null;
 
-  const relativeVolume =
-    volume != null && volumeSma20 != null && volumeSma20 > 0
-      ? +((volume / volumeSma20).toFixed(3))
-      : null;
+  // volumeSma20 from taapi uses "vwma" which returns a PRICE value (not volume).
+  // Dividing yahoo volume by a price is dimensionally wrong — produces 471,000x.
+  // relativeVolume and volumeAboveAverage are nulled out here.
+  // Use volumeChangePct (volume vs prevVolume) for bar-over-bar volume analysis.
+  const relativeVolume = null;
 
   const volumeExpanding =
     volume != null && prevVolume != null ? volume > prevVolume : null;
 
-  const volumeAboveAverage =
-    volume != null && volumeSma20 != null ? volume > volumeSma20 : null;
+  const volumeAboveAverage = null; // excluded — requires valid volumeSma20
 
   // ── ATR derived ─────────────────────────────────────────────────────────
 
