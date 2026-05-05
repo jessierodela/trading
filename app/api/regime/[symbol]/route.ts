@@ -32,6 +32,11 @@
 import { NextResponse } from "next/server";
 import { memCache }     from "@/lib/signalsCache";
 
+// Force dynamic rendering — prevents Next.js from statically pre-rendering
+// this route at build time, which would collapse [symbol] into a fixed segment
+// and make context.params undefined at runtime.
+export const dynamic = "force-dynamic";
+
 // ─── Regime types ─────────────────────────────────────────────────────────────
 
 type RegimeLabel =
@@ -110,61 +115,80 @@ function mapRegimeToPermission(regime: RegimeLabel, reliability: number): Regime
 
 export async function GET(
   _req: Request,
-  context: { params: Promise<{ symbol: string }> }
+  context: { params: Promise<{ symbol: string }> | { symbol: string } }
 ) {
-  const { symbol } = await context.params;
-  const upper = symbol.toUpperCase();
-
-  // Read from in-memory cache — no DB, no GPT, instant.
-  const payload = memCache.response as {
-    regimeMap?: Record<string, {
-      regime:      RegimeLabel;
-      reliability: number;
-      emaContext:  { ema20Slope: string; ema50Above200: boolean | null };
-      volContext:  { atrPct: number | null; atrRegime: string; relVol: number | null };
-    }>;
-    generatedAt?: string;
-  } | null;
-
-  // Cache empty — dashboard hasn't been refreshed yet.
-  if (!payload?.regimeMap) {
+  let upper: string;
+  try {
+    // Next.js 15+: params is a Promise. Next.js 14: params is a plain object.
+    const params = await Promise.resolve(context.params);
+    upper = (params as { symbol: string }).symbol.toUpperCase();
+  } catch (e) {
     return NextResponse.json(
-      {
-        success:  false,
-        error:    "Regime cache is empty. Trigger POST /api/cache/refresh first.",
-        symbol:   upper,
-      },
-      { status: 404 }
+      { success: false, error: "Failed to resolve route params", detail: String(e) },
+      { status: 500 }
     );
   }
 
-  // Symbol not in regime map — not tracked or A6 skipped it.
-  const ctx = payload.regimeMap[upper];
-  if (!ctx) {
+  try {
+
+    // Read from in-memory cache — no DB, no GPT, instant.
+    const payload = memCache.response as {
+      regimeMap?: Record<string, {
+        regime:      RegimeLabel;
+        reliability: number;
+        emaContext:  { ema20Slope: string; ema50Above200: boolean | null };
+        volContext:  { atrPct: number | null; atrRegime: string; relVol: number | null };
+      }>;
+      generatedAt?: string;
+    } | null;
+
+    // Cache empty — dashboard hasn't been refreshed yet.
+    if (!payload?.regimeMap) {
+      return NextResponse.json(
+        {
+          success:  false,
+          error:    "Regime cache is empty. Trigger POST /api/cache/refresh first.",
+          symbol:   upper,
+        },
+        { status: 404 }
+      );
+    }
+
+    // Symbol not in regime map — not tracked or A6 skipped it.
+    const ctx = payload.regimeMap[upper];
+    if (!ctx) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:   `No regime data for symbol ${upper}. Supported symbols are: ${Object.keys(payload.regimeMap).join(", ")}.`,
+          symbol:  upper,
+        },
+        { status: 404 }
+      );
+    }
+
+    const mapped = mapRegimeToPermission(ctx.regime, ctx.reliability);
+
+    return NextResponse.json({
+      success:         true,
+      symbol:          upper,
+      regime:          ctx.regime,
+      reliability:     ctx.reliability,
+      directionalBias: mapped.directionalBias,
+      tradePermission: mapped.tradePermission,
+      edgeMultiplier:  mapped.edgeMultiplier,
+      sizeMultiplier:  mapped.sizeMultiplier,
+      emaContext:      ctx.emaContext,
+      volContext:      ctx.volContext,
+      reason:          mapped.reason,
+      updatedAt:       payload.generatedAt ?? null,
+    });
+
+  } catch (e) {
+    console.error("[api/regime] Unhandled error:", e);
     return NextResponse.json(
-      {
-        success: false,
-        error:   `No regime data for symbol ${upper}. Supported symbols are: ${Object.keys(payload.regimeMap).join(", ")}.`,
-        symbol:  upper,
-      },
-      { status: 404 }
+      { success: false, error: "Internal server error", detail: String(e) },
+      { status: 500 }
     );
   }
-
-  const mapped = mapRegimeToPermission(ctx.regime, ctx.reliability);
-
-  return NextResponse.json({
-    success:         true,
-    symbol:          upper,
-    regime:          ctx.regime,
-    reliability:     ctx.reliability,
-    directionalBias: mapped.directionalBias,
-    tradePermission: mapped.tradePermission,
-    edgeMultiplier:  mapped.edgeMultiplier,
-    sizeMultiplier:  mapped.sizeMultiplier,
-    emaContext:      ctx.emaContext,
-    volContext:      ctx.volContext,
-    reason:          mapped.reason,
-    updatedAt:       payload.generatedAt ?? null,
-  });
 }
