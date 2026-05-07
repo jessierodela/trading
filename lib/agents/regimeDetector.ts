@@ -636,15 +636,6 @@ export async function runRegimeDetector(
         return null;
       }
 
-      // Pre-screen log (advisory, not blocking)
-      const entry   = snapshot.data.get(symbol);
-      const derived = entry?.derived;
-      const { shockCandidate, lowVolCandidate } = prescreen(
-        derived?.atrPct ?? null,
-        derived?.candleRangeInAtr ?? null,
-      );
-      if (shockCandidate)  console.log(`[regimeDetector] ${symbol} — NEWS_SHOCK pre-screen triggered`);
-      if (lowVolCandidate) console.log(`[regimeDetector] ${symbol} — LOW_VOL pre-screen triggered`);
 
       // ── Step 2: GPT-4o classification ──────────────────────────────────
       console.log(`[regimeDetector] Calling GPT-4o for ${symbol}...`);
