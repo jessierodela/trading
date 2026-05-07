@@ -68,13 +68,16 @@ export type RegimeLabel =
   | "CHOP"
   | "NEWS_SHOCK";
 
-// Maps regime to Signal.type for dashboard rendering
+// Regime Detector does not emit trade signals — it emits regime context.
+// All regimes map to "watch" for dashboard rendering: the regime card shows
+// condition awareness, not a directional trade recommendation.
+// Directional decisions belong to the agent confluence layer, not here.
 const REGIME_TO_SIGNAL: Record<RegimeLabel, Signal["type"]> = {
-  TREND_UP:   "buy",
-  TREND_DOWN: "sell",
-  LOW_VOL:    "neutral",
+  TREND_UP:   "watch",
+  TREND_DOWN: "watch",
+  LOW_VOL:    "watch",
   HIGH_VOL:   "watch",
-  CHOP:       "neutral",
+  CHOP:       "watch",
   NEWS_SHOCK: "watch",
 };
 
@@ -150,8 +153,8 @@ interface RegimeDetectorResponse {
     rationale: string;
   };
   implication: {
-    signal:    "BUY" | "SELL" | "WATCH" | "NEUTRAL";
-    summary:   string;
+    // signal removed — regime detector does not emit directional signals.
+    summary: string;
   };
 }
 
@@ -256,6 +259,8 @@ Do not halt agents — issue an advisory only.
 ## STYLE
 
 Disciplined, analytical. No financial advice. No disclaimers.
+The implication section contains a summary string only — no signal field.
+You classify regimes. You do not emit BUY, SELL, WATCH, or NEUTRAL signals.
 Return ONLY a valid JSON object — no markdown, no preamble — matching this exact schema:
 
 {
@@ -286,31 +291,141 @@ Return ONLY a valid JSON object — no markdown, no preamble — matching this e
     "rationale": "string"
   },
   "implication": {
-    "signal": "BUY"|"SELL"|"WATCH"|"NEUTRAL",
     "summary": "string"
   }
 }`;
 
-// ─── Deterministic pre-screen ─────────────────────────────────────────────────
-// Fast heuristic to flag obvious regimes before GPT call.
-// Used for logging + potential short-circuit in future.
+// ─── Deterministic flags ──────────────────────────────────────────────────────
+//
+// These flags are computed from raw indicator data BEFORE the GPT call.
+// They are passed to validateRegime() AFTER the GPT call to enforce hard rules.
+//
+// Design principle (from review doc):
+//   Determinism First — code enforces obvious conditions.
+//   GPT as Interpreter — adds nuance, does not override deterministic signals.
+//
+// Flag thresholds:
+//   shockCandidate:    atrPct > 3.0% OR candleRangeInAtr > 2.0
+//                      → Hard override to NEWS_SHOCK, reliability capped at 0.6
+//   lowVolCandidate:   atrPct < 0.5% AND candleRangeInAtr < 0.5
+//                      → Soft constraint: if GPT disagrees, penalise reliability
+//   trendUpCandidate:  priceAboveEma20 AND ema20Slope rising AND ema50AboveEma200
+//                      → If GPT classifies TREND_DOWN, penalise reliability
+//   trendDownCandidate: NOT priceAboveEma20 AND ema20Slope falling AND NOT ema50AboveEma200
+//                      → If GPT classifies TREND_UP, penalise reliability
 
-function prescreen(
-  atrPct: number | null,
+export interface DeterministicFlags {
+  shockCandidate:     boolean;
+  lowVolCandidate:    boolean;
+  trendUpCandidate:   boolean;
+  trendDownCandidate: boolean;
+}
+
+function computeDeterministicFlags(
+  atrPct:           number | null,
   candleRangeInAtr: number | null,
-): { shockCandidate: boolean; lowVolCandidate: boolean } {
-  // Volume-based shock detection removed — yahoo session volume and taapi 1H bar
-  // volume are incompatible units; all derived ratios produce garbage values.
-  // ATR and candleRangeInAtr are the reliable shock signals.
+  priceAboveEma20:  boolean | null,
+  ema20Slope:       number | null,
+  ema50AboveEma200: boolean | null,
+  rsi:              number | null,
+): DeterministicFlags {
+  // Shock: ATR spike OR bar range blow-out
   const shockCandidate =
     (atrPct != null && atrPct > 3.0) ||
     (candleRangeInAtr != null && candleRangeInAtr > 2.0);
 
+  // Low vol: both ATR and candle range compressed
   const lowVolCandidate =
     (atrPct != null && atrPct < 0.5) &&
     (candleRangeInAtr != null && candleRangeInAtr < 0.5);
 
-  return { shockCandidate, lowVolCandidate };
+  // Trend up: price above EMA20, slope rising, macro stack bullish
+  const trendUpCandidate =
+    priceAboveEma20 === true &&
+    (ema20Slope != null && ema20Slope > 0) &&
+    ema50AboveEma200 === true;
+
+  // Trend down: price below EMA20, slope falling, macro stack bearish
+  const trendDownCandidate =
+    priceAboveEma20 === false &&
+    (ema20Slope != null && ema20Slope < 0) &&
+    ema50AboveEma200 === false;
+
+  return { shockCandidate, lowVolCandidate, trendUpCandidate, trendDownCandidate };
+}
+
+// ─── Validation layer ─────────────────────────────────────────────────────────
+//
+// Runs AFTER GPT response, BEFORE toRegimeSignal().
+// Enforces deterministic constraints that GPT cannot override.
+//
+// Hard overrides (code always wins):
+//   shockCandidate → label forced to NEWS_SHOCK, reliability capped at 0.6
+//
+// Soft penalties (GPT disagreement reduces trust, not overrides):
+//   lowVolCandidate + GPT not LOW_VOL  → reliability × 0.75
+//   trendUpCandidate + GPT = TREND_DOWN → reliability × 0.75
+//   trendDownCandidate + GPT = TREND_UP  → reliability × 0.75
+//
+// This implements the review doc architecture:
+//   deterministic flags → GPT reasoning → validation → final output
+
+function validateRegime(
+  response:  RegimeDetectorResponse,
+  flags:     DeterministicFlags,
+): RegimeDetectorResponse {
+  let label       = response.regime_classification.label;
+  let reliability = Math.min(1, Math.max(0, response.regime_classification.reliability_score ?? 0.5));
+
+  // ── Hard override: shock ───────────────────────────────────────────────────
+  if (flags.shockCandidate) {
+    if (label !== "NEWS_SHOCK") {
+      console.log(
+        `[regimeDetector] HARD OVERRIDE: shock flags set, GPT returned ${label} — forcing NEWS_SHOCK`
+      );
+      label = "NEWS_SHOCK";
+    }
+    // Cap reliability regardless — shock conditions are inherently unstable
+    reliability = Math.min(reliability, 0.6);
+  }
+
+  // ── Soft penalty: low vol disagreement ────────────────────────────────────
+  if (flags.lowVolCandidate && label !== "LOW_VOL") {
+    const before = reliability;
+    reliability = +(reliability * 0.75).toFixed(3);
+    console.log(
+      `[regimeDetector] SOFT PENALTY: lowVol flags set but GPT returned ${label} — ` +
+      `reliability ${before} → ${reliability}`
+    );
+  }
+
+  // ── Soft penalty: trend direction contradiction ────────────────────────────
+  if (flags.trendUpCandidate && label === "TREND_DOWN") {
+    const before = reliability;
+    reliability = +(reliability * 0.75).toFixed(3);
+    console.log(
+      `[regimeDetector] SOFT PENALTY: trendUp flags set but GPT returned TREND_DOWN — ` +
+      `reliability ${before} → ${reliability}`
+    );
+  }
+
+  if (flags.trendDownCandidate && label === "TREND_UP") {
+    const before = reliability;
+    reliability = +(reliability * 0.75).toFixed(3);
+    console.log(
+      `[regimeDetector] SOFT PENALTY: trendDown flags set but GPT returned TREND_UP — ` +
+      `reliability ${before} → ${reliability}`
+    );
+  }
+
+  return {
+    ...response,
+    regime_classification: {
+      ...response.regime_classification,
+      label,
+      reliability_score: reliability,
+    },
+  };
 }
 
 // ─── Payload builder ──────────────────────────────────────────────────────────
@@ -474,9 +589,9 @@ function toRegimeSignal(
     reason: [
       `[${label}] ${implication.summary}`,
       `Trend: ${trend_context.summary}`,
-      `Volatility: ${volatility_context.summary}`,
-      `Gate → recommend: ${recommendfmt} | caution: ${cautionfmt}`,
-    ].join(" — "),
+      `Vol: ${volatility_context.summary}`,
+      `Gate → ${recommendfmt} | caution: ${cautionfmt}`,
+    ].join(" | "),
     regime:      label,
     reliability,
     emaContext: {
@@ -531,9 +646,19 @@ export async function runRegimeDetector(
       if (shockCandidate)  console.log(`[regimeDetector] ${symbol} — NEWS_SHOCK pre-screen triggered`);
       if (lowVolCandidate) console.log(`[regimeDetector] ${symbol} — LOW_VOL pre-screen triggered`);
 
+      // ── Step 2: GPT-4o classification ──────────────────────────────────
       console.log(`[regimeDetector] Calling GPT-4o for ${symbol}...`);
-      const response = await callGpt4o(payload);
-      if (!response) return null;
+      const rawResponse = await callGpt4o(payload);
+      if (!rawResponse) return null;
+
+      // ── Step 3: Validate — enforce deterministic constraints ────────────
+      const response = validateRegime(rawResponse, flags);
+
+      if (response.regime_classification.label !== rawResponse.regime_classification.label) {
+        console.log(
+          `[regimeDetector] ${symbol} — validated: ${rawResponse.regime_classification.label} → ${response.regime_classification.label}`
+        );
+      }
 
       return toRegimeSignal(response, symbol, snapshot);
     })
