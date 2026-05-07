@@ -637,6 +637,23 @@ export async function runRegimeDetector(
       }
 
 
+      // ── Step 1: Compute deterministic flags from raw data ─────────────
+      const entry   = snapshot.data.get(symbol);
+      const derived = entry?.derived;
+      const flags   = computeDeterministicFlags(
+        derived?.atrPct           ?? null,
+        derived?.candleRangeInAtr ?? null,
+        derived?.priceAboveEma20  ?? null,
+        derived?.ema20Slope       ?? null,
+        snapshot1d.data.get(symbol)?.derived?.ema50AboveEma200 ?? null,
+        entry?.indicators?.rsi    ?? null,
+      );
+
+      if (flags.shockCandidate)     console.log(`[regimeDetector] ${symbol} — SHOCK flags set (will hard-override GPT)`);
+      if (flags.lowVolCandidate)    console.log(`[regimeDetector] ${symbol} — LOW_VOL flags set`);
+      if (flags.trendUpCandidate)   console.log(`[regimeDetector] ${symbol} — TREND_UP flags set`);
+      if (flags.trendDownCandidate) console.log(`[regimeDetector] ${symbol} — TREND_DOWN flags set`);
+
       // ── Step 2: GPT-4o classification ──────────────────────────────────
       console.log(`[regimeDetector] Calling GPT-4o for ${symbol}...`);
       const rawResponse = await callGpt4o(payload);
