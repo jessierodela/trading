@@ -11,71 +11,52 @@
  * Purpose:
  *   The btc-markov-edge bot calls this once per 5-minute candle boundary
  *   to get a fresh regime label without depending on the full dashboard
- *   pipeline being pre-populated. The full /api/cache/refresh pipeline
- *   is slow (taapi rate-limits, 15s 1H→1D gap, 6 GPT calls) and its
- *   cache goes stale if nobody manually triggers it.
+ *   pipeline being pre-populated.
  *
- * Pipeline (this endpoint only):
+ * Pipeline:
  *   1. Fetch 1H indicators + quote for the requested symbol (taapi + polygon)
- *   2. Fetch 1D indicators for the same symbol
+ *   2. Get 1D indicators — from module-level cache if already fetched today,
+ *      otherwise fetch fresh (with a 16s taapi rate-limit gap after 1H)
  *   3. Run Regime Detector (A6) for that symbol only
  *   4. Map RegimeSignal → RegimePayload (the shape regime_oracle.py expects)
  *   5. Return JSON
  *
- * Response shape (matches what regime_oracle.py expects at /api/regime/:symbol):
- *   {
- *     success:          true,
- *     symbol:           "BTC",
- *     regime:           "TREND_UP" | "TREND_DOWN" | "LOW_VOL" | "HIGH_VOL" | "CHOP" | "NEWS_SHOCK",
- *     reliability:      0.0–1.0,
- *     directionalBias:  "UP" | "DOWN" | "NEUTRAL",
- *     tradePermission:  "ALLOW_UP_ONLY" | "ALLOW_DOWN_ONLY" | "ALLOW_BOTH" | "BLOCK_OR_EXCEPTIONAL_ONLY" | "BLOCK",
- *     edgeMultiplier:   1.0 (default — adjusted per regime below),
- *     sizeMultiplier:   1.0 (default — adjusted per regime below),
- *     emaContext:       { ema20Slope: "rising"|"falling"|"flat", ema50Above200: bool|null },
- *     volContext:       { atrPct: number|null, atrRegime: "compressed"|"normal"|"elevated"|"extreme" },
- *     reason:           string,
- *     updatedAt:        ISO 8601,
- *   }
- *
- * Timeout note:
- *   Vercel hobby/pro serverless functions time out at 10s / 60s.
- *   This endpoint skips taapi bulk-fetch and fetches only one symbol,
- *   which is fast enough to fit in 10s on the hobby plan if taapi responds
- *   promptly. If taapi is slow, upgrade to pro (60s limit) or self-host.
+ * Timeout budget (Vercel Pro — 60s limit):
+ *   Warm calls (1D cache hit):  ~16s 1H + ~2s GPT = ~18s  ✓
+ *   Cold calls (first per day): ~16s 1H + 16s wait + ~15s 1D + ~2s GPT = ~49s  ✓
+ *   taapi rate-limit retry adds 15s and can push cold calls to ~65s — if the
+ *   1D fetch times out on first boot the route falls back to 1H-only context
+ *   for that one call. The next call will have the cache populated.
  *
  * Called by:
  *   services/regime_oracle.py → fetch_regime() → POST /api/regime/refresh
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { fetchAllIndicators }        from "@/lib/taapi";
-import { fetchAllIndicators1d }      from "@/lib/taapi1d";
-import { fetchAllQuotes }            from "@/lib/polygon";
-import { DEFAULT_INDICATOR_CONFIG }  from "@/config/indicators";
+import { fetchAllIndicators }          from "@/lib/taapi";
+import { fetchAllIndicators1d }        from "@/lib/taapi1d";
+import { fetchAllQuotes }              from "@/lib/polygon";
+import { DEFAULT_INDICATOR_CONFIG }    from "@/config/indicators";
 import { DEFAULT_INDICATOR_CONFIG_1D } from "@/config/indicators1d";
-import { runRegimeDetector }         from "@/lib/agents/regimeDetector";
-import type { RegimeLabel }          from "@/lib/agents/regimeDetector";
+import { runRegimeDetector }           from "@/lib/agents/regimeDetector";
+import type { RegimeLabel }            from "@/lib/agents/regimeDetector";
 
 // ─── Regime → gate mapping ────────────────────────────────────────────────────
-// These are the values regime_oracle.py reads to decide whether to allow a trade,
-// adjust the edge threshold, or adjust position size.
-//
 // Keep in sync with the gate logic in services/regime_oracle.py.
 
 interface RegimeGateConfig {
   tradePermission:  "ALLOW_UP_ONLY" | "ALLOW_DOWN_ONLY" | "ALLOW_BOTH" | "BLOCK_OR_EXCEPTIONAL_ONLY" | "BLOCK";
   directionalBias:  "UP" | "DOWN" | "NEUTRAL";
-  edgeMultiplier:   number;   // multiplied against base_epsilon in regime_oracle.py
-  sizeMultiplier:   number;   // multiplied against base_size in regime_oracle.py
+  edgeMultiplier:   number;
+  sizeMultiplier:   number;
 }
 
 const REGIME_GATE: Record<RegimeLabel, RegimeGateConfig> = {
   TREND_UP: {
     tradePermission: "ALLOW_UP_ONLY",
     directionalBias: "UP",
-    edgeMultiplier:  0.9,   // slightly relaxed — trend provides context
-    sizeMultiplier:  1.25,  // larger size in confirmed uptrend
+    edgeMultiplier:  0.9,
+    sizeMultiplier:  1.25,
   },
   TREND_DOWN: {
     tradePermission: "ALLOW_DOWN_ONLY",
@@ -87,50 +68,173 @@ const REGIME_GATE: Record<RegimeLabel, RegimeGateConfig> = {
     tradePermission: "ALLOW_BOTH",
     directionalBias: "NEUTRAL",
     edgeMultiplier:  1.0,
-    sizeMultiplier:  0.75,  // smaller size — low vol = small moves, tighter edge
+    sizeMultiplier:  0.75,
   },
   HIGH_VOL: {
     tradePermission: "ALLOW_BOTH",
     directionalBias: "NEUTRAL",
-    edgeMultiplier:  1.2,   // demand more edge — vol creates noise
+    edgeMultiplier:  1.2,
     sizeMultiplier:  0.75,
   },
   CHOP: {
     tradePermission: "BLOCK_OR_EXCEPTIONAL_ONLY",
     directionalBias: "NEUTRAL",
-    edgeMultiplier:  2.0,   // must clear 2× threshold to trade in chop
+    edgeMultiplier:  2.0,
     sizeMultiplier:  0.5,
   },
   NEWS_SHOCK: {
     tradePermission: "BLOCK",
     directionalBias: "NEUTRAL",
     edgeMultiplier:  1.0,
-    sizeMultiplier:  0.0,   // no trades during shock
+    sizeMultiplier:  0.0,
   },
 };
+
+// ─── Module-level 1D cache ────────────────────────────────────────────────────
+// 1D indicators (EMA50/200, golden/death cross context) change at most once
+// per UTC day. Fetching them on every regime request causes taapi rate-limit
+// collisions with the 1H fetch, adding 15s of retry wait every call.
+//
+// This cache stores the last successful 1D fetch per symbol. On warm calls
+// (same UTC day), the cache is returned instantly — no network call, no
+// rate-limit collision. On cold calls (first call of the day or after a
+// server restart), we fetch fresh with a 16s gap after the 1H fetch to
+// clear taapi's rate-limit window.
+//
+// Why module-level: Vercel reuses warm serverless instances across requests.
+// A module-level variable persists across invocations on the same instance,
+// giving us free in-process caching without Redis or KV setup.
+// If the instance is cold-started, the cache is empty and we fetch fresh.
+
+interface Cache1dEntry {
+  data:          Map<string, unknown>;
+  fetchedOnDate: string;  // UTC date string "YYYY-MM-DD"
+}
+
+const cache1d = new Map<string, Cache1dEntry>();  // keyed by symbol
+
+function utcDateString(): string {
+  return new Date().toISOString().slice(0, 10);  // "2026-05-08"
+}
+
+async function get1dIndicators(
+  symbol:  string,
+  assets:  { symbol: string; type: "crypto" | "stock" }[],
+): Promise<Map<string, unknown>> {
+  const today   = utcDateString();
+  const cached  = cache1d.get(symbol);
+
+  if (cached && cached.fetchedOnDate === today) {
+    console.log(
+      `[regime/refresh] 1D cache hit for ${symbol} ` +
+      `(fetched today ${today}) — skipping taapi 1D fetch`
+    );
+    return cached.data;
+  }
+
+  // Cache is cold (first call of the day or fresh instance).
+  // Wait 16s after the 1H fetch to clear taapi's rate-limit window before
+  // issuing the 1D request. Without this gap, the 1D fetch gets rate-limited
+  // and triggers a 15s retry, pushing total response time to ~53s.
+  console.log(
+    `[regime/refresh] 1D cache cold for ${symbol} ` +
+    `(last fetched: ${cached?.fetchedOnDate ?? "never"}) — ` +
+    `waiting 16s before 1D fetch to clear taapi rate-limit...`
+  );
+  await new Promise((r) => setTimeout(r, 16_000));
+
+  try {
+    const data = await fetchAllIndicators1d(assets, DEFAULT_INDICATOR_CONFIG_1D);
+    cache1d.set(symbol, { data, fetchedOnDate: today });
+    console.log(`[regime/refresh] 1D indicators fetched and cached for ${symbol} (${today})`);
+    return data;
+  } catch (err) {
+    // 1D failure is non-fatal — regime detector degrades gracefully to 1H-only.
+    // Do NOT cache a failed result; the next call will retry.
+    console.warn(
+      `[regime/refresh] 1D fetch failed for ${symbol} — ` +
+      `using 1H-only context this call: ${err}`
+    );
+    return new Map();
+  }
+}
+
+// ─── Derived field helpers ────────────────────────────────────────────────────
+// Mirrors computeDerived() and computeDerived1d() in indicatorCache.ts /
+// indicatorCache1d.ts. Kept inline here so this route has no dependency on
+// the cache singletons (which carry all symbols and auto-refresh timers).
+
+function computeDerived(i: any) {
+  const hist = i.macd?.valueMACDHist ?? null;
+  return {
+    priceAboveEma20:
+      i.ema20 != null && i.currentClose != null ? i.currentClose > i.ema20 : null,
+    ema20Slope:
+      i.ema20 != null && i.prevEma20 != null ? i.ema20 - i.prevEma20 : null,
+    ema20PctDist:
+      i.ema20 != null && i.currentClose != null && i.ema20 > 0
+        ? +((((i.currentClose - i.ema20) / i.ema20) * 100).toFixed(2))
+        : null,
+    histChange:
+      hist != null && i.prevHist != null ? +((hist - i.prevHist).toFixed(6)) : null,
+    rsiChange:
+      i.rsi != null && i.prevRsi != null ? +((i.rsi - i.prevRsi).toFixed(2)) : null,
+    volumeChangePct:
+      i.volume != null && i.prevVolume != null && i.prevVolume > 0
+        ? +(((( i.volume - i.prevVolume) / i.prevVolume) * 100).toFixed(2))
+        : null,
+    relativeVolume:       null,   // excluded — volumeSma20 dimensionally incompatible
+    volumeExpanding:
+      i.volume != null && i.prevVolume != null ? i.volume > i.prevVolume : null,
+    volumeAboveAverage:   null,
+    atrPct:
+      i.atr != null && i.currentClose != null && i.currentClose > 0
+        ? +((( i.atr / i.currentClose) * 100).toFixed(3))
+        : null,
+    distanceFromEmaInAtr:
+      i.atr != null && i.atr > 0 && i.currentClose != null && i.ema20 != null
+        ? +(((i.currentClose - i.ema20) / i.atr).toFixed(3))
+        : null,
+    candleRangeInAtr:
+      i.atr != null && i.atr > 0 && i.high != null && i.low != null
+        ? +(((i.high - i.low) / i.atr).toFixed(3))
+        : null,
+  };
+}
+
+function computeDerived1d(i: any) {
+  return {
+    priceAboveEma50:
+      i.currentClose != null && i.ema50  != null ? i.currentClose > i.ema50  : null,
+    priceAboveEma200:
+      i.currentClose != null && i.ema200 != null ? i.currentClose > i.ema200 : null,
+    ema50AboveEma200:
+      i.ema50 != null && i.ema200 != null ? i.ema50 > i.ema200 : null,
+    ema50Slope:
+      i.ema50  != null && i.prevEma50  != null
+        ? +((i.ema50  - i.prevEma50 ).toFixed(4)) : null,
+    ema200Slope:
+      i.ema200 != null && i.prevEma200 != null
+        ? +((i.ema200 - i.prevEma200).toFixed(4)) : null,
+  };
+}
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const startMs = Date.now();
-
-  // Symbol from query param, default BTC
-  const symbol = (req.nextUrl.searchParams.get("symbol") ?? "BTC").toUpperCase();
+  const symbol  = (req.nextUrl.searchParams.get("symbol") ?? "BTC").toUpperCase();
 
   console.log(`[regime/refresh] On-demand regime classification for ${symbol}`);
 
-  // ── Step 1: Fetch 1H indicators + quote ────────────────────────────────────
-  // We only need this one symbol — pass a single-item asset list so taapi
-  // doesn't waste rate-limit slots on symbols the bot doesn't care about.
   const assetType = ["BTC", "ETH", "SOL"].includes(symbol) ? "crypto" : "stock";
-  const assets = [{ symbol, type: assetType as "crypto" | "stock" }];
+  const assets    = [{ symbol, type: assetType as "crypto" | "stock" }];
 
+  // ── Step 1: Fetch 1H indicators + quote (always fresh) ────────────────────
   let indicatorMap: Map<string, unknown>;
   let quoteMap:     Map<string, unknown>;
-  let indicatorMap1d: Map<string, unknown>;
 
   try {
-    // Fetch 1H and quotes in parallel — both are fast enough to race.
     [indicatorMap, quoteMap] = await Promise.all([
       fetchAllIndicators(assets, DEFAULT_INDICATOR_CONFIG),
       fetchAllQuotes(assets),
@@ -143,29 +247,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ── Step 2: Fetch 1D indicators ────────────────────────────────────────────
-  // 1D context (EMA50/200 slope, golden/death cross) is required for the regime
-  // detector's macro trend classification. Without it the model falls back to
-  // 1H-only context, which degrades classification quality — particularly for
-  // TREND_UP / TREND_DOWN vs CHOP disambiguation.
-  //
-  // We do NOT wait 15s here (the main route does this to avoid taapi rate-limit
-  // contention when fetching all assets). Since we're fetching only one symbol,
-  // the rate-limit window from the 1H fetch should have cleared.
-  try {
-    indicatorMap1d = await fetchAllIndicators1d(assets, DEFAULT_INDICATOR_CONFIG_1D);
-  } catch (err) {
-    // 1D failure is non-fatal — regime detector degrades gracefully.
-    console.warn(`[regime/refresh] 1D fetch failed (non-fatal): ${err}`);
-    indicatorMap1d = new Map();
-  }
+  // ── Step 2: Get 1D indicators (cached per UTC day) ────────────────────────
+  // Warm path: returns instantly from cache — no taapi call, no rate-limit risk.
+  // Cold path: waits 16s after 1H fetch, then calls taapi 1D and caches result.
+  const indicatorMap1d = await get1dIndicators(symbol, assets);
 
   // ── Step 3: Build CacheSnapshot shapes ────────────────────────────────────
-  // runRegimeDetector() expects CacheSnapshot and CacheSnapshot1d.
-  // We build minimal versions from the fetched data — only the symbol we care about.
-
-  const ind   = indicatorMap.get(symbol) as any;
-  const quote = quoteMap.get(symbol)     as any ?? null;
+  const ind   = indicatorMap.get(symbol)   as any;
+  const quote = quoteMap.get(symbol)       as any ?? null;
   const ind1d = indicatorMap1d.get(symbol) as any;
 
   if (!ind) {
@@ -176,51 +265,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Override price with live quote — same as indicatorCache.ts does.
-  if (quote?.price != null)  ind.currentClose = quote.price;
+  if (quote?.price  != null) ind.currentClose = quote.price;
   if (quote?.volume != null) ind.volume       = quote.volume;
   if (ind1d && quote?.price != null) ind1d.currentClose = quote.price;
 
-  // Inline derived computation (mirrors indicatorCache.ts computeDerived)
-  function computeDerived(i: any) {
-    const hist = i.macd?.valueMACDHist ?? null;
-    return {
-      priceAboveEma20:      i.ema20 != null && i.currentClose != null ? i.currentClose > i.ema20 : null,
-      ema20Slope:           i.ema20 != null && i.prevEma20 != null    ? i.ema20 - i.prevEma20    : null,
-      ema20PctDist:         i.ema20 != null && i.currentClose != null && i.ema20 > 0
-                              ? +((((i.currentClose - i.ema20) / i.ema20) * 100).toFixed(2)) : null,
-      histChange:           hist != null && i.prevHist != null         ? +((hist - i.prevHist).toFixed(6)) : null,
-      rsiChange:            i.rsi != null && i.prevRsi != null         ? +((i.rsi - i.prevRsi).toFixed(2)) : null,
-      volumeChangePct:      i.volume != null && i.prevVolume != null && i.prevVolume > 0
-                              ? +(((( i.volume - i.prevVolume) / i.prevVolume) * 100).toFixed(2)) : null,
-      relativeVolume:       null,   // excluded — volumeSma20 dimensionally incompatible
-      volumeExpanding:      i.volume != null && i.prevVolume != null ? i.volume > i.prevVolume : null,
-      volumeAboveAverage:   null,
-      atrPct:               i.atr != null && i.currentClose != null && i.currentClose > 0
-                              ? +((( i.atr / i.currentClose) * 100).toFixed(3)) : null,
-      distanceFromEmaInAtr: i.atr != null && i.atr > 0 && i.currentClose != null && i.ema20 != null
-                              ? +(((i.currentClose - i.ema20) / i.atr).toFixed(3)) : null,
-      candleRangeInAtr:     i.atr != null && i.atr > 0 && i.high != null && i.low != null
-                              ? +(((i.high - i.low) / i.atr).toFixed(3)) : null,
-    };
-  }
-
-  function computeDerived1d(i: any) {
-    return {
-      priceAboveEma50:  i.currentClose != null && i.ema50  != null ? i.currentClose > i.ema50  : null,
-      priceAboveEma200: i.currentClose != null && i.ema200 != null ? i.currentClose > i.ema200 : null,
-      ema50AboveEma200: i.ema50 != null && i.ema200 != null         ? i.ema50 > i.ema200         : null,
-      ema50Slope:       i.ema50  != null && i.prevEma50  != null ? +((i.ema50  - i.prevEma50 ).toFixed(4)) : null,
-      ema200Slope:      i.ema200 != null && i.prevEma200 != null ? +((i.ema200 - i.prevEma200).toFixed(4)) : null,
-    };
-  }
-
-  // Build minimal CacheSnapshot for the regime detector
   const snapshot: any = {
     lastUpdated:     new Date().toISOString(),
     refreshing:      false,
     lastFetchFailed: false,
-    stockSymbols:    assetType === "stock" ? [symbol] : [],
+    stockSymbols:    assetType === "stock"  ? [symbol] : [],
     cryptoSymbols:   assetType === "crypto" ? [symbol] : [],
     data: new Map([[symbol, {
       indicators: ind,
@@ -233,7 +286,7 @@ export async function POST(req: NextRequest) {
     lastUpdated:     new Date().toISOString(),
     refreshing:      false,
     lastFetchFailed: !ind1d,
-    stockSymbols:    assetType === "stock" ? [symbol] : [],
+    stockSymbols:    assetType === "stock"  ? [symbol] : [],
     cryptoSymbols:   assetType === "crypto" ? [symbol] : [],
     data: ind1d
       ? new Map([[symbol, {
@@ -268,9 +321,9 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Step 5: Map to RegimePayload ───────────────────────────────────────────
-  // regime_oracle.py expects this exact shape.
-  const gate = REGIME_GATE[signal.regime];
+  const gate      = REGIME_GATE[signal.regime];
   const updatedAt = new Date().toISOString();
+  const durationMs = Date.now() - startMs;
 
   const payload = {
     success:         true,
@@ -287,12 +340,11 @@ export async function POST(req: NextRequest) {
     updatedAt,
   };
 
-  const durationMs = Date.now() - startMs;
-
   console.log(
     `[regime/refresh] ${symbol} → ${signal.regime} ` +
     `(reliability=${signal.reliability.toFixed(2)}, ` +
     `permission=${gate.tradePermission}, ` +
+    `1D cache: ${cache1d.get(symbol)?.fetchedOnDate === utcDateString() ? "warm" : "cold"}, ` +
     `${durationMs}ms)`
   );
 
