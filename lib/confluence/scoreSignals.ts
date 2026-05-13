@@ -37,6 +37,24 @@ export type ConfluenceVerdict =
   | "countertrend_only"
   | "no_trade";
 
+export type RegimeLabel =
+  | "TREND_UP"
+  | "TREND_DOWN"
+  | "LOW_VOL"
+  | "HIGH_VOL"
+  | "CHOP"
+  | "NEWS_SHOCK";
+
+/**
+ * Regime context passed into scoreSymbol. Sourced from A6 Regime Detector output.
+ * Optional fields are kept loose so the engine doesn't have to construct full
+ * RegimeSignal objects — only regime + reliability are required for gating.
+ */
+export interface RegimeContext {
+  regime:      RegimeLabel;
+  reliability: number;          // 0–1 from A6
+}
+
 export interface AgentVote {
   agentName:  string;
   signal:     Signal["type"];
@@ -55,6 +73,13 @@ export interface ScoringResult {
   a4VetoActive:  boolean;         // A4 flagged high chase/extension risk
   a5Present:     boolean;         // Mean Reversion fired
   a5Signal:      Signal["type"] | null;
+  // ── Regime gating (A6 context) ──────────────────────────────────────────
+  regime:              RegimeLabel | null;  // null = no regime context provided
+  regimeReliability:   number | null;
+  regimeBlocked:       boolean;             // hard block (forces no_trade)
+  regimeBlockReason:   string | null;
+  regimeDirectionalConflict: boolean;       // softer: score sign conflicts with regime trend
+  thresholdMultiplier: number;              // applied to aligned/bearish score thresholds
 }
 
 // ─── Agent weight registry ──────────────────────────────────────────────────
@@ -97,15 +122,40 @@ function isA4Veto(signal: Signal): boolean {
   return (signal.tags ?? []).some((t) => A4_VETO_TAGS.has(t));
 }
 
+// ─── Regime gating constants ────────────────────────────────────────────────
+// Single source of truth for regime → confluence gating behavior.
+// Must stay aligned with lib/regime/permissionMap.ts (the bot-facing mapping).
+
+const MIN_RELIABILITY = 0.50;
+
+// CHOP raises the score threshold for aligned verdicts by this multiplier.
+// Default aligned thresholds are ±3.0; in CHOP that becomes ±(3.0 * 1.5) = ±4.5.
+const CHOP_THRESHOLD_MULTIPLIER = 1.5;
+
+// Hard-block regimes — verdict is forced to no_trade regardless of votes.
+const BLOCKING_REGIMES = new Set<RegimeLabel>(["NEWS_SHOCK"]);
+
 // ─── Scorer ────────────────────────────────────────────────────────────────
 
 /**
  * Score all agent signals for a single symbol.
  *
- * @param symbolSignals - All Signal[] entries for this symbol across all agents.
- *                        Each agent should contribute at most one signal per symbol.
+ * @param symbolSignals - All Signal[] entries for this symbol across A1–A5.
+ *                        A6 Regime Detector signals are ignored if present
+ *                        (defensive — engine should filter them out upstream).
+ * @param regimeCtx      - Optional regime context from A6. When provided,
+ *                         regime gating is applied to the verdict:
+ *                           - reliability < 0.50      → forced no_trade
+ *                           - NEWS_SHOCK              → forced no_trade
+ *                           - CHOP                    → aligned thresholds raised 1.5x
+ *                           - TREND_UP vs bearish score → directional conflict, verdict softened
+ *                           - TREND_DOWN vs bullish score → directional conflict, verdict softened
+ *                         When omitted, no regime gating is applied (legacy behavior).
  */
-export function scoreSymbol(symbolSignals: Signal[]): ScoringResult {
+export function scoreSymbol(
+  symbolSignals: Signal[],
+  regimeCtx?:    RegimeContext,
+): ScoringResult {
   const votes: AgentVote[] = [];
   let weightedScore   = 0;
   let a1Signal: Signal["type"] | null = null;
@@ -116,6 +166,11 @@ export function scoreSymbol(symbolSignals: Signal[]): ScoringResult {
 
   for (const signal of symbolSignals) {
     const { agent, type, confidence, tags = [] } = signal;
+
+    // ── A6 Regime Detector — never scored, never vote ─────────────────────
+    // Regime is consumed via regimeCtx parameter, not via signal votes.
+    // This guard prevents accidental scoring if A6 leaks through filtering.
+    if (agent === "Regime Detector") continue;
 
     // ── A5 Mean Reversion — track separately, don't score ─────────────────
     if (agent === "Mean Reversion") {
@@ -151,24 +206,64 @@ export function scoreSymbol(symbolSignals: Signal[]): ScoringResult {
     (a1Signal === "buy"  && a3Signal === "sell") ||
     (a1Signal === "sell" && a3Signal === "buy");
 
+  // ── Regime evaluation ────────────────────────────────────────────────────
+  // Done before verdict so regime can short-circuit to no_trade,
+  // adjust score thresholds, or soften directional verdicts.
+  let regime: RegimeLabel | null = null;
+  let regimeReliability: number | null = null;
+  let regimeBlocked = false;
+  let regimeBlockReason: string | null = null;
+  let regimeDirectionalConflict = false;
+  let thresholdMultiplier = 1.0;
+
+  if (regimeCtx) {
+    regime            = regimeCtx.regime;
+    regimeReliability = regimeCtx.reliability;
+
+    if (regimeCtx.reliability < MIN_RELIABILITY) {
+      regimeBlocked     = true;
+      regimeBlockReason =
+        `Regime reliability ${regimeCtx.reliability.toFixed(2)} below ${MIN_RELIABILITY} threshold`;
+    } else if (BLOCKING_REGIMES.has(regimeCtx.regime)) {
+      regimeBlocked     = true;
+      regimeBlockReason = `Regime ${regimeCtx.regime} blocks trading`;
+    } else if (regimeCtx.regime === "CHOP") {
+      // Raise the bar for aligned verdicts but don't block outright.
+      thresholdMultiplier = CHOP_THRESHOLD_MULTIPLIER;
+    }
+
+    // Directional conflict: score direction disagrees with trend regime.
+    // This is a soft signal — it suppresses aligned/bearish verdicts but
+    // does not force no_trade. Captured as a tag for downstream consumers.
+    if (regimeCtx.regime === "TREND_UP"   && weightedScore <= -1.5) regimeDirectionalConflict = true;
+    if (regimeCtx.regime === "TREND_DOWN" && weightedScore >= 1.5)  regimeDirectionalConflict = true;
+  }
+
   // ── Compute raw verdict ──────────────────────────────────────────────────
+  const alignedBullishThreshold = 3.0 * thresholdMultiplier;
+  const bullishLeanThreshold    = 1.5 * thresholdMultiplier;
+  const bearishThreshold        = -3.0 * thresholdMultiplier;
+
   let verdict: ConfluenceVerdict;
 
-  if (!gateMet || hasHardConflict) {
+  if (regimeBlocked) {
     verdict = "no_trade";
-  } else if (weightedScore >= 3.0 && !a4VetoActive) {
+  } else if (!gateMet || hasHardConflict) {
+    verdict = "no_trade";
+  } else if (weightedScore >= alignedBullishThreshold && !a4VetoActive && !regimeDirectionalConflict) {
     verdict = "aligned_bullish";
-  } else if (weightedScore >= 1.5) {
-    verdict = "bullish_but_extended"; // score positive but A4 veto or below strong threshold
-  } else if (weightedScore <= -3.0) {
+  } else if (weightedScore >= bullishLeanThreshold) {
+    // bullish_but_extended captures: A4 veto, sub-aligned scores, or directional conflict with TREND_DOWN
+    verdict = "bullish_but_extended";
+  } else if (weightedScore <= bearishThreshold && !regimeDirectionalConflict) {
     verdict = "bearish_structure";
   } else {
     verdict = "mixed_structure";
   }
 
   // ── A5 modifier ──────────────────────────────────────────────────────────
-  // Applied after base verdict is set.
-  if (a5Present && a5Signal === "buy") {
+  // Applied after base verdict is set, but only if not regime-blocked.
+  if (!regimeBlocked && a5Present && a5Signal === "buy") {
     if (verdict === "mixed_structure") {
       // Oversold bounce firing into a mixed read = countertrend only, no trend support
       verdict = "countertrend_only";
@@ -186,5 +281,11 @@ export function scoreSymbol(symbolSignals: Signal[]): ScoringResult {
     a4VetoActive,
     a5Present,
     a5Signal,
+    regime,
+    regimeReliability,
+    regimeBlocked,
+    regimeBlockReason,
+    regimeDirectionalConflict,
+    thresholdMultiplier,
   };
 }

@@ -17,18 +17,34 @@
  */
 
 import type { Signal } from "@/lib/signals";
-import { scoreSymbol, type ConfluenceVerdict, type ScoringResult } from "./scoreSignals";
+import {
+  scoreSymbol,
+  type ConfluenceVerdict,
+  type ScoringResult,
+  type RegimeContext,
+  type RegimeLabel,
+} from "./scoreSignals";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
+
+/**
+ * Map of symbol → regime context, produced by A6 Regime Detector and passed
+ * into runConfluenceEngine. Symbols missing from the map are scored without
+ * regime gating (fail-open). This matches current behavior where A6 only
+ * classifies crypto symbols and stocks have no regime context.
+ *
+ * When A6 expands to all symbols, consider flipping to fail-closed.
+ */
+export type RegimeMap = Record<string, RegimeContext>;
 
 export interface ConfluenceResult {
   symbol:        string;
   verdict:       ConfluenceVerdict;
   weightedScore: number;
   narrative:     string;           // GPT-generated concise summary
-  tags:          string[];         // e.g. ["mean_reversion_confluence", "a4_veto"]
+  tags:          string[];         // e.g. ["mean_reversion_confluence", "a4_veto", "regime_block"]
   agentVotes: {
     agent:      string;
     signal:     string;
@@ -37,6 +53,11 @@ export interface ConfluenceResult {
   }[];
   gateMet:         boolean;
   hasHardConflict: boolean;
+  // ── Regime context (when A6 data was available for this symbol) ─────────
+  regime:              RegimeLabel | null;
+  regimeReliability:   number | null;
+  regimeBlocked:       boolean;
+  regimeBlockReason:   string | null;
 }
 
 // ─── Verdict labels ─────────────────────────────────────────────────────────
@@ -95,10 +116,22 @@ function buildNarrativeInput(
   if (scoring.a4VetoActive)  modifiers.push("A4 Volatility Arbiter flagged high chase/extension risk");
   if (scoring.a5Present && scoring.a5Signal === "buy") modifiers.push("A5 Mean Reversion firing — oversold bounce conditions present");
   if (scoring.hasHardConflict) modifiers.push("Hard conflict: A1 and A3 disagree on direction");
+  if (scoring.regimeBlocked && scoring.regimeBlockReason) {
+    modifiers.push(`A6 Regime gate: BLOCKED — ${scoring.regimeBlockReason}`);
+  } else if (scoring.regimeDirectionalConflict && scoring.regime) {
+    modifiers.push(`A6 Regime gate: directional conflict — score disagrees with ${scoring.regime} regime`);
+  } else if (scoring.thresholdMultiplier > 1.0 && scoring.regime) {
+    modifiers.push(`A6 Regime gate: ${scoring.regime} — aligned threshold raised ${scoring.thresholdMultiplier}x`);
+  }
+
+  const regimeLine = scoring.regime
+    ? `Regime: ${scoring.regime} (reliability ${(scoring.regimeReliability ?? 0).toFixed(2)})`
+    : "Regime: not available";
 
   return `Symbol: ${symbol}
 Verdict: ${verdictLabel}
 Weighted score: ${scoring.weightedScore} (range: -8 to +8)
+${regimeLine}
 ${modifiers.length ? `Active modifiers:\n${modifiers.map((m) => `- ${m}`).join("\n")}` : "No active modifiers"}
 
 Agent signals:
@@ -162,27 +195,41 @@ function deriveTags(scoring: ScoringResult): string[] {
     }
   }
 
+  // ── Regime-derived tags ─────────────────────────────────────────────────
+  if (scoring.regimeBlocked)              tags.push("regime_block");
+  if (scoring.regimeDirectionalConflict)  tags.push("regime_directional_conflict");
+  if (scoring.thresholdMultiplier > 1.0)  tags.push("regime_threshold_raised");
+  if (scoring.regime === null)            tags.push("regime_unavailable");
+
   return tags;
 }
 
 // ─── Main engine ────────────────────────────────────────────────────────────
 
 /**
- * Run confluence analysis for all symbols that appear in any agent's Signal[].
+ * Run confluence analysis for all symbols that appear in any trading agent's Signal[].
  *
- * @param allSignals - Flat array of Signal[] from all five agents combined.
- *                     Each signal has a .symbol field used for grouping.
- * @returns ConfluenceResult[] — one entry per symbol that met the gate (A1 + A3 present).
- *          Symbols that don't meet the gate are omitted (no_trade results suppressed
- *          unless at least one agent fired, to avoid noise).
+ * @param tradingSignals - Flat array of Signal[] from A1–A5 only. A6 Regime
+ *                         Detector signals MUST be filtered out upstream. (As a
+ *                         defensive backstop, scoreSymbol also skips A6 entries
+ *                         if any leak through.)
+ * @param regimeMap      - Optional map of symbol → RegimeContext from A6.
+ *                         When provided, per-symbol regime gating is applied:
+ *                         hard blocks (NEWS_SHOCK, low reliability), softened
+ *                         verdicts (TREND directional conflict), and raised
+ *                         thresholds (CHOP). Symbols missing from the map are
+ *                         scored without regime gating (fail-open).
+ * @returns ConfluenceResult[] — one entry per symbol that met the gate
+ *          (A1 + A3 present, or any signal at all if no gate was met).
  */
 export async function runConfluenceEngine(
-  allSignals: Signal[]
+  tradingSignals: Signal[],
+  regimeMap:      RegimeMap = {},
 ): Promise<ConfluenceResult[]> {
 
   // ── Group signals by symbol ────────────────────────────────────────────
   const bySymbol = new Map<string, Signal[]>();
-  for (const signal of allSignals) {
+  for (const signal of tradingSignals) {
     if (!bySymbol.has(signal.symbol)) bySymbol.set(signal.symbol, []);
     bySymbol.get(signal.symbol)!.push(signal);
   }
@@ -190,7 +237,8 @@ export async function runConfluenceEngine(
   // ── Score + narrate in parallel (one GPT call per symbol) ──────────────
   const settled = await Promise.allSettled(
     [...bySymbol.entries()].map(async ([symbol, signals]) => {
-      const scoring = scoreSymbol(signals);
+      const regimeCtx = regimeMap[symbol];   // may be undefined → fail-open
+      const scoring   = scoreSymbol(signals, regimeCtx);
 
       // Suppress no_trade symbols where gate wasn't met and no agents fired —
       // these are symbols with no data at all, not worth surfacing.
@@ -212,13 +260,20 @@ export async function runConfluenceEngine(
           confidence: v.confidence,
           score:      v.score,
         })),
-        gateMet:         scoring.gateMet,
-        hasHardConflict: scoring.hasHardConflict,
+        gateMet:           scoring.gateMet,
+        hasHardConflict:   scoring.hasHardConflict,
+        regime:            scoring.regime,
+        regimeReliability: scoring.regimeReliability,
+        regimeBlocked:     scoring.regimeBlocked,
+        regimeBlockReason: scoring.regimeBlockReason,
       };
 
       console.log(
         `[confluenceEngine] ${symbol} → ${scoring.verdict} ` +
-        `(score: ${scoring.weightedScore}, tags: [${tags.join(", ")}])`
+        `(score: ${scoring.weightedScore}, ` +
+        `regime: ${scoring.regime ?? "n/a"}` +
+        `${scoring.regimeReliability != null ? `@${scoring.regimeReliability.toFixed(2)}` : ""}, ` +
+        `tags: [${tags.join(", ")}])`
       );
 
       return result;

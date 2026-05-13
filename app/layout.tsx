@@ -1,12 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import { DM_Mono } from "next/font/google";
 import "./globals.css";
 
-const dmMono = DM_Mono({
-  subsets: ["latin"],
-  weight: ["300", "400", "500"],
-  variable: "--font-mono",
-});
+// --font-mono is now defined in globals.css using a system monospace stack.
+// Previously imported from next/font/google (DM_Mono), which made the
+// production build fail when Google Fonts couldn't be fetched.
 
 export const metadata: Metadata = {
   title: "Trading — Agent Dashboard",
@@ -23,7 +20,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className={`${dmMono.variable} font-mono bg-surface-base text-text-primary antialiased`}>
+      <body className="font-mono bg-surface-base text-text-primary antialiased">
         {children}
       </body>
     </html>

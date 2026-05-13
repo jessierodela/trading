@@ -175,22 +175,6 @@ const AGENT_META: Record<string, AgentMeta> = {
     notes: "Context layer only — not a trigger agent",
   },
   A4: {
-    tagline: "Oversold bounce detector",
-    description:
-      "Looks for short-term downside exhaustion using RSI oversold conditions, improving MACD histogram, and price stretched below EMA20. Designed to catch reflex bounce setups after aggressive selling — not long-term trend reversals.",
-    indicators: ["RSI (1h)", "MACD histogram (1h)", "Price distance from EMA20"],
-    logic: [
-      { label: "Oversold condition", detail: "Checks whether RSI is meaningfully oversold. Below 30 is notable; below 25 is deep oversold and stronger for bounce setups." },
-      { label: "Histogram turning",  detail: "Evaluates whether the MACD histogram is becoming less negative or turning positive, signaling downside momentum may be fading." },
-      { label: "Mean distance",      detail: "Measures how far price is stretched below EMA20. Greater downside extension increases bounce potential, but also raises risk in strong downtrends." },
-    ],
-    signalTypes: [
-      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "RSI oversold + downside momentum stabilizing + price below EMA20" },
-      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Deeply oversold RSI + histogram improving/turning + meaningful stretch below EMA20" },
-    ],
-    notes: "Countertrend by design. Best used for tactical bounce setups, not trend reversal calls.",
-  },
-  A5: {
     tagline: "ATR expansion and move-quality risk interpreter",
     description:
       "Evaluates whether current volatility is healthy and tradeable, or unstable, late, and dangerous to chase. It compares ATR to its recent baseline, measures candle expansion versus ATR, and judges whether the move is directional, non-directional, or exhaustive. This agent frames execution quality, not trend direction.",
@@ -216,6 +200,22 @@ const AGENT_META: Record<string, AgentMeta> = {
       { type: "SELL",  color: "text-[var(--color-accent-red)]",   condition: "Bearish volatility expansion is present and still tradeable" },
     ],
     notes: "Execution-risk layer only — not a trigger agent.",
+  },
+  A5: {
+    tagline: "Oversold bounce detector",
+    description:
+      "Looks for short-term downside exhaustion using RSI oversold conditions, improving MACD histogram, and price stretched below EMA20. Designed to catch reflex bounce setups after aggressive selling — not long-term trend reversals.",
+    indicators: ["RSI (1h)", "MACD histogram (1h)", "Price distance from EMA20"],
+    logic: [
+      { label: "Oversold condition", detail: "Checks whether RSI is meaningfully oversold. Below 30 is notable; below 25 is deep oversold and stronger for bounce setups." },
+      { label: "Histogram turning",  detail: "Evaluates whether the MACD histogram is becoming less negative or turning positive, signaling downside momentum may be fading." },
+      { label: "Mean distance",      detail: "Measures how far price is stretched below EMA20. Greater downside extension increases bounce potential, but also raises risk in strong downtrends." },
+    ],
+    signalTypes: [
+      { type: "WATCH", color: "text-[var(--color-accent-blue)]",  condition: "RSI oversold + downside momentum stabilizing + price below EMA20" },
+      { type: "BUY",   color: "text-[var(--color-accent-green)]", condition: "Deeply oversold RSI + histogram improving/turning + meaningful stretch below EMA20" },
+    ],
+    notes: "Countertrend by design. Best used for tactical bounce setups, not trend reversal calls.",
   },
   AC: {
     tagline: "Multi-agent verdict synthesis layer",

@@ -7,7 +7,10 @@
  *  1. Fetch indicators (taapi) + quotes (yahoo-finance2)
  *  2. Run Regime Detector (A6) FIRST — emits regime labels + reliability scores
  *  3. Run all other agents (A1–A5) in parallel with regime context available
- *  4. Run confluence engine (deterministic score + GPT narrative per symbol)
+ *  4. Run confluence engine over A1–A5 signals, with A6 regime map passed as
+ *     a separate context argument (not as votes). The engine applies regime
+ *     gating: hard blocks on NEWS_SHOCK / low reliability, raised thresholds
+ *     in CHOP, and softened verdicts on directional conflict with TREND_*.
  *  5. Write result to memCache
  *  6. Return full signal payload in the response
  *
@@ -180,21 +183,46 @@ export async function POST() {
   ];
 
   // ── Step 5: Run confluence engine ──────────────────────────────────────────
-  // Collects all agent signals, scores per symbol, calls GPT for narrative.
-  // a6Signals are included — confluence engine can read regime + reliability.
+  // A6 Regime Detector is filtered out — its signals are not votes, they are
+  // context. Regime context is passed separately via regimeMap so the engine
+  // can apply gating (NEWS_SHOCK block, CHOP threshold raise, reliability floor,
+  // directional conflict softening) without polluting the score.
   console.log("[cache/refresh] Running confluence engine...");
 
-  const allSignals = agentResults.flatMap((a) => a.signals);
-  const confluence = await runConfluenceEngine(allSignals);
+  // Build regimeMap from A6 output so it can be consumed by both the
+  // confluence engine and the response payload (single source of truth).
+  const regimeMap = Object.fromEntries(
+    a6Signals.map((s) => [s.symbol, {
+      regime:      s.regime,
+      reliability: s.reliability,
+      emaContext:  s.emaContext,
+      volContext:  s.volContext,
+    }])
+  );
+
+  // Confluence input: A1–A5 only. A6 is consumed via the regimeMap.
+  const tradingSignals = agentResults
+    .filter((a) => a.id !== "A6")
+    .flatMap((a) => a.signals);
+
+  // Pass only the {regime, reliability} fields the engine needs.
+  // emaContext/volContext stay in regimeMap for downstream consumers.
+  const regimeCtxForEngine = Object.fromEntries(
+    Object.entries(regimeMap).map(([sym, ctx]) => [sym, {
+      regime:      ctx.regime,
+      reliability: ctx.reliability,
+    }])
+  );
+
+  const confluence = await runConfluenceEngine(tradingSignals, regimeCtxForEngine);
 
   console.log(`[cache/refresh] Confluence complete — ${confluence.length} symbol(s) evaluated`);
 
   // ── Step 6: Compute dashboard stats ───────────────────────────────────────
 
-  // Exclude A6 regime signals from buy/alert counts (they are context, not trades)
-  const tradingSignals = allSignals.filter((s) => s.agent !== "Regime Detector");
-  const buySignals     = tradingSignals.filter((s) => s.type === "buy");
-  const highConf       = buySignals.filter((s) => s.confidence === "high");
+  // Trading-signal stats already exclude A6 since tradingSignals is A1–A5 only.
+  const buySignals = tradingSignals.filter((s) => s.type === "buy");
+  const highConf   = buySignals.filter((s) => s.confidence === "high");
 
   // activeAgents: count A1–A5 only; A6 active = it produced regime classifications
   const tradingAgents  = agentResults.filter((a) => a.id !== "A6");
@@ -216,16 +244,6 @@ export async function POST() {
   );
   const derived = Object.fromEntries(
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.derived])
-  );
-
-  // Extract regime map for easy consumption by front-end
-  const regimeMap = Object.fromEntries(
-    a6Signals.map((s) => [s.symbol, {
-      regime:      s.regime,
-      reliability: s.reliability,
-      emaContext:  s.emaContext,
-      volContext:  s.volContext,
-    }])
   );
 
   const payload = {

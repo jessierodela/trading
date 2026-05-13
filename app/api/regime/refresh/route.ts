@@ -39,56 +39,14 @@ import { fetchAllQuotes }              from "@/lib/polygon";
 import { DEFAULT_INDICATOR_CONFIG }    from "@/config/indicators";
 import { DEFAULT_INDICATOR_CONFIG_1D } from "@/config/indicators1d";
 import { runRegimeDetector }           from "@/lib/agents/regimeDetector";
-import type { RegimeLabel }            from "@/lib/agents/regimeDetector";
+import { mapRegimeToPermission }       from "@/lib/regime/permissionMap";
 
-// ─── Regime → gate mapping ────────────────────────────────────────────────────
-// Keep in sync with the gate logic in services/regime_oracle.py.
-
-interface RegimeGateConfig {
-  tradePermission:  "ALLOW_UP_ONLY" | "ALLOW_DOWN_ONLY" | "ALLOW_BOTH" | "BLOCK_OR_EXCEPTIONAL_ONLY" | "BLOCK";
-  directionalBias:  "UP" | "DOWN" | "NEUTRAL";
-  edgeMultiplier:   number;
-  sizeMultiplier:   number;
-}
-
-const REGIME_GATE: Record<RegimeLabel, RegimeGateConfig> = {
-  TREND_UP: {
-    tradePermission: "ALLOW_UP_ONLY",
-    directionalBias: "UP",
-    edgeMultiplier:  0.9,
-    sizeMultiplier:  1.25,
-  },
-  TREND_DOWN: {
-    tradePermission: "ALLOW_DOWN_ONLY",
-    directionalBias: "DOWN",
-    edgeMultiplier:  0.9,
-    sizeMultiplier:  1.25,
-  },
-  LOW_VOL: {
-    tradePermission: "ALLOW_BOTH",
-    directionalBias: "NEUTRAL",
-    edgeMultiplier:  1.0,
-    sizeMultiplier:  0.75,
-  },
-  HIGH_VOL: {
-    tradePermission: "ALLOW_BOTH",
-    directionalBias: "NEUTRAL",
-    edgeMultiplier:  1.2,
-    sizeMultiplier:  0.75,
-  },
-  CHOP: {
-    tradePermission: "BLOCK_OR_EXCEPTIONAL_ONLY",
-    directionalBias: "NEUTRAL",
-    edgeMultiplier:  2.0,
-    sizeMultiplier:  0.5,
-  },
-  NEWS_SHOCK: {
-    tradePermission: "BLOCK",
-    directionalBias: "NEUTRAL",
-    edgeMultiplier:  1.0,
-    sizeMultiplier:  0.0,
-  },
-};
+// Regime → gate mapping is now in @/lib/regime/permissionMap so this route
+// and app/api/regime/[symbol]/route.ts share a single source of truth.
+// The shared module also enforces the MIN_RELIABILITY floor (0.50) — which
+// this route previously did not, allowing low-reliability regimes to drive
+// real sizing decisions. That bug is fixed by routing through the shared
+// mapRegimeToPermission function below.
 
 // ─── Module-level 1D cache ────────────────────────────────────────────────────
 // 1D indicators (EMA50/200, golden/death cross context) change at most once
@@ -320,9 +278,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // ── Step 5: Map to RegimePayload ───────────────────────────────────────────
-  const gate      = REGIME_GATE[signal.regime];
-  const updatedAt = new Date().toISOString();
+  // ── Step 5: Map to RegimePayload via shared permissionMap ────────────────
+  // This routes through the shared mapRegimeToPermission, which now also
+  // enforces the MIN_RELIABILITY=0.50 floor. Previously this endpoint had
+  // no reliability check; low-confidence regimes drove real sizing.
+  // signal.reason is preserved as the user-facing reason for backward
+  // compatibility with the Markov bot's payload contract.
+  const mapped     = mapRegimeToPermission(signal.regime, signal.reliability);
+  const updatedAt  = new Date().toISOString();
   const durationMs = Date.now() - startMs;
 
   const payload = {
@@ -330,10 +293,10 @@ export async function POST(req: NextRequest) {
     symbol,
     regime:          signal.regime,
     reliability:     signal.reliability,
-    directionalBias: gate.directionalBias,
-    tradePermission: gate.tradePermission,
-    edgeMultiplier:  gate.edgeMultiplier,
-    sizeMultiplier:  gate.sizeMultiplier,
+    directionalBias: mapped.directionalBias,
+    tradePermission: mapped.tradePermission,
+    edgeMultiplier:  mapped.edgeMultiplier,
+    sizeMultiplier:  mapped.sizeMultiplier,
     emaContext:      signal.emaContext,
     volContext:      signal.volContext,
     reason:          signal.reason,
@@ -343,7 +306,7 @@ export async function POST(req: NextRequest) {
   console.log(
     `[regime/refresh] ${symbol} → ${signal.regime} ` +
     `(reliability=${signal.reliability.toFixed(2)}, ` +
-    `permission=${gate.tradePermission}, ` +
+    `permission=${mapped.tradePermission}, ` +
     `1D cache: ${cache1d.get(symbol)?.fetchedOnDate === utcDateString() ? "warm" : "cold"}, ` +
     `${durationMs}ms)`
   );

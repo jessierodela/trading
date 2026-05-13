@@ -24,6 +24,12 @@
   --color-text-secondary:  #aeaeb2;   /* bumped from #98989d — clearer body default */
   --color-text-muted:      #636366;   /* bumped from #48484a — readable subtext    */
   --color-text-dim:        #48484a;   /* bumped from #3a3a3c — used for de-emphasis */
+
+  /* Monospace stack — used by Tailwind font-mono class via tailwind.config.ts.
+     Previously sourced from next/font/google (DM_Mono), which made production
+     builds fail when Google Fonts couldn't be fetched. System stack removes
+     that build-time network dependency. */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 * { box-sizing: border-box; }

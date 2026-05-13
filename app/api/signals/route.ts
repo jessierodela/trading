@@ -15,11 +15,15 @@ import {
 
 const TAG = "[api/signals]";
 
+// Currently unused — kept for future wiring. Mirrors the filtering logic
+// in /api/cache/refresh: A6 regime signals are not trade alerts and must
+// not inflate counts.
 function computeStats(agentResults: AgentResult[]): DashboardStats {
-  const allSignals   = agentResults.flatMap((a) => a.signals);
-  const buySignals   = allSignals.filter((s) => s.type === "buy");
-  const highConf     = buySignals.filter((s) => s.confidence === "high");
-  const activeAgents = agentResults.filter((a) => a.signalCount > 0).length;
+  const tradingAgents = agentResults.filter((a) => a.id !== "A6");
+  const allSignals    = tradingAgents.flatMap((a) => a.signals);
+  const buySignals    = allSignals.filter((s) => s.type === "buy");
+  const highConf      = buySignals.filter((s) => s.confidence === "high");
+  const activeAgents  = tradingAgents.filter((a) => a.signalCount > 0).length;
   return {
     activeAgents,
     alertsToday:    allSignals.length,
