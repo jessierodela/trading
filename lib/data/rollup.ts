@@ -119,8 +119,13 @@ export function rollupBars(
   const expected = barsPerPeriod(sourceTf, targetTimeframe);
 
   // Group by UTC day. Map preserves insertion order, which is ascending
-  // since source bars are ascending.
+  // since source bars must be ascending (asserted below).
+  //
+  // We refuse to silently sort here: unsorted input is itself a signal of
+  // an upstream bug (e.g. a fetch that didn't reverse Coinbase's descending
+  // tuples). Sorting would paper over that. Throw instead.
   const byDay = new Map<string, Bar[]>();
+  let prevTs: string | null = null;
   for (const b of sourceBars) {
     if (b.symbol !== sample.symbol || b.exchange !== sample.exchange) {
       throw new Error(
@@ -133,6 +138,13 @@ export function rollupBars(
         `[rollup] mixed source timeframes: ${b.timeframe} vs ${sourceTf}`
       );
     }
+    if (prevTs !== null && b.ts <= prevTs) {
+      throw new Error(
+        `[rollup] source bars must be strictly ascending; ` +
+        `got ${b.ts} after ${prevTs}. Sort before passing in (or fix the producer).`
+      );
+    }
+    prevTs = b.ts;
     const dayKey = toUtcDayStart(b.ts);
     let bucket = byDay.get(dayKey);
     if (!bucket) {

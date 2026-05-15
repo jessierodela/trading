@@ -41,10 +41,10 @@
  * insertMany() pushes ~3000 rows in one query, which is exactly the
  * pattern pg handles best. supabase-js would require ~30 REST round-trips.
  *
- * ─── No auth ──────────────────────────────────────────────────────────────
- * Per agreed scope: open endpoint for now. Auth is wired uniformly across
- * all mutation endpoints in P6. Until then: do not expose the production
- * URL publicly. Vercel preview URLs are also hittable — assume hostile.
+ * ─── Auth ────────────────────────────────────────────────────────────────
+ * Interim secret-header guard via X-Backfill-Secret + BACKFILL_SECRET env.
+ * Not real auth — replaced by uniform P6 auth alongside the risk engine.
+ * Refuses to run if BACKFILL_SECRET is unset (loud misconfig vs silent fail-open).
  *
  * ─── Request body ─────────────────────────────────────────────────────────
  * All fields optional. Defaults: last 365 days, BTC-USD, 1h source.
@@ -52,10 +52,20 @@
  *   {
  *     "startTs":      "2025-05-15T00:00:00Z",   // ISO-8601, default 365d ago
  *     "endTs":        "2026-05-15T00:00:00Z",   // ISO-8601, default now (truncated to hour)
- *     "timeBudgetMs": 45000,                     // soft cap before resume cursor
+ *     "timeBudgetMs": 45000,                     // soft cap, clamped to [1000, 55000]
  *     "rollupDaily":  true,                      // emit 1d bars from 1h, default true
- *     "requireFullDay": false                    // drop partial last day, default false
+ *     "requireFullDay": true                     // DEFAULT TRUE — see below
  *   }
+ *
+ * ─── Partial-day protection ──────────────────────────────────────────────
+ * requireFullDay defaults to TRUE. The 1h bars stored cover everything up
+ * to the last fully-closed hour, but the 1d rollup explicitly excludes the
+ * in-progress UTC day. Without this, the rollup would write a partial
+ * daily bar, and onConflict='ignore' on a later run would lock it in
+ * permanently — corrupting every daily indicator (EMA50/200, ATR, regime).
+ *
+ * Pass requireFullDay: false only if you have a non-backtest use case for
+ * partial daily bars (live UI preview) and you understand the trap.
  */
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -70,6 +80,10 @@ import {
 } from "@/lib/data/coinbaseRest";
 import { rollupBars } from "@/lib/data/rollup";
 import { DATA_SOURCE_COINBASE_REST } from "@/lib/versions";
+
+// Mutation route — never cached, always re-evaluated.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const SYMBOL    = "BTC-USD";
 const TIMEFRAME = "1h" as const;
@@ -102,6 +116,22 @@ function truncateToHourMs(ms: number): number {
   return Math.floor(ms / 1000 / GRANULARITY_SEC) * GRANULARITY_SEC * 1000;
 }
 
+/**
+ * Truncate ms to the start of its UTC day. Used to refuse the
+ * currently-in-progress UTC day from the 1d rollup, which would otherwise
+ * insert a malformed partial daily and have it locked in by
+ * onConflict='ignore' on the next pass.
+ */
+function truncateToUtcDayMs(ms: number): number {
+  const d = new Date(ms);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0);
+}
+
+// Vercel function caps — clamp upper bound to leave headroom below the
+// 60s Pro limit. Floor avoids degenerate near-zero budgets.
+const MIN_TIME_BUDGET_MS = 1_000;
+const MAX_TIME_BUDGET_MS = 55_000;
+
 function resolveParams(body: BackfillBody): ResolvedParams {
   const nowMs = Date.now();
   // End defaults to the start of the current hour — last fully-closed bar
@@ -112,16 +142,23 @@ function resolveParams(body: BackfillBody): ResolvedParams {
   const startTs = body.startTs ?? new Date(defaultStartMs).toISOString();
   const endTs   = body.endTs   ?? new Date(defaultEndMs).toISOString();
 
-  // Soft time budget — leave headroom for the final insert + response.
-  // 45s on Pro (60s cap) gives 15s of headroom.
-  const timeBudgetMs = body.timeBudgetMs ?? 45_000;
+  // Clamp time budget. Caller can't ask for 0 (immediate no-op) or 999s
+  // (will be killed by Vercel mid-response). 45s default leaves 15s headroom
+  // on Pro's 60s cap.
+  const rawBudget = body.timeBudgetMs ?? 45_000;
+  const timeBudgetMs = Math.max(MIN_TIME_BUDGET_MS, Math.min(rawBudget, MAX_TIME_BUDGET_MS));
 
   return {
     startTs,
     endTs,
     timeBudgetMs,
     rollupDaily:    body.rollupDaily    ?? true,
-    requireFullDay: body.requireFullDay ?? false,
+    // Default TRUE: never store a partial UTC day. A partial daily bar
+    // would be permanently locked in by onConflict='ignore' on later runs
+    // and would corrupt every daily indicator (EMA50/200, ATR, regime
+    // context). Callers who explicitly want partial daily bars (UI preview,
+    // never for backtest) must opt in.
+    requireFullDay: body.requireFullDay ?? true,
   };
 }
 
@@ -156,6 +193,31 @@ interface BackfillErrorResponse {
 
 export async function POST(req: NextRequest) {
   const startedAtMs = Date.now();
+
+  // ── Auth guard (interim — replaced by uniform P6 auth)
+  //
+  // Not real auth. A single shared secret in BACKFILL_SECRET env var, checked
+  // against the X-Backfill-Secret header. The goal is to keep a stranger
+  // who finds a Vercel preview URL from triggering DB writes / Coinbase
+  // burst traffic — not to defend against a determined attacker.
+  //
+  // If BACKFILL_SECRET is unset, the route refuses to run rather than
+  // fail-open. That makes the misconfiguration loud instead of silent.
+  // For local dev: set BACKFILL_SECRET=dev in .env.local.
+  const configured = process.env.BACKFILL_SECRET;
+  if (!configured) {
+    return NextResponse.json<BackfillErrorResponse>(
+      { ok: false, error: "BACKFILL_SECRET not configured on server — route refuses to run" },
+      { status: 503 },
+    );
+  }
+  const supplied = req.headers.get("x-backfill-secret");
+  if (supplied !== configured) {
+    return NextResponse.json<BackfillErrorResponse>(
+      { ok: false, error: "unauthorized" },
+      { status: 401 },
+    );
+  }
 
   // ── Parse body
   let body: BackfillBody = {};
@@ -285,7 +347,39 @@ export async function POST(req: NextRequest) {
   // ── Roll up to 1d and insert
   let insertedBars1d = 0;
   if (params.rollupDaily && deduped.length > 0) {
-    const daily = rollupBars(deduped, "1d", { requireFullPeriod: params.requireFullDay });
+    // Two-layer defense against the partial-day trap.
+    //
+    // The original bug: route truncates endTs to the current UTC HOUR, not
+    // the current UTC DAY. If the caller runs at 14:00 UTC, the deduped
+    // array contains 14 hourly bars for today. Rolling those up produces
+    // a partial daily bar that gets locked into market_bars by
+    // onConflict='ignore', corrupting every daily indicator forever.
+    //
+    // Layer 1 (here): when requireFullDay=true, refuse to even consider
+    //   bars from the current in-progress UTC day. Cheap, explicit, easy to
+    //   read in route flow.
+    // Layer 2 (rollupBars): requireFullPeriod=true drops any day with
+    //   fewer than 24 hourly bars. Catches the edge case where the start of
+    //   a backfill range is mid-day.
+    //
+    // Either layer alone would catch the original bug, but the cost of
+    // both is negligible and the defense-in-depth is worth it for
+    // backtest-grade data quality.
+    let rollupInput = deduped;
+    if (params.requireFullDay) {
+      const inProgressDayStartIso = new Date(truncateToUtcDayMs(Date.now())).toISOString();
+      const before = rollupInput.length;
+      rollupInput = rollupInput.filter((b) => b.ts < inProgressDayStartIso);
+      const dropped = before - rollupInput.length;
+      if (dropped > 0) {
+        console.log(
+          `[backfill/btc] dropped ${dropped} bars from in-progress UTC day ` +
+          `(>= ${inProgressDayStartIso}) before 1d rollup`
+        );
+      }
+    }
+
+    const daily = rollupBars(rollupInput, "1d", { requireFullPeriod: params.requireFullDay });
     if (daily.length > 0) {
       try {
         insertedBars1d = await bars.insertMany(
@@ -358,7 +452,13 @@ async function tryInsertCollected(
       { onConflict: "ignore" },
     );
     if (params.rollupDaily) {
-      const daily = rollupBars(deduped, "1d", { requireFullPeriod: params.requireFullDay });
+      // Same two-layer defense as the success path. See main handler.
+      let rollupInput = deduped;
+      if (params.requireFullDay) {
+        const inProgressDayStartIso = new Date(truncateToUtcDayMs(Date.now())).toISOString();
+        rollupInput = rollupInput.filter((b) => b.ts < inProgressDayStartIso);
+      }
+      const daily = rollupBars(rollupInput, "1d", { requireFullPeriod: params.requireFullDay });
       if (daily.length > 0) {
         inserted1d = await bars.insertMany(
           daily,

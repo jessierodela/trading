@@ -167,6 +167,42 @@ async function testCoinbaseRest(): Promise<void> {
   }
   assert("malformed tuple throws CoinbaseRestError", shapeErr !== null);
 
+  // 4b. PARTIAL API drift — first tuple valid, second invalid.
+  //     The original "sample-first" validator missed this. Now every tuple checked.
+  const stubbedFetchPartialDrift: typeof fetch = async () => jsonResponse([
+    [ts2, 100, 110, 101, 109, 5.0],
+    [ts1, 90, 100],                    // wrong arity — was previously silently passed
+  ]);
+  let partialDriftErr: CoinbaseRestError | null = null;
+  try {
+    await fetchCandleWindow(
+      "BTC-USD", "1h",
+      new Date(ts1 * 1000).toISOString(),
+      new Date((ts1 + 7200) * 1000).toISOString(),
+      { fetchImpl: stubbedFetchPartialDrift },
+    );
+  } catch (err) {
+    if (err instanceof CoinbaseRestError) partialDriftErr = err;
+  }
+  assert("partial API drift (bad tuple mid-array) throws", partialDriftErr !== null);
+
+  // 4c. Non-finite numeric values rejected (NaN/Infinity in volume).
+  const stubbedFetchInfinity: typeof fetch = async () => jsonResponse([
+    [ts1, 90, 100, 91, 99, Infinity],
+  ]);
+  let nonFiniteErr: CoinbaseRestError | null = null;
+  try {
+    await fetchCandleWindow(
+      "BTC-USD", "1h",
+      new Date(ts1 * 1000).toISOString(),
+      new Date((ts1 + 3600) * 1000).toISOString(),
+      { fetchImpl: stubbedFetchInfinity },
+    );
+  } catch (err) {
+    if (err instanceof CoinbaseRestError) nonFiniteErr = err;
+  }
+  assert("non-finite numeric value rejected", nonFiniteErr !== null);
+
   // 5. Empty response is fine (no throw, empty array out)
   const stubbedFetchEmpty: typeof fetch = async () => jsonResponse([]);
   const empty = await fetchCandleWindow(
@@ -177,6 +213,26 @@ async function testCoinbaseRest(): Promise<void> {
     { fetchImpl: stubbedFetchEmpty },
   );
   eq("empty response returns []", empty, []);
+
+  // 5b. startMs >= endMs guard — helper enforces its own contract.
+  let rangeErr: CoinbaseRestError | null = null;
+  let rangeFetchCalled = false;
+  const stubbedFetchRange: typeof fetch = async () => {
+    rangeFetchCalled = true;
+    return jsonResponse([]);
+  };
+  try {
+    await fetchCandleWindow(
+      "BTC-USD", "1h",
+      new Date(ts2 * 1000).toISOString(),     // start
+      new Date(ts1 * 1000).toISOString(),     // end < start
+      { fetchImpl: stubbedFetchRange },
+    );
+  } catch (err) {
+    if (err instanceof CoinbaseRestError) rangeErr = err;
+  }
+  assert("start >= end throws", rangeErr !== null);
+  assert("start >= end does not call fetch", !rangeFetchCalled);
 
   // 6. MAX_CANDLES_PER_REQUEST constant is documented value
   eq("max candles constant", MAX_CANDLES_PER_REQUEST, 300);
@@ -260,6 +316,26 @@ function testRollup(): void {
     mixedThrew = true;
   }
   assert("mixed symbol input throws", mixedThrew);
+
+  // 8b. Unsorted input throws — silent sorting would hide upstream bugs.
+  const unsorted = [hours[5], hours[3], hours[7]];
+  let unsortedThrew = false;
+  try {
+    rollupBars(unsorted, "1d");
+  } catch {
+    unsortedThrew = true;
+  }
+  assert("unsorted input throws", unsortedThrew);
+
+  // 8c. Strictly ascending — duplicate timestamps also throw.
+  const dupTs = [hours[0], hours[0]];
+  let dupThrew = false;
+  try {
+    rollupBars(dupTs, "1d");
+  } catch {
+    dupThrew = true;
+  }
+  assert("duplicate-ts input throws (strict ascending)", dupThrew);
 
   // 9. Same-timeframe pass-through
   const passthrough = rollupBars(hours, "1h");

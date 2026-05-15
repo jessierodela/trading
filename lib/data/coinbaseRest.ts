@@ -161,6 +161,9 @@ export async function fetchCandleWindow(
   if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
     throw new CoinbaseRestError(`invalid start/end timestamp: ${startTs} / ${endTs}`);
   }
+  if (startMs >= endMs) {
+    throw new CoinbaseRestError(`startTs must be < endTs (got ${startTs} / ${endTs})`);
+  }
   const expectedCandles = Math.ceil((endMs - startMs) / 1000 / granularity);
   if (expectedCandles > MAX_CANDLES_PER_REQUEST) {
     throw new CoinbaseRestError(
@@ -190,12 +193,15 @@ export async function fetchCandleWindow(
     throw new CoinbaseRestError(`expected array, got ${typeof raw}`);
   }
 
-  // Validate shape on a sample before mapping — cheap, catches API drift loudly.
-  if (raw.length > 0) {
-    const first = raw[0];
-    if (!Array.isArray(first) || first.length !== 6 || !first.every((v) => typeof v === "number")) {
+  // Validate EVERY tuple. Cost is negligible at ≤300 rows per request, and
+  // a partial-API-drift response (some tuples shaped right, some not) would
+  // otherwise reach rawToBar() and produce silently-malformed bars.
+  for (let i = 0; i < raw.length; i++) {
+    const t = raw[i];
+    if (!Array.isArray(t) || t.length !== 6 || !t.every((v) => typeof v === "number" && Number.isFinite(v))) {
       throw new CoinbaseRestError(
-        `expected [number, number, number, number, number, number] tuples; got ${JSON.stringify(first).slice(0, 100)}`
+        `expected [time, low, high, open, close, volume] tuple of 6 finite numbers at index ${i}; ` +
+        `got ${JSON.stringify(t).slice(0, 100)}`
       );
     }
   }
