@@ -214,6 +214,25 @@ async function testCoinbaseRest(): Promise<void> {
   );
   eq("empty response returns []", empty, []);
 
+  // 5a. Coinbase can include the end-boundary candle. Internally, the desk
+  //     treats ranges as half-open: [startTs, endTs). Verify endTs is excluded.
+  const stubbedFetchBoundary: typeof fetch = async () => jsonResponse([
+    [ts2, 100, 110, 101, 109, 5.0], // exactly at endTs — should be filtered out
+    [ts1, 90,  100, 91,  99,  3.0],
+  ]);
+
+  const boundaryBars = await fetchCandleWindow(
+    "BTC-USD",
+    "1h",
+    new Date(ts1 * 1000).toISOString(),
+    new Date(ts2 * 1000).toISOString(),
+    { fetchImpl: stubbedFetchBoundary },
+  );
+
+  eq("end-boundary candle filtered out", boundaryBars.length, 1);
+  eq("remaining bar is start candle", boundaryBars[0].ts, new Date(ts1 * 1000).toISOString());
+  eq("remaining bar close", boundaryBars[0].close, 99);
+
   // 5b. startMs >= endMs guard — helper enforces its own contract.
   let rangeErr: CoinbaseRestError | null = null;
   let rangeFetchCalled = false;

@@ -207,9 +207,16 @@ export async function fetchCandleWindow(
   }
 
   const tuples = raw as RawCandle[];
-  // Coinbase returns descending — reverse so storage gets ascending.
+
+  // Coinbase can include the end-boundary candle. Internally, our desk treats
+  // candle ranges as half-open: [startTs, endTs). Enforce that here so callers
+  // never accidentally store an in-progress or duplicate boundary candle.
   return tuples
     .map((r) => rawToBar(r, symbol, timeframe))
+    .filter((b) => {
+      const tsMs = Date.parse(b.ts);
+      return tsMs >= startMs && tsMs < endMs;
+    })
     .sort((a, b) => a.ts.localeCompare(b.ts));
 }
 
