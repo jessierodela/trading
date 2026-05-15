@@ -9,7 +9,8 @@
     "lint": "next lint",
     "migrate": "tsx migrations/run.ts",
     "migrate:status": "tsx migrations/run.ts --status",
-    "smoke:storage": "tsx _smoke/storage.ts"
+    "smoke:storage": "tsx _smoke/storage.ts",
+    "smoke:backfill": "tsx _smoke/backfill.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",
