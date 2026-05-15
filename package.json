@@ -7,10 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "migrate": "tsx migrations/run.ts",
-    "migrate:status": "tsx migrations/run.ts --status",
+    "migrate": "dotenv -e .env.local -- tsx migrations/run.ts",
+    "migrate:status": "dotenv -e .env.local -- tsx migrations/run.ts --status",
     "smoke:storage": "tsx _smoke/storage.ts",
-    "smoke:backfill": "tsx _smoke/backfill.ts"
+    "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",
@@ -26,6 +26,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.0.1",
+    "dotenv-cli": "^11.0.0",
     "eslint": "^8",
     "eslint-config-next": "15.5.18",
     "postcss": "^8",
