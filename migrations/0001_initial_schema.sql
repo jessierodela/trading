@@ -32,7 +32,7 @@ create extension if not exists pgcrypto;
 -- ============================================================================
 -- backtest schema
 -- ============================================================================
-create schema backtest;
+create schema if not exists backtest;
 
 -- ============================================================================
 -- Helper: trigger function for auto-updating updated_at columns
@@ -522,6 +522,7 @@ alter table backtest.runs      enable row level security;
 alter table backtest.trades    enable row level security;
 
 -- Anon read on public market data and features only.
+-- These are observable from the exchange anyway — leaking them costs nothing.
 create policy anon_read_market_bars
   on market_bars for select to anon using (true);
 
@@ -531,14 +532,11 @@ create policy anon_read_feature_snapshots
 create policy anon_read_regime_snapshots
   on regime_snapshots for select to anon using (true);
 
--- Strategy signals: anon can read but not see retracted ones.
-create policy anon_read_strategy_signals
-  on strategy_signals for select to anon using (deleted_at is null);
-
--- Agent outputs: anon can read non-alert outputs. Alert-severity output may
--- contain sensitive info about strategy state and stays service-role-only.
-create policy anon_read_agent_outputs
-  on agent_outputs for select to anon using (severity is distinct from 'alert');
-
--- trade_intents, orders, fills, positions, backtest.* — no anon access by
--- default. Add policies later if needed.
+-- strategy_signals and agent_outputs are NOT readable via anon. Leaking
+-- these reveals the desk's positioning logic / agent commentary in real
+-- time, which is information the venue does not give back. Reads from
+-- the Next.js dashboard must go through service-role API routes until
+-- a deliberate decision is made to expose them.
+--
+-- trade_intents, orders, fills, positions, backtest.* — also service-role
+-- only. Add policies later if/when a public read path is needed.

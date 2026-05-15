@@ -8,6 +8,8 @@ export * from "./interfaces";
 
 export { getPgPool, closePgPool } from "./clients";
 
+export { validateBar, validateFeatureSnapshot, ValidationError } from "./validators";
+
 export { PgBarStore,      InMemoryBarStore }      from "./barStore";
 export { PgFeatureStore,  InMemoryFeatureStore }  from "./featureStore";
 export { PgSignalStore,   InMemorySignalStore }   from "./signalStore";

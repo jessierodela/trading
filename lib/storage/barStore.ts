@@ -7,6 +7,7 @@
 import type { Pool, PoolClient } from "pg";
 import type { Bar, Exchange, Timeframe } from "@/lib/quant/types";
 import type { BarStore, InstrumentFilter, TimeRange } from "./interfaces";
+import { validateBar } from "./validators";
 
 // ─── Row mapping ───────────────────────────────────────────────────────────
 
@@ -47,6 +48,7 @@ export class PgBarStore implements BarStore {
   constructor(private readonly pool: Pool) {}
 
   async insert(bar: Bar, dataSourceVersion: string): Promise<Bar & { id: number }> {
+    validateBar(bar);
     const { rows } = await this.pool.query<BarRow>(
       `insert into market_bars
          (symbol, exchange, timeframe, ts, open, high, low, close, volume, trade_count, data_source_version)
@@ -68,6 +70,7 @@ export class PgBarStore implements BarStore {
     opts:              { onConflict: "ignore" | "error" } = { onConflict: "error" },
   ): Promise<number> {
     if (bars.length === 0) return 0;
+    for (const bar of bars) validateBar(bar);
 
     const cols = [
       "symbol", "exchange", "timeframe", "ts",
@@ -150,6 +153,7 @@ export class InMemoryBarStore implements BarStore {
   }
 
   async insert(bar: Bar, _dataSourceVersion: string): Promise<Bar & { id: number }> {
+    validateBar(bar);
     const k = this.key(bar);
     if (this.rows.some((r) => this.key(r) === k)) {
       throw new Error(`duplicate bar: ${k}`);
@@ -166,6 +170,7 @@ export class InMemoryBarStore implements BarStore {
   ): Promise<number> {
     let inserted = 0;
     for (const bar of bars) {
+      validateBar(bar);
       const k = this.key(bar);
       if (this.rows.some((r) => this.key(r) === k)) {
         if (opts.onConflict === "ignore") continue;

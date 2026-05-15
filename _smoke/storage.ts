@@ -82,16 +82,17 @@ async function runScenarios(
   eq(`${label} bars.fetchRecent count`, (await bars.fetchRecent({ symbol: SYM, exchange: EX, timeframe: TF }, 10)).length, 3);
   eq(`${label} bars.latestTs`, await bars.latestTs({ symbol: SYM, exchange: EX, timeframe: TF }), t(2));
 
-  // Conflict — should throw
+  // Conflict — should throw. Use a valid (well-formed) bar with the same ts.
   let conflictThrew = false;
   try {
-    await bars.insert(makeBar(0, 0), DATA_SOURCE_COINBASE_REST);
+    await bars.insert(makeBar(0, 99_999), DATA_SOURCE_COINBASE_REST);
   } catch { conflictThrew = true; }
   assert(`${label} bars duplicate throws`, conflictThrew);
 
-  // onConflict: ignore — should not throw, should not insert
+  // onConflict: ignore — should not throw, should not insert duplicates.
+  // makeBar(0, ...) and makeBar(2, ...) already exist; makeBar(3, ...) is new.
   const ignored = await bars.insertMany(
-    [makeBar(0, 0), makeBar(2, 0), makeBar(3, 107_000)],
+    [makeBar(0, 99_998), makeBar(2, 99_997), makeBar(3, 107_000)],
     DATA_SOURCE_COINBASE_REST,
     { onConflict: "ignore" },
   );
@@ -144,7 +145,113 @@ async function runScenarios(
   eq(`${label} regimes.latestAsContext reliability`, ctx?.reliability, 0.6);
 }
 
+async function runValidatorScenarios(): Promise<void> {
+  console.log(`\n=== validators ===`);
+  const store = new InMemoryBarStore();
+  const features = new InMemoryFeatureStore();
+
+  // Helper: assert insert throws
+  async function expectReject(label: string, fn: () => Promise<unknown>) {
+    let threw = false;
+    try { await fn(); } catch { threw = true; }
+    assert(label, threw);
+  }
+
+  // ── Bar validators ────────────────────────────────────────────────────
+  // Aligned bar succeeds (sanity check that the validator doesn't reject good input)
+  await store.insert(makeBar(0, 105_000), DATA_SOURCE_COINBASE_REST);
+  assert("validator allows good bar", true);
+
+  // 1h bar with minute offset → reject
+  await expectReject(
+    "validator rejects 1h bar not on hour boundary",
+    () => store.insert(
+      { ...makeBar(0, 105_000), ts: "2026-05-13T14:30:00Z", timeframe: "1h" },
+      DATA_SOURCE_COINBASE_REST,
+    ),
+  );
+
+  // Negative price → reject
+  await expectReject(
+    "validator rejects negative price",
+    () => store.insert(
+      { ...makeBar(10, 105_000), close: -1 },
+      DATA_SOURCE_COINBASE_REST,
+    ),
+  );
+
+  // OHLC sanity: high below low → reject
+  await expectReject(
+    "validator rejects high<low",
+    () => store.insert(
+      { ...makeBar(11, 105_000), high: 100, low: 200 },
+      DATA_SOURCE_COINBASE_REST,
+    ),
+  );
+
+  // Bad timestamp format → reject
+  await expectReject(
+    "validator rejects non-ISO ts",
+    () => store.insert(
+      { ...makeBar(12, 105_000), ts: "2026-05-13 14:00:00" },
+      DATA_SOURCE_COINBASE_REST,
+    ),
+  );
+
+  // Naive timestamp (no timezone) → reject
+  await expectReject(
+    "validator rejects timezone-less ts",
+    () => store.insert(
+      { ...makeBar(13, 105_000), ts: "2026-05-13T14:00:00" },
+      DATA_SOURCE_COINBASE_REST,
+    ),
+  );
+
+  // NaN price → reject
+  await expectReject(
+    "validator rejects NaN price",
+    () => store.insert(
+      { ...makeBar(14, 105_000), close: NaN },
+      DATA_SOURCE_COINBASE_REST,
+    ),
+  );
+
+  // 1d bar not at 00:00 UTC → reject
+  await expectReject(
+    "validator rejects 1d bar with non-midnight ts",
+    () => store.insert(
+      {
+        ...makeBar(0, 105_000),
+        ts: "2026-05-13T12:00:00Z",
+        timeframe: "1d",
+      },
+      DATA_SOURCE_COINBASE_REST,
+    ),
+  );
+
+  // ── Feature validators ────────────────────────────────────────────────
+  await features.insert(makeFeature(0, 105_000));
+  assert("validator allows good feature", true);
+
+  await expectReject(
+    "validator rejects feature with empty version",
+    () => features.insert({ ...makeFeature(1, 105_000), featureVersion: "" }),
+  );
+
+  await expectReject(
+    "validator rejects feature with Infinity",
+    () => features.insert({ ...makeFeature(2, 105_000), rsi14: Infinity }),
+  );
+
+  // null-valued indicators are allowed (concept applies but no data)
+  await features.insert({ ...makeFeature(3, 105_000), rsi14: null });
+  assert("validator allows null indicator value", true);
+}
+
+
 async function main(): Promise<void> {
+  await runValidatorScenarios();
+
   await runScenarios(
     "in-memory",
     new InMemoryBarStore(), new InMemoryFeatureStore(),

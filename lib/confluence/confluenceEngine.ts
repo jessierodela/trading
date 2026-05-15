@@ -1,6 +1,33 @@
 /**
  * lib/confluence/confluenceEngine.ts
  *
+ * ─── TRANSITION NOTE (read before extending) ──────────────────────────────
+ *
+ * This file is the LEGACY confluence engine: it scores signals produced by
+ * the GPT agents (A1–A5) and synthesizes a narrative for the dashboard.
+ *
+ * The TARGET architecture (P4+) replaces this with a strategy arbitrator:
+ * inputs become outputs from deterministic strategies (momentum_continuation,
+ * trend_pullback, breakout_expansion, mean_reversion_bounce — see
+ * lib/versions.ts) reading from feature_snapshots, and regime gating moves
+ * into the risk engine, not here.
+ *
+ * Until that lands, treat this file as a temporary bridge. Do NOT:
+ *   - Add deterministic strategy logic here.
+ *   - Add risk-engine concerns (position sizing, exposure caps) here.
+ *   - Add regime → trade-permission mapping fields like tradePermission,
+ *     sizeMultiplier, edgeMultiplier to ConfluenceResult. Those live in
+ *     regime_snapshots and the future risk engine. Confluence answers
+ *     "do signals agree?". Risk answers "given they agree, trade how much?".
+ *
+ * DO:
+ *   - Keep this file functional as long as the live pipeline uses agents.
+ *   - When deterministic strategies land in P4, create a new file
+ *     lib/strategies/arbitrator.ts and migrate consumers there. Delete
+ *     this once nothing depends on it.
+ *
+ * ──────────────────────────────────────────────────────────────────────────
+ *
  * Confluence Engine — post-processing layer that runs after all five agents.
  *
  * Per symbol:

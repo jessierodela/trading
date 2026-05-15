@@ -1,6 +1,10 @@
 /**
  * lib/confluence/scoreSignals.ts
  *
+ * LEGACY — scores GPT agent votes. See the transition note at the top of
+ * confluenceEngine.ts for the migration path to deterministic strategy
+ * arbitration.
+ *
  * Deterministic confluence scorer.
  *
  * Takes the Signal[] output from all five agents for a single symbol

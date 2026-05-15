@@ -6,6 +6,7 @@
 import type { Pool } from "pg";
 import type { FeatureSnapshot, Exchange, Timeframe } from "@/lib/quant/types";
 import type { FeatureStore, InstrumentFilter, TimeRange } from "./interfaces";
+import { validateFeatureSnapshot } from "./validators";
 
 // ─── Column definitions ────────────────────────────────────────────────────
 // Single source of truth for the column ↔ field mapping. Adding a feature
@@ -81,6 +82,7 @@ export class PgFeatureStore implements FeatureStore {
   constructor(private readonly pool: Pool) {}
 
   async insert(s: FeatureSnapshot): Promise<FeatureSnapshot & { id: number }> {
+    validateFeatureSnapshot(s);
     // Resolve bar_id by FK lookup. This is one query per insert — fine for
     // on-bar-close compute, but for bulk backfill prefer insertMany which
     // does the join in a single statement.
@@ -179,6 +181,7 @@ export class InMemoryFeatureStore implements FeatureStore {
   }
 
   async insert(s: FeatureSnapshot): Promise<FeatureSnapshot & { id: number }> {
+    validateFeatureSnapshot(s);
     const k = this.key(s);
     if (this.rows.some((r) => this.key(r) === k)) {
       throw new Error(`duplicate feature snapshot: ${k}`);
