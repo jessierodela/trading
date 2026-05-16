@@ -10,7 +10,8 @@
     "migrate": "dotenv -e .env.local -- tsx migrations/run.ts",
     "migrate:status": "dotenv -e .env.local -- tsx migrations/run.ts --status",
     "smoke:storage": "tsx _smoke/storage.ts",
-    "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts"
+    "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
+    "backfill:btc:bootstrap": "tsx scripts/backfillBtcBootstrap.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",
