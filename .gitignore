@@ -14,6 +14,9 @@ out/
 .env.test.local
 .env.production.local
 
+# claude
+.claude/settings.local.json
+
 # misc
 .DS_Store
 *.pem

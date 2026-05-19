@@ -221,7 +221,6 @@ Never commit:
 Use example files:
 
 - `.env.example`
-- `.mcp.example.json`
 
 ## Communication Rules
 
