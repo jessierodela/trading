@@ -81,51 +81,72 @@ function rowToFeature(row: FeatureRow): FeatureSnapshot & { id: number } {
 export class PgFeatureStore implements FeatureStore {
   constructor(private readonly pool: Pool) {}
 
-  async insert(s: FeatureSnapshot): Promise<FeatureSnapshot & { id: number }> {
-    validateFeatureSnapshot(s);
-    // Resolve bar_id by FK lookup. This is one query per insert — fine for
-    // on-bar-close compute, but for bulk backfill prefer insertMany which
-    // does the join in a single statement.
-    const { rows: barRows } = await this.pool.query<{ id: number }>(
+  private async _resolveBarId(s: FeatureSnapshot): Promise<number> {
+    const { rows } = await this.pool.query<{ id: number }>(
       `select id from market_bars
        where symbol = $1 and exchange = $2 and timeframe = $3 and ts = $4`,
       [s.symbol, s.exchange, s.timeframe, s.ts],
     );
-    if (barRows.length === 0) {
+    if (rows.length === 0) {
       throw new Error(
         `Cannot insert FeatureSnapshot: no matching market_bars row ` +
         `(${s.symbol}/${s.exchange}/${s.timeframe}/${s.ts})`,
       );
     }
-    const barId = barRows[0].id;
+    return rows[0].id;
+  }
 
+  private _buildInsertArgs(s: FeatureSnapshot, barId: number): { cols: string[]; params: unknown[] } {
     const cols = ["bar_id", "symbol", "exchange", "timeframe", "ts", "close", "feature_version"];
     const params: unknown[] = [barId, s.symbol, s.exchange, s.timeframe, s.ts, s.close, s.featureVersion];
-
     for (const { col, field } of FEATURE_COLS) {
       const v = s[field];
       if (v === undefined || v === null) continue;
       cols.push(col);
       params.push(v);
     }
+    return { cols, params };
+  }
 
+  async insert(s: FeatureSnapshot): Promise<FeatureSnapshot & { id: number }> {
+    validateFeatureSnapshot(s);
+    const barId = await this._resolveBarId(s);
+    const { cols, params } = this._buildInsertArgs(s, barId);
     const placeholders = params.map((_, i) => `$${i + 1}`).join(", ");
     const { rows } = await this.pool.query<FeatureRow>(
       `insert into feature_snapshots (${cols.join(", ")})
        values (${placeholders})
+       on conflict on constraint feature_snapshots_unique do nothing
        returning *`,
       params,
     );
-    return rowToFeature(rows[0]);
+    if (rows.length > 0) return rowToFeature(rows[0]);
+    // Row already existed — fetch and return it.
+    const { rows: existing } = await this.pool.query<FeatureRow>(
+      `select * from feature_snapshots
+       where symbol = $1 and exchange = $2 and timeframe = $3
+         and ts = $4 and feature_version = $5`,
+      [s.symbol, s.exchange, s.timeframe, s.ts, s.featureVersion],
+    );
+    return rowToFeature(existing[0]);
   }
 
   async insertMany(snapshots: FeatureSnapshot[]): Promise<number> {
-    let total = 0;
+    let inserted = 0;
     for (const s of snapshots) {
-      await this.insert(s);
-      total++;
+      validateFeatureSnapshot(s);
+      const barId = await this._resolveBarId(s);
+      const { cols, params } = this._buildInsertArgs(s, barId);
+      const placeholders = params.map((_, i) => `$${i + 1}`).join(", ");
+      const result = await this.pool.query(
+        `insert into feature_snapshots (${cols.join(", ")})
+         values (${placeholders})
+         on conflict on constraint feature_snapshots_unique do nothing`,
+        params,
+      );
+      if ((result.rowCount ?? 0) > 0) inserted++;
     }
-    return total;
+    return inserted;
     // A real bulk insert with one round trip would do a CTE-based bar_id join.
     // Optimize when ingestion volume warrants it.
   }
@@ -183,18 +204,24 @@ export class InMemoryFeatureStore implements FeatureStore {
   async insert(s: FeatureSnapshot): Promise<FeatureSnapshot & { id: number }> {
     validateFeatureSnapshot(s);
     const k = this.key(s);
-    if (this.rows.some((r) => this.key(r) === k)) {
-      throw new Error(`duplicate feature snapshot: ${k}`);
-    }
+    const existing = this.rows.find((r) => this.key(r) === k);
+    if (existing) return existing;
     const row = { id: this.nextId++, ...s };
     this.rows.push(row);
     return row;
   }
 
   async insertMany(snapshots: FeatureSnapshot[]): Promise<number> {
-    let n = 0;
-    for (const s of snapshots) { await this.insert(s); n++; }
-    return n;
+    let inserted = 0;
+    for (const s of snapshots) {
+      validateFeatureSnapshot(s);
+      const k = this.key(s);
+      if (!this.rows.some((r) => this.key(r) === k)) {
+        this.rows.push({ id: this.nextId++, ...s });
+        inserted++;
+      }
+    }
+    return inserted;
   }
 
   async fetchRange(

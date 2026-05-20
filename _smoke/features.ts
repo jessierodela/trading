@@ -136,6 +136,13 @@ function testIndicatorMath(): void {
   for (let i = 0; i < 100; i++) lastRsiDown = rsiDown(200 - i);
   assert("rsi of monotonic down == 0", near(lastRsiDown, 0));
 
+  // RSI of a flat (constant-price) series: avgGain=0 and avgLoss=0, so
+  // the engine should return neutral 50, not overbought 100.
+  const rsiFlat = createRsi(14);
+  let lastRsiFlat: number | null = null;
+  for (let i = 0; i < 50; i++) lastRsiFlat = rsiFlat(100);
+  assert("rsi of flat (constant) series == 50", near(lastRsiFlat, 50), { lastRsiFlat });
+
   // RSI warmup: 14-period needs 15 closes (14 diffs).
   const rsiWarm = createRsi(14);
   let rsiFirstNonNullIndex = -1;
