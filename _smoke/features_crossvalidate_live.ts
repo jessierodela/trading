@@ -332,8 +332,8 @@ function fmt(n: number | null): string {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const key = process.env.TAAPI_API_KEY;
-  if (!key) fail("TAAPI_API_KEY is not set (expected in .env.local).");
+  const key = process.env.TAAPI_API_KEY ?? process.env.TAAPI_KEY;
+  if (!key) fail("TAAPI_API_KEY (or TAAPI_KEY) is not set (expected in .env.local).");
   if (!process.env.DATABASE_URL && !process.env.SUPABASE_DB_URL) {
     fail("DATABASE_URL or SUPABASE_DB_URL is not set (expected in .env.local).");
   }
