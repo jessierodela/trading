@@ -56,7 +56,12 @@
  *     "featureVersion":  "features.2026-05-16.v2",
  *     "barsRead":        8760,
  *     "rowsComputed":    8760,                  // = result.rows.length
- *     "rowsPersisted":   8760,                  // 0 if persist=false
+ *     "rowsPersisted":   8760,                  // newly inserted rows only;
+ *                                               // 0 if persist=false OR if
+ *                                               // all rows already existed
+ *                                               // (idempotent re-run). Never
+ *                                               // equals rowsComputed on a
+ *                                               // re-run of the same window.
  *     "seriesStartTs":   "...",                 // latest mode only
  *     "seriesEndTs":     "...",                 // latest mode only
  *     "droppedPreGap":   0,                     // latest mode only
