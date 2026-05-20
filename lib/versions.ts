@@ -43,12 +43,18 @@
 // ─── Feature engine ────────────────────────────────────────────────────────
 /**
  * CHANGELOG:
- *   features.2026-05-13.v1  - Initial: rsi14, macd*, ema20/50/200, atr14,
- *                              bb*, volumeSma20, relativeVolume20, derived
- *                              distance/range fields. Stub — real engine
- *                              ships in P3.
+ *   features.2026-05-13.v1  - Initial stub. Never used in production —
+ *                              superseded by .v2 before any rows persisted.
+ *   features.2026-05-16.v2  - P2C: real engine ships. rsi14, macd-family,
+ *                              ema20/50/200, atr14, bb20, volumeSma20,
+ *                              relativeVolume20, derived distance and
+ *                              range fields. Wilder smoothing for RSI/ATR;
+ *                              standard EMA alpha for EMAs; population
+ *                              stdev for BB. Gap-aware: two public entries
+ *                              (Latest, Segmented), warmup never crosses
+ *                              gaps.
  */
-export const FEATURE_VERSION = "features.2026-05-13.v1";
+export const FEATURE_VERSION = "features.2026-05-16.v2";
 
 // ─── Strategy versions ─────────────────────────────────────────────────────
 // One per strategy module. Each strategy file imports its own version from
