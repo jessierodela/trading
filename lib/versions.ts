@@ -43,12 +43,26 @@
 // ─── Feature engine ────────────────────────────────────────────────────────
 /**
  * CHANGELOG:
- *   features.2026-05-13.v1  - Initial: rsi14, macd*, ema20/50/200, atr14,
- *                              bb*, volumeSma20, relativeVolume20, derived
- *                              distance/range fields. Stub — real engine
- *                              ships in P3.
+ *   features.2026-05-13.v1  - Initial stub. Never used in production —
+ *                              superseded by .v2 before any rows persisted.
+ *   features.2026-05-16.v2  - P2C: real engine ships. rsi14, macd-family,
+ *                              ema20/50/200, atr14, bb20, volumeSma20,
+ *                              relativeVolume20, derived distance and
+ *                              range fields. Wilder smoothing for RSI/ATR;
+ *                              standard EMA alpha for EMAs; population
+ *                              stdev for BB. Gap-aware: two public entries
+ *                              (Latest, Segmented), warmup never crosses
+ *                              gaps. DO NOT USE: RSI flat-series bug
+ *                              (returns 100 instead of 50); superseded by
+ *                              v3 before production rows were persisted.
+ *   features.2026-05-20.v3  - Fix RSI flat-series: avgGain=0 && avgLoss=0
+ *                              now returns 50 (neutral) instead of 100
+ *                              (overbought). All other math unchanged.
+ *                              Version bump required because ON CONFLICT DO
+ *                              NOTHING means v2 rows cannot be corrected
+ *                              in-place; v3 rows carry the correct value.
  */
-export const FEATURE_VERSION = "features.2026-05-13.v1";
+export const FEATURE_VERSION = "features.2026-05-20.v3";
 
 // ─── Strategy versions ─────────────────────────────────────────────────────
 // One per strategy module. Each strategy file imports its own version from
