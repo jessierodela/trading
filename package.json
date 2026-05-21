@@ -11,6 +11,8 @@
     "migrate:status": "dotenv -e .env.local -- tsx migrations/run.ts --status",
     "smoke:storage": "tsx _smoke/storage.ts",
     "smoke:features": "tsx _smoke/features.ts",
+    "smoke:p2d": "tsx _smoke/features_crossvalidate.ts",
+    "smoke:p2d:live": "dotenv -e .env.local -- tsx _smoke/features_crossvalidate_live.ts",
     "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
     "backfill:btc:bootstrap": "tsx scripts/backfillBtcBootstrap.ts"
   },
