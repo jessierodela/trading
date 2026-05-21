@@ -20,6 +20,7 @@ Pre-merge hardening:
 - Strategy API feature fetch, daily feature fetch, and strategy execution/persistence are wrapped with structured JSON error responses.
 - Strategy API daily context fetch starts three UTC days before `startTs`.
 - `runStrategyWindow()` defensively sorts daily feature rows before selecting daily context.
+- `runStrategyWindow()` only uses a 1d feature after that daily bar is fully closed (`daily ts + 24h <= intraday ts`) to avoid lookahead bias.
 
 ## Strategy IDs and versions
 
@@ -65,9 +66,9 @@ Results:
 - `npm.cmd run build`: passed. Existing React hook dependency warning remains in `components/layout/SignalsPanel.tsx`.
 - `npm.cmd run smoke:features`: passed, 71 assertions.
 - `npm.cmd run smoke:p2d`: passed, 23 assertions.
-- `npm.cmd run smoke:strategies`: passed, 98 assertions.
+- `npm.cmd run smoke:strategies`: passed, 99 assertions.
 
-The strategy smoke covers required-null handling, each strategy firing on handcrafted features, `NEWS_SHOCK`, `CHOP`, reliable `TREND_DOWN`, deterministic JSON output, one signal per strategy per bar, window validation, unsorted daily context handling, in-memory persistence, and duplicate persistence counting.
+The strategy smoke covers required-null handling, each strategy firing on handcrafted features, `NEWS_SHOCK`, `CHOP`, reliable `TREND_DOWN`, deterministic JSON output, one signal per strategy per bar, window validation, unsorted daily context handling, same-day daily lookahead prevention, in-memory persistence, and duplicate persistence counting.
 
 ## Files changed
 

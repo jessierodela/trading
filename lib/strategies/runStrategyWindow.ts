@@ -6,6 +6,8 @@ import type {
 import type { SignalStore } from "@/lib/storage";
 import { runStrategies } from "./strategyRegistry";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export interface RunStrategyWindowOptions {
   features: FeatureSnapshot[];
   dailyFeatures?: FeatureSnapshot[];
@@ -61,6 +63,7 @@ function latestDailyFor(
   if (!dailyFeatures || dailyFeatures.length === 0) return null;
   let daily: FeatureSnapshot | null = null;
   const sortedDaily = [...dailyFeatures].sort((a, b) => a.ts.localeCompare(b.ts));
+  const currentMs = Date.parse(current.ts);
   for (const candidate of sortedDaily) {
     if (
       candidate.symbol !== current.symbol ||
@@ -69,8 +72,10 @@ function latestDailyFor(
     ) {
       continue;
     }
-    if (candidate.ts <= current.ts) daily = candidate;
-    if (candidate.ts > current.ts) break;
+    const candidateOpenMs = Date.parse(candidate.ts);
+    const candidateCloseMs = candidateOpenMs + DAY_MS;
+    if (candidateCloseMs <= currentMs) daily = candidate;
+    if (candidateOpenMs > currentMs) break;
   }
   return daily;
 }

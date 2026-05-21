@@ -27,7 +27,9 @@ The new layer consumes validated `FeatureSnapshot` rows and emits versioned `Str
 - Wrapped strategy API feature fetch, daily feature fetch, and strategy execution/persistence in structured JSON error responses.
 - Expanded strategy API daily context fetch to `startTs - 3 UTC days` through `endTs`.
 - Defensively sort `dailyFeatures` in `runStrategyWindow()` before daily context selection.
+- Require a 1d feature to be fully closed (`daily ts + 24h <= intraday ts`) before it can inform a 1h strategy signal.
 - Added smoke coverage for unsorted daily feature rows.
+- Added smoke coverage proving same-day daily rows are not used for intraday signals.
 
 ## Validation
 
@@ -36,7 +38,7 @@ Passed:
 - `npm.cmd run build`
 - `npm.cmd run smoke:features` - 71 assertions
 - `npm.cmd run smoke:p2d` - 23 assertions
-- `npm.cmd run smoke:strategies` - 98 assertions
+- `npm.cmd run smoke:strategies` - 99 assertions
 
 Build warning:
 - `components/layout/SignalsPanel.tsx` still has an existing `react-hooks/exhaustive-deps` warning for `useEffect` dependencies.
