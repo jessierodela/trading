@@ -62,6 +62,10 @@ const BACKTRACK_CHUNK = Number(process.env.P2D_BACKTRACK_CHUNK ?? 10);
 /** Extra backtracks beyond the 72 sample, to absorb venue clock drift. */
 const BACKTRACK_BUFFER = 6;
 const TAAPI_REQ_DELAY_MS = 15_500; // free plan: ~1 request / 15s
+/** Free-tier max backtrack depth (empirically: 270 OK, 290 not). Used to
+ *  guard reachability — TAAPI serves values relative to ITS "now", so a stale
+ *  local window can fall outside the free plan's historical reach. */
+const TAAPI_MAX_BACKTRACK = 270;
 
 const FIXTURE_DIR  = path.join(__dirname, "..", "fixtures", "p2d");
 const FIXTURE_PATH = path.join(FIXTURE_DIR, "btc_1h_crossvalidation_fixture.json");
@@ -189,9 +193,30 @@ async function fetchTaapiChunk(
   fail("TAAPI bulk request kept getting rate limited after retries");
 }
 
+/**
+ * Probe TAAPI's current (backtrack 0) candle timestamp. TAAPI serves values
+ * relative to real-time Binance, so we must align our local sample window to
+ * the correct backtrack offset rather than assuming local-latest == TAAPI-now.
+ */
+async function getTaapiNowMs(key: string): Promise<number> {
+  const data = await fetchTaapiChunk(key, 0, 1);
+  for (const item of data) {
+    if (item.errors?.length) continue;
+    const arr = Array.isArray(item.result) ? item.result : [item.result];
+    for (const r of arr) {
+      if (r.timestamp !== undefined && r.timestamp !== null) {
+        const ms = r.timestamp * 1000;
+        return ms - (ms % HOUR_MS);
+      }
+    }
+  }
+  fail("could not determine TAAPI current candle timestamp");
+}
+
 async function fetchTaapiReference(
   key: string,
   sampleTimestamps: string[],
+  startOffset: number,
 ): Promise<{ reference: Record<string, TaapiRefValues>; covered: number }> {
   const acc = new Map<string, TaapiRefValues>();
   const totalBacktracks = SAMPLE_BARS + BACKTRACK_BUFFER;
@@ -199,12 +224,12 @@ async function fetchTaapiReference(
 
   console.log(
     `[p2d:live] fetching TAAPI: ${TAAPI_CONSTRUCTS.length} constructs × ${BACKTRACK_CHUNK} backtracks/req, ` +
-    `${chunks} requests (~${Math.round((chunks * TAAPI_REQ_DELAY_MS) / 1000)}s wall time)`,
+    `${chunks} requests from backtrack ${startOffset} (~${Math.round((chunks * TAAPI_REQ_DELAY_MS) / 1000)}s wall time)`,
   );
 
   for (let c = 0; c < chunks; c++) {
-    const offset = c * BACKTRACK_CHUNK;
-    const count  = Math.min(BACKTRACK_CHUNK, totalBacktracks - offset);
+    const offset = startOffset + c * BACKTRACK_CHUNK;
+    const count  = Math.min(BACKTRACK_CHUNK, (startOffset + totalBacktracks) - offset);
     console.log(`[p2d:live]   request ${c + 1}/${chunks}: backtrack ${offset}..${offset + count - 1}`);
     const data = await fetchTaapiChunk(key, offset, count);
     for (const item of data) {
@@ -387,9 +412,27 @@ async function main(): Promise<void> {
   const sampleEndTs   = sampleTimestamps[sampleTimestamps.length - 1];
   console.log(`[p2d:live] sample window: ${sampleStartTs} → ${sampleEndTs}`);
 
-  // 7. TAAPI reference.
+  // 7. TAAPI reference. Align the sample window to TAAPI's backtrack offset
+  //    (TAAPI is real-time; our local data may be stale) and verify the
+  //    window is within the free-tier backtrack reach before fetching.
   const capturedAt = new Date().toISOString();
-  const { reference, covered } = await fetchTaapiReference(key!, sampleTimestamps);
+  const taapiNowMs = await getTaapiNowMs(key!);
+  await sleep(TAAPI_REQ_DELAY_MS);
+  const offsetMin = Math.round((taapiNowMs - Date.parse(sampleEndTs)) / HOUR_MS);
+  const offsetMax = offsetMin + SAMPLE_BARS - 1;
+  console.log(`[p2d:live] TAAPI now=${new Date(taapiNowMs).toISOString()}; sample needs backtracks ${offsetMin}..${offsetMax}`);
+  if (offsetMin < 0) {
+    fail(`local sample (ends ${sampleEndTs}) is newer than TAAPI's latest candle (${new Date(taapiNowMs).toISOString()}) — unexpected.`);
+  }
+  if (offsetMax > TAAPI_MAX_BACKTRACK) {
+    fail(
+      `sample window ${sampleStartTs}..${sampleEndTs} needs TAAPI backtracks up to ${offsetMax}, ` +
+      `but the free plan only reaches ~${TAAPI_MAX_BACKTRACK} (~${Math.round(TAAPI_MAX_BACKTRACK / 24)} days). ` +
+      `The latest contiguous 272-bar local window is too old. Bring the backfill current (and fill recent gaps) ` +
+      `so the freshest contiguous window lands within TAAPI's free-tier reach, then re-run.`,
+    );
+  }
+  const { reference, covered } = await fetchTaapiReference(key!, sampleTimestamps, offsetMin);
   console.log(`[p2d:live] TAAPI covered ${covered}/${sampleTimestamps.length} sampled timestamps`);
 
   // 8. Cross-validate.
