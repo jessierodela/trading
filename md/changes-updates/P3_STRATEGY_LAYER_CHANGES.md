@@ -21,6 +21,14 @@ The new layer consumes validated `FeatureSnapshot` rows and emits versioned `Str
 - Added dashboard copy clarifying deterministic strategy signals vs GPT commentary.
 - Added full implementation report at `P3_STRATEGY_LAYER_REPORT.md`.
 
+## Pre-merge hardening
+
+- Replaced strategy-module `this.id` / `this.version` usage inside `evaluate()` with module-level `STRATEGY_ID` and `STRATEGY_VERSION` constants.
+- Wrapped strategy API feature fetch, daily feature fetch, and strategy execution/persistence in structured JSON error responses.
+- Expanded strategy API daily context fetch to `startTs - 3 UTC days` through `endTs`.
+- Defensively sort `dailyFeatures` in `runStrategyWindow()` before daily context selection.
+- Added smoke coverage for unsorted daily feature rows.
+
 ## Validation
 
 Passed:
@@ -28,7 +36,7 @@ Passed:
 - `npm.cmd run build`
 - `npm.cmd run smoke:features` - 71 assertions
 - `npm.cmd run smoke:p2d` - 23 assertions
-- `npm.cmd run smoke:strategies` - 97 assertions
+- `npm.cmd run smoke:strategies` - 98 assertions
 
 Build warning:
 - `components/layout/SignalsPanel.tsx` still has an existing `react-hooks/exhaustive-deps` warning for `useEffect` dependencies.
@@ -38,4 +46,3 @@ Build warning:
 No live execution, risk engine, paper trading, full backtesting engine, or live pipeline cutover was added.
 
 This phase does not prove profitability. Backtesting is the next phase.
-

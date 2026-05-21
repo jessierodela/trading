@@ -265,6 +265,18 @@ async function testWindowRunner(): Promise<void> {
   assert("window duplicate count zero without persist", result.duplicatesSkipped === 0);
   assert("window returns flat signals", result.signals.every((s) => s.strategyId));
 
+  const unsortedDaily = await runStrategyWindow({
+    features: [
+      feature(0, { macdHist: 0.05 }),
+      { ...pullbackCurrent(1), daily_ema50AboveEma200: null, daily_priceAboveEma200: null },
+    ],
+    dailyFeatures: [
+      feature(0, { timeframe: "1d", close: 150, ema50: 140, ema200: 100 }),
+      feature(-24, { timeframe: "1d", close: 80, ema50: 90, ema200: 100 }),
+    ],
+  });
+  assert("window sorts unsorted daily features before selecting context", (unsortedDaily.byStrategy.trend_pullback ?? 0) === 1, unsortedDaily.byStrategy);
+
   let mixedThrew = false;
   try {
     await runStrategyWindow({
@@ -350,4 +362,3 @@ main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-

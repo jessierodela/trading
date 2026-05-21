@@ -11,9 +11,12 @@ import {
   makeSignal,
 } from "./helpers";
 
+const STRATEGY_ID = "mean_reversion_bounce";
+const STRATEGY_VERSION = STRATEGY_VERSIONS.meanReversionBounce;
+
 export const meanReversionBounce: StrategyDefinition = {
-  id: "mean_reversion_bounce",
-  version: STRATEGY_VERSIONS.meanReversionBounce,
+  id: STRATEGY_ID,
+  version: STRATEGY_VERSION,
   name: "Mean Reversion Bounce",
 
   evaluate(input) {
@@ -68,8 +71,8 @@ export const meanReversionBounce: StrategyDefinition = {
     const stopLoss = current.close - current.atr14! * 1.25;
     return makeSignal({
       current,
-      strategyId: this.id,
-      strategyVersion: this.version,
+      strategyId: STRATEGY_ID,
+      strategyVersion: STRATEGY_VERSION,
       signalType,
       direction: "long",
       confidence,
@@ -79,4 +82,3 @@ export const meanReversionBounce: StrategyDefinition = {
     });
   },
 };
-

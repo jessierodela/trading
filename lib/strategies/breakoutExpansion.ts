@@ -10,9 +10,12 @@ import {
   makeSignal,
 } from "./helpers";
 
+const STRATEGY_ID = "breakout_expansion";
+const STRATEGY_VERSION = STRATEGY_VERSIONS.breakoutExpansion;
+
 export const breakoutExpansion: StrategyDefinition = {
-  id: "breakout_expansion",
-  version: STRATEGY_VERSIONS.breakoutExpansion,
+  id: STRATEGY_ID,
+  version: STRATEGY_VERSION,
   name: "Breakout Expansion",
 
   evaluate(input) {
@@ -67,8 +70,8 @@ export const breakoutExpansion: StrategyDefinition = {
 
     return makeSignal({
       current,
-      strategyId: this.id,
-      strategyVersion: this.version,
+      strategyId: STRATEGY_ID,
+      strategyVersion: STRATEGY_VERSION,
       signalType,
       direction: "long",
       confidence,
@@ -78,4 +81,3 @@ export const breakoutExpansion: StrategyDefinition = {
     });
   },
 };
-

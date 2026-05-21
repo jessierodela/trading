@@ -12,9 +12,12 @@ import {
   makeSignal,
 } from "./helpers";
 
+const STRATEGY_ID = "momentum_continuation";
+const STRATEGY_VERSION = STRATEGY_VERSIONS.momentumContinuation;
+
 export const momentumContinuation: StrategyDefinition = {
-  id: "momentum_continuation",
-  version: STRATEGY_VERSIONS.momentumContinuation,
+  id: STRATEGY_ID,
+  version: STRATEGY_VERSION,
   name: "Momentum Continuation",
 
   evaluate(input) {
@@ -83,8 +86,8 @@ export const momentumContinuation: StrategyDefinition = {
     const stopLoss = current.ema20! - current.atr14! * 1.5;
     return makeSignal({
       current,
-      strategyId: this.id,
-      strategyVersion: this.version,
+      strategyId: STRATEGY_ID,
+      strategyVersion: STRATEGY_VERSION,
       signalType,
       direction: "long",
       confidence,
@@ -94,4 +97,3 @@ export const momentumContinuation: StrategyDefinition = {
     });
   },
 };
-

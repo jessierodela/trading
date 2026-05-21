@@ -60,7 +60,8 @@ function latestDailyFor(
 ): FeatureSnapshot | null {
   if (!dailyFeatures || dailyFeatures.length === 0) return null;
   let daily: FeatureSnapshot | null = null;
-  for (const candidate of dailyFeatures) {
+  const sortedDaily = [...dailyFeatures].sort((a, b) => a.ts.localeCompare(b.ts));
+  for (const candidate of sortedDaily) {
     if (
       candidate.symbol !== current.symbol ||
       candidate.exchange !== current.exchange ||
@@ -126,4 +127,3 @@ export async function runStrategyWindow(
     byStrategy,
   };
 }
-

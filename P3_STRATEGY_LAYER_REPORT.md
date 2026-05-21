@@ -15,6 +15,12 @@ Implemented:
 - `smoke:strategies` package script.
 - Small dashboard copy distinguishing deterministic strategy signals from GPT commentary.
 
+Pre-merge hardening:
+- Strategy modules now use module-level `STRATEGY_ID` and `STRATEGY_VERSION` constants inside `evaluate()`.
+- Strategy API feature fetch, daily feature fetch, and strategy execution/persistence are wrapped with structured JSON error responses.
+- Strategy API daily context fetch starts three UTC days before `startTs`.
+- `runStrategyWindow()` defensively sorts daily feature rows before selecting daily context.
+
 ## Strategy IDs and versions
 
 | Strategy ID | Version |
@@ -59,9 +65,9 @@ Results:
 - `npm.cmd run build`: passed. Existing React hook dependency warning remains in `components/layout/SignalsPanel.tsx`.
 - `npm.cmd run smoke:features`: passed, 71 assertions.
 - `npm.cmd run smoke:p2d`: passed, 23 assertions.
-- `npm.cmd run smoke:strategies`: passed, 97 assertions.
+- `npm.cmd run smoke:strategies`: passed, 98 assertions.
 
-The strategy smoke covers required-null handling, each strategy firing on handcrafted features, `NEWS_SHOCK`, `CHOP`, reliable `TREND_DOWN`, deterministic JSON output, one signal per strategy per bar, window validation, in-memory persistence, and duplicate persistence counting.
+The strategy smoke covers required-null handling, each strategy firing on handcrafted features, `NEWS_SHOCK`, `CHOP`, reliable `TREND_DOWN`, deterministic JSON output, one signal per strategy per bar, window validation, unsorted daily context handling, in-memory persistence, and duplicate persistence counting.
 
 ## Files changed
 
@@ -92,4 +98,3 @@ GPT agents remain commentary/research/explainability only. They are not the auth
 ## Next phase
 
 Backtesting is the next phase. These deterministic signals are now testable inputs for evaluating expectancy, drawdown, trade frequency, regime sensitivity, and threshold quality.
-

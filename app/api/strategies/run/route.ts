@@ -4,9 +4,9 @@ import {
   PgFeatureStore,
   PgSignalStore,
 } from "@/lib/storage";
-import { runStrategyWindow } from "@/lib/strategies/runStrategyWindow";
+import { runStrategyWindow, type RunStrategyWindowResult } from "@/lib/strategies/runStrategyWindow";
 import { FEATURE_VERSION } from "@/lib/versions";
-import type { Exchange, Timeframe } from "@/lib/quant/types";
+import type { Exchange, FeatureSnapshot, Timeframe } from "@/lib/quant/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -37,7 +37,10 @@ interface ResolvedParams {
 interface ErrorResponse {
   ok: false;
   error: string;
+  stage?: "feature_fetch" | "daily_feature_fetch" | "strategy_run";
 }
+
+const DAILY_CONTEXT_LOOKBACK_DAYS = 3;
 
 function parseAndValidate(body: RunStrategiesBody): ResolvedParams | { error: string } {
   if (!body.symbol || typeof body.symbol !== "string") return { error: "symbol is required" };
@@ -65,6 +68,11 @@ function parseAndValidate(body: RunStrategiesBody): ResolvedParams | { error: st
     persist: body.persist ?? false,
     featureVersion: body.featureVersion ?? FEATURE_VERSION,
   };
+}
+
+function subtractUtcDays(ts: string, days: number): string {
+  const ms = Date.parse(ts);
+  return new Date(ms - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
 export async function POST(req: NextRequest) {
@@ -105,32 +113,59 @@ export async function POST(req: NextRequest) {
 
   const featureStore = new PgFeatureStore(pool);
   const signalStore = new PgSignalStore(pool);
-  const features = await featureStore.fetchRange(
-    {
-      symbol: parsed.symbol,
-      exchange: parsed.exchange,
-      timeframe: parsed.timeframe,
-      featureVersion: parsed.featureVersion,
-    },
-    { startTs: parsed.startTs, endTs: parsed.endTs },
-  );
+  let features: FeatureSnapshot[];
+  try {
+    features = await featureStore.fetchRange(
+      {
+        symbol: parsed.symbol,
+        exchange: parsed.exchange,
+        timeframe: parsed.timeframe,
+        featureVersion: parsed.featureVersion,
+      },
+      { startTs: parsed.startTs, endTs: parsed.endTs },
+    );
+  } catch (err) {
+    return NextResponse.json<ErrorResponse>(
+      { ok: false, stage: "feature_fetch", error: `feature fetch failed: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 },
+    );
+  }
 
-  const dailyFeatures = await featureStore.fetchRange(
-    {
-      symbol: parsed.symbol,
-      exchange: parsed.exchange,
-      timeframe: "1d",
-      featureVersion: parsed.featureVersion,
-    },
-    { startTs: parsed.startTs, endTs: parsed.endTs },
-  );
+  let dailyFeatures: FeatureSnapshot[];
+  try {
+    dailyFeatures = await featureStore.fetchRange(
+      {
+        symbol: parsed.symbol,
+        exchange: parsed.exchange,
+        timeframe: "1d",
+        featureVersion: parsed.featureVersion,
+      },
+      {
+        startTs: subtractUtcDays(parsed.startTs, DAILY_CONTEXT_LOOKBACK_DAYS),
+        endTs: parsed.endTs,
+      },
+    );
+  } catch (err) {
+    return NextResponse.json<ErrorResponse>(
+      { ok: false, stage: "daily_feature_fetch", error: `daily feature fetch failed: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 },
+    );
+  }
 
-  const result = await runStrategyWindow({
-    features,
-    dailyFeatures,
-    signalStore,
-    persist: parsed.persist,
-  });
+  let result: RunStrategyWindowResult;
+  try {
+    result = await runStrategyWindow({
+      features,
+      dailyFeatures,
+      signalStore,
+      persist: parsed.persist,
+    });
+  } catch (err) {
+    return NextResponse.json<ErrorResponse>(
+      { ok: false, stage: "strategy_run", error: `strategy run failed: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 422 },
+    );
+  }
 
   return NextResponse.json({
     ok: true,
@@ -142,4 +177,3 @@ export async function POST(req: NextRequest) {
     latestSignals: result.signals.slice(-5),
   });
 }
-

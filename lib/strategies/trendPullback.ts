@@ -10,6 +10,9 @@ import {
   makeSignal,
 } from "./helpers";
 
+const STRATEGY_ID = "trend_pullback";
+const STRATEGY_VERSION = STRATEGY_VERSIONS.trendPullback;
+
 function hasBullishDailyContext(
   current: { daily_ema50AboveEma200?: boolean | null; daily_priceAboveEma200?: boolean | null },
   daily?: { ema50?: number | null; ema200?: number | null; close: number } | null,
@@ -22,8 +25,8 @@ function hasBullishDailyContext(
 }
 
 export const trendPullback: StrategyDefinition = {
-  id: "trend_pullback",
-  version: STRATEGY_VERSIONS.trendPullback,
+  id: STRATEGY_ID,
+  version: STRATEGY_VERSION,
   name: "Trend Pullback",
 
   evaluate(input) {
@@ -76,8 +79,8 @@ export const trendPullback: StrategyDefinition = {
     const stopLoss = current.ema20! - current.atr14! * 1.25;
     return makeSignal({
       current,
-      strategyId: this.id,
-      strategyVersion: this.version,
+      strategyId: STRATEGY_ID,
+      strategyVersion: STRATEGY_VERSION,
       signalType,
       direction: "long",
       confidence,
@@ -87,4 +90,3 @@ export const trendPullback: StrategyDefinition = {
     });
   },
 };
-
