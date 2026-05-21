@@ -352,6 +352,14 @@ export function SignalsPanel() {
             <span className="text-[8px] text-[var(--color-text-dim)] opacity-40">{ageLabel}</span>
           )}
         </div>
+        <div className="px-[14px] py-[7px] border-b border-[var(--color-border-default)]">
+          <p className="text-[8px] text-[var(--color-text-dim)] leading-[1.45]">
+            Strategy Signal = deterministic setup/trigger.
+          </p>
+          <p className="text-[8px] text-[var(--color-text-dim)] leading-[1.45] opacity-70">
+            Agent Commentary = GPT interpretation/research.
+          </p>
+        </div>
 
         <div className="overflow-y-auto flex-1">
           {loading ? (

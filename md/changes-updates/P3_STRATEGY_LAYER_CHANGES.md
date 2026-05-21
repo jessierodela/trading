@@ -1,0 +1,41 @@
+# P3 Strategy Layer Changes
+
+## Summary
+
+Built the deterministic strategy layer on branch `ai/p3-strategy-layer`.
+
+The new layer consumes validated `FeatureSnapshot` rows and emits versioned `StrategySignal` outputs through four deterministic strategies:
+- `momentum_continuation`
+- `trend_pullback`
+- `breakout_expansion`
+- `mean_reversion_bounce`
+
+## What changed
+
+- Added `STRATEGY_VERSIONS` to `lib/versions.ts`.
+- Added strategy contract/helpers/registry under `lib/strategies`.
+- Added four deterministic strategy modules.
+- Added `runStrategyWindow()` with sorted-window validation and optional `SignalStore` persistence.
+- Added `POST /api/strategies/run` for feature-backed strategy execution.
+- Added `_smoke/strategies.ts` and `npm run smoke:strategies`.
+- Added dashboard copy clarifying deterministic strategy signals vs GPT commentary.
+- Added full implementation report at `P3_STRATEGY_LAYER_REPORT.md`.
+
+## Validation
+
+Passed:
+- `npx.cmd tsc --noEmit`
+- `npm.cmd run build`
+- `npm.cmd run smoke:features` - 71 assertions
+- `npm.cmd run smoke:p2d` - 23 assertions
+- `npm.cmd run smoke:strategies` - 97 assertions
+
+Build warning:
+- `components/layout/SignalsPanel.tsx` still has an existing `react-hooks/exhaustive-deps` warning for `useEffect` dependencies.
+
+## Scope boundaries
+
+No live execution, risk engine, paper trading, full backtesting engine, or live pipeline cutover was added.
+
+This phase does not prove profitability. Backtesting is the next phase.
+

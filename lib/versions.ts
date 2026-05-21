@@ -70,17 +70,20 @@ export const FEATURE_VERSION = "features.2026-05-20.v3";
 //
 // CHANGELOG (per strategy below):
 
-/** momentum_continuation.v1 — initial: price>ema20, ema20Slope+, macdHist+ expanding, RSI 50-70, ATR not extreme, regime not CHOP/NEWS_SHOCK */
-export const MOMENTUM_CONTINUATION_VERSION = "momentum_continuation.v1";
+//   strategy.*.2026-05-21.v1 - P3 deterministic strategy layer. Strategies
+//                              consume FeatureSnapshot + RegimeContext only
+//                              and emit versioned StrategySignal rows.
+export const STRATEGY_VERSIONS = {
+  momentumContinuation: "strategy.momentum_continuation.2026-05-21.v1",
+  trendPullback: "strategy.trend_pullback.2026-05-21.v1",
+  breakoutExpansion: "strategy.breakout_expansion.2026-05-21.v1",
+  meanReversionBounce: "strategy.mean_reversion_bounce.2026-05-21.v1",
+} as const;
 
-/** trend_pullback.v1 — daily trend bullish + 1H near ema20 + RSI cooled 40-50 + macdHist still positive or improving */
-export const TREND_PULLBACK_VERSION = "trend_pullback.v1";
-
-/** breakout_expansion.v1 — BB width compression followed by expansion, close above upper band, volume confirmation, ATR expansion not excessive */
-export const BREAKOUT_EXPANSION_VERSION = "breakout_expansion.v1";
-
-/** mean_reversion_bounce.v1 — RSI<30 or rising from sub-35, price stretched below ema20 by ATR multiple, macdHist improving, countertrend so size reduced */
-export const MEAN_REVERSION_BOUNCE_VERSION = "mean_reversion_bounce.v1";
+export const MOMENTUM_CONTINUATION_VERSION = STRATEGY_VERSIONS.momentumContinuation;
+export const TREND_PULLBACK_VERSION = STRATEGY_VERSIONS.trendPullback;
+export const BREAKOUT_EXPANSION_VERSION = STRATEGY_VERSIONS.breakoutExpansion;
+export const MEAN_REVERSION_BOUNCE_VERSION = STRATEGY_VERSIONS.meanReversionBounce;
 
 // ─── Regime detector ───────────────────────────────────────────────────────
 /**
