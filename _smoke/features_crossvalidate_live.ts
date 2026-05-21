@@ -41,6 +41,14 @@ import {
 import { FEATURE_VERSION } from "../lib/versions";
 import type { Bar, FeatureSnapshot, Timeframe } from "../lib/quant/types";
 import type { P2DFixture } from "./features_crossvalidate";
+import {
+  BACKTRACK_BUFFER,
+  SAMPLE_BARS,
+  TAAPI_MAX_BACKTRACK,
+  isTaapiBacktrackReachable,
+  requestedBacktrackEnd,
+  resolveBacktrackChunk,
+} from "./p2d_live_config";
 
 // ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -52,20 +60,13 @@ const TAAPI_SYMBOL   = "BTC/USDT";
 const TAAPI_EXCHANGE = "binance";
 const TAAPI_BASE     = "https://api.taapi.io";
 
-const SAMPLE_BARS = 72;
 const WARMUP_BARS = 200;
 const HOUR_MS     = 3_600_000;
 
 /** Backtracks fetched per bulk request. 7 constructs × CHUNK calcs per request.
  *  Override with P2D_BACKTRACK_CHUNK if TAAPI's free-tier calc cap rejects. */
-const BACKTRACK_CHUNK = Number(process.env.P2D_BACKTRACK_CHUNK ?? 10);
-/** Extra backtracks beyond the 72 sample, to absorb venue clock drift. */
-const BACKTRACK_BUFFER = 6;
+const BACKTRACK_CHUNK = resolveBacktrackChunk();
 const TAAPI_REQ_DELAY_MS = 15_500; // free plan: ~1 request / 15s
-/** Free-tier max backtrack depth (empirically: 270 OK, 290 not). Used to
- *  guard reachability — TAAPI serves values relative to ITS "now", so a stale
- *  local window can fall outside the free plan's historical reach. */
-const TAAPI_MAX_BACKTRACK = 270;
 
 const FIXTURE_DIR  = path.join(__dirname, "..", "fixtures", "p2d");
 const FIXTURE_PATH = path.join(FIXTURE_DIR, "btc_1h_crossvalidation_fixture.json");
@@ -424,14 +425,19 @@ async function main(): Promise<void> {
   // 7. Align to TAAPI backtrack offset and verify free-tier reach.
   const offsetMin = Math.round((taapiNowMs - Date.parse(sampleEndTs)) / HOUR_MS);
   const offsetMax = offsetMin + SAMPLE_BARS - 1;
-  console.log(`[p2d:live] sample needs backtracks ${offsetMin}..${offsetMax}`);
+  const fetchOffsetMax = requestedBacktrackEnd(offsetMin);
+  console.log(
+    `[p2d:live] sample needs backtracks ${offsetMin}..${offsetMax}; ` +
+    `fetch with buffer requests ${offsetMin}..${fetchOffsetMax}`,
+  );
   if (offsetMin < 0) {
     fail(`local sample (ends ${sampleEndTs}) is newer than TAAPI's latest candle (${new Date(taapiNowMs).toISOString()}) — unexpected.`);
   }
-  if (offsetMax > TAAPI_MAX_BACKTRACK) {
+  if (!isTaapiBacktrackReachable(offsetMin)) {
     fail(
-      `sample window ${sampleStartTs}..${sampleEndTs} needs TAAPI backtracks up to ${offsetMax}, ` +
-      `but the free plan only reaches ~${TAAPI_MAX_BACKTRACK} (~${Math.round(TAAPI_MAX_BACKTRACK / 24)} days). ` +
+      `sample window ${sampleStartTs}..${sampleEndTs} needs TAAPI sample backtracks up to ${offsetMax}, ` +
+      `and the buffered fetch reaches ${fetchOffsetMax}; free plan only reaches ~${TAAPI_MAX_BACKTRACK} ` +
+      `(~${Math.round(TAAPI_MAX_BACKTRACK / 24)} days). ` +
       `The latest contiguous 272-bar local window is too old. Bring the backfill current (and fill recent gaps) ` +
       `so the freshest contiguous window lands within TAAPI's free-tier reach, then re-run.`,
     );

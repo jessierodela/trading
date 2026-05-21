@@ -40,6 +40,14 @@ import {
   type CrossValidationReport,
   type IndicatorSummary,
 } from "../lib/features/crossValidate";
+import {
+  DEFAULT_BACKTRACK_CHUNK,
+  SAMPLE_BARS,
+  TAAPI_MAX_BACKTRACK,
+  isTaapiBacktrackReachable,
+  requestedBacktrackEnd,
+  resolveBacktrackChunk,
+} from "./p2d_live_config";
 import type { Bar, FeatureSnapshot, Exchange, Timeframe } from "../lib/quant/types";
 
 // ─── Fixture shape (shared with the live writer) ────────────────────────────
@@ -237,6 +245,23 @@ function comparatorUnitTests(): void {
     const corrupted = features.map((f, i) => i === 20 ? { ...f, volumeSma20: 999 } : f);
     const bad = validateVolumeInternally(corrupted, bars);
     assert("internal volume check catches a corrupted value", !bad.ok && bad.failures.length >= 1);
+  }
+
+  // Live harness config: default must remain conservative for TAAPI free tier.
+  {
+    assert("live capture backtrack chunk defaults to 2", resolveBacktrackChunk({}) === 2);
+    assert("live capture backtrack chunk env override is honored", resolveBacktrackChunk({ P2D_BACKTRACK_CHUNK: "5" }) === 5);
+    assert("live capture default constant is 2", DEFAULT_BACKTRACK_CHUNK === 2);
+  }
+
+  // Live harness reachability must account for the buffer it will actually fetch.
+  {
+    const sampleOnlyStart = TAAPI_MAX_BACKTRACK - SAMPLE_BARS + 1;
+    assert(
+      "live reachability rejects sample+buffer beyond TAAPI max backtrack",
+      !isTaapiBacktrackReachable(sampleOnlyStart),
+      { requestedEnd: requestedBacktrackEnd(sampleOnlyStart), max: TAAPI_MAX_BACKTRACK },
+    );
   }
 }
 
