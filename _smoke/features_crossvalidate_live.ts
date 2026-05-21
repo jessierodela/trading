@@ -382,19 +382,28 @@ async function main(): Promise<void> {
     { startTs: new Date(fullStartMs).toISOString(), endTs: new Date(fetchEndMs).toISOString() },
   );
 
-  // 4. Contiguity. Use the longest contiguous suffix ending at the latest bar.
+  // 4. Contiguity. Longest contiguous suffix ending at the latest local bar.
   validateBarSeries(rawBars);
   const suffix = longestContiguousSuffix(rawBars);
   const gapsInRaw = findGaps(rawBars);
-  if (suffix.length < SAMPLE_BARS + WARMUP_BARS) {
+
+  // 4b. Probe TAAPI's current candle and cap the sample at it — local data can
+  //     run a bar or two AHEAD of TAAPI's latest closed candle, which would
+  //     leave the freshest sample bars without a reference.
+  const capturedAt = new Date().toISOString();
+  const taapiNowMs = await getTaapiNowMs(key!);
+  await sleep(TAAPI_REQ_DELAY_MS);
+  const usable = suffix.filter((b) => Date.parse(b.ts) <= taapiNowMs);
+  if (usable.length < SAMPLE_BARS + WARMUP_BARS) {
     fail(
-      `contiguous suffix is only ${suffix.length} bars; need >= ${SAMPLE_BARS + WARMUP_BARS} ` +
-      `(72 sample + 200 warmup). Backfill is incomplete or has a recent gap. ` +
+      `contiguous suffix within TAAPI's reach is only ${usable.length} bars ` +
+      `(full suffix=${suffix.length}, taapiNow=${new Date(taapiNowMs).toISOString()}); ` +
+      `need >= ${SAMPLE_BARS + WARMUP_BARS} (72 sample + 200 warmup). ` +
       `gaps in fetched range: ${gapsInRaw.length}.`,
     );
   }
-  // Trim to exactly warmup+sample ending at the last bar for a tidy fixture.
-  const needed = suffix.slice(suffix.length - (SAMPLE_BARS + WARMUP_BARS));
+  // Trim to exactly warmup+sample ending at the latest TAAPI-aligned bar.
+  const needed = usable.slice(usable.length - (SAMPLE_BARS + WARMUP_BARS));
   const warmupBars = needed.length - SAMPLE_BARS;
   console.log(`[p2d:live] contiguous window: ${needed.length} bars (${warmupBars} warmup + ${SAMPLE_BARS} sample)`);
 
@@ -412,15 +421,10 @@ async function main(): Promise<void> {
   const sampleEndTs   = sampleTimestamps[sampleTimestamps.length - 1];
   console.log(`[p2d:live] sample window: ${sampleStartTs} → ${sampleEndTs}`);
 
-  // 7. TAAPI reference. Align the sample window to TAAPI's backtrack offset
-  //    (TAAPI is real-time; our local data may be stale) and verify the
-  //    window is within the free-tier backtrack reach before fetching.
-  const capturedAt = new Date().toISOString();
-  const taapiNowMs = await getTaapiNowMs(key!);
-  await sleep(TAAPI_REQ_DELAY_MS);
+  // 7. Align to TAAPI backtrack offset and verify free-tier reach.
   const offsetMin = Math.round((taapiNowMs - Date.parse(sampleEndTs)) / HOUR_MS);
   const offsetMax = offsetMin + SAMPLE_BARS - 1;
-  console.log(`[p2d:live] TAAPI now=${new Date(taapiNowMs).toISOString()}; sample needs backtracks ${offsetMin}..${offsetMax}`);
+  console.log(`[p2d:live] sample needs backtracks ${offsetMin}..${offsetMax}`);
   if (offsetMin < 0) {
     fail(`local sample (ends ${sampleEndTs}) is newer than TAAPI's latest candle (${new Date(taapiNowMs).toISOString()}) — unexpected.`);
   }
