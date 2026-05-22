@@ -18,7 +18,6 @@ import {
   type AggregatedRegimeMetrics,
   type RegimeCandidateWindow,
   type RegimeValidationOptions,
-  type RegimeValidationResult,
   type RegimeValidationSource,
 } from "@/lib/backtest/regimeValidation";
 import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics } from "@/lib/backtest/types";
@@ -41,6 +40,20 @@ interface RoutingSummary {
   avgExposure: number | null;
   avgReturnToDrawdown: number | null;
 }
+
+interface ValidationWarningContext {
+  requestedWindowsPerRegime: number;
+  configuredWindowBars: number;
+  effectiveWindowBars: number;
+  selectedWindows: RegimeCandidateWindow[];
+  aggregates: AggregatedRegimeMetrics[];
+  regimeSource: RegimeValidationSource;
+  clampedWindowBars: boolean;
+}
+
+const MIN_PROXY_WINDOW_BARS = 72;
+const DEFAULT_PROXY_WINDOW_BARS = 144;
+const NEAR_ZERO_TRADES_PER_WINDOW = 0.25;
 
 function parseInstruments(): InstrumentArg[] {
   const symbols = (process.env.SYMBOLS ?? "BTC-USD")
@@ -242,9 +255,14 @@ function featureAlignedBars(bars: Bar[], features: FeatureSnapshot[]): Bar[] {
   return bars.filter((bar) => featureTs.has(bar.ts));
 }
 
-function defaultWindowBarsFor(regimeSource: RegimeValidationSource): number {
+function configuredWindowBarsFor(regimeSource: RegimeValidationSource): number {
   if (process.env.WINDOW_BARS) return Number(process.env.WINDOW_BARS);
-  return regimeSource === "ohlcv_proxy" ? 8 : 24 * 14;
+  return regimeSource === "ohlcv_proxy" ? DEFAULT_PROXY_WINDOW_BARS : 24 * 14;
+}
+
+function effectiveWindowBarsFor(regimeSource: RegimeValidationSource, configuredWindowBars: number): number {
+  if (regimeSource !== "ohlcv_proxy") return configuredWindowBars;
+  return Math.max(MIN_PROXY_WINDOW_BARS, configuredWindowBars);
 }
 
 function coverageCounts(windows: RegimeCandidateWindow[]): Record<RegimeLabel, number> {
@@ -253,26 +271,42 @@ function coverageCounts(windows: RegimeCandidateWindow[]): Record<RegimeLabel, n
   ) as Record<RegimeLabel, number>;
 }
 
-function hasRequestedCoverage(windows: RegimeCandidateWindow[], windowsPerRegime: number): boolean {
-  const counts = coverageCounts(windows);
-  return REQUIRED_REGIMES.every((regime) => counts[regime] >= windowsPerRegime);
+function averageTradeCountPerWindow(aggregates: AggregatedRegimeMetrics[]): number | null {
+  return avg(aggregates
+    .map((row) => row.averageTradeCount)
+    .filter((value): value is number => value !== null));
 }
 
-function runValidationWithCoverage(options: RegimeValidationOptions): RegimeValidationResult {
-  const first = runRegimeValidation(options);
-  const requested = options.windowsPerRegime ?? 10;
-  if (options.regimeSource !== "ohlcv_proxy" || hasRequestedCoverage(first.selectedWindows, requested) || process.env.WINDOW_BARS) {
-    return first;
+function validationWarnings(context: ValidationWarningContext): string[] {
+  const warnings: string[] = [];
+  const counts = coverageCounts(context.selectedWindows);
+  const insufficient = REQUIRED_REGIMES
+    .filter((regime) => counts[regime] < context.requestedWindowsPerRegime)
+    .map((regime) => `${regime}: ${counts[regime]}/${context.requestedWindowsPerRegime}`);
+  const avgTrades = averageTradeCountPerWindow(context.aggregates);
+
+  if (avgTrades !== null && avgTrades < NEAR_ZERO_TRADES_PER_WINDOW) {
+    warnings.push(
+      `Average trades per window is near zero (${fmt(avgTrades, 3)}). Treat return and expectancy comparisons as low-signal.`,
+    );
+  }
+  if (context.effectiveWindowBars < MIN_PROXY_WINDOW_BARS) {
+    warnings.push(
+      `Window size is below the minimum meaningful proxy threshold (${context.effectiveWindowBars} < ${MIN_PROXY_WINDOW_BARS}).`,
+    );
+  }
+  if (context.clampedWindowBars) {
+    warnings.push(
+      `Configured proxy window size (${context.configuredWindowBars}) was below ${MIN_PROXY_WINDOW_BARS}; validation used ${context.effectiveWindowBars} bars instead.`,
+    );
+  }
+  if (context.regimeSource === "ohlcv_proxy" && insufficient.length > 0) {
+    warnings.push(
+      `Insufficient proxy coverage with meaningful windows; selected fewer than requested windows for ${insufficient.join(", ")}.`,
+    );
   }
 
-  const attempts = [4, 2, 1].filter((windowBars) => windowBars < (options.windowBars ?? Number.POSITIVE_INFINITY));
-  let best = first;
-  for (const windowBars of attempts) {
-    const candidate = runRegimeValidation({ ...options, windowBars });
-    if (candidate.selectedWindows.length > best.selectedWindows.length) best = candidate;
-    if (hasRequestedCoverage(candidate.selectedWindows, requested)) return candidate;
-  }
-  return best;
+  return warnings;
 }
 
 async function runInstrument(instrument: InstrumentArg): Promise<string> {
@@ -307,6 +341,9 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     endTs: _endTs,
     ...validationBaseConfig
   } = config;
+  const requestedWindowsPerRegime = Number(process.env.WINDOWS_PER_REGIME ?? 10);
+  const configuredWindowBars = configuredWindowBarsFor(regimeSource);
+  const effectiveWindowBars = effectiveWindowBarsFor(regimeSource, configuredWindowBars);
   const validationOptions: RegimeValidationOptions = {
     instrument,
     baseConfig: validationBaseConfig,
@@ -315,14 +352,23 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     dailyFeatures,
     regimes,
     regimeSource,
-    windowsPerRegime: Number(process.env.WINDOWS_PER_REGIME ?? 10),
-    windowBars: defaultWindowBarsFor(regimeSource),
+    windowsPerRegime: requestedWindowsPerRegime,
+    windowBars: effectiveWindowBars,
     minDominantRegimePct: regimeSource === "ohlcv_proxy" ? 50 : 65,
   };
-  const validation = runValidationWithCoverage(validationOptions);
+  const validation = runRegimeValidation(validationOptions);
 
   const routing = routingSummaries(baseInput, validation.selectedWindows);
   const portfolios = portfolioSummaries(baseInput, validation.selectedWindows);
+  const warnings = validationWarnings({
+    requestedWindowsPerRegime,
+    configuredWindowBars,
+    effectiveWindowBars,
+    selectedWindows: validation.selectedWindows,
+    aggregates: validation.aggregates,
+    regimeSource,
+    clampedWindowBars: effectiveWindowBars !== configuredWindowBars,
+  });
   const coverage = REQUIRED_REGIMES
     .map((regime) => `${regime}: ${validation.selectedWindows.filter((window) => window.regime === regime).length}`)
     .join(", ");
@@ -335,10 +381,14 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     `Rows: bars=${bars.length}, executableBars=${executableBars.length}, features=${features.length}, dailyFeatures=${dailyFeatures.length}, persistedRegimes=${persistedRegimes.length}, researchRegimes=${regimes.length}`,
     `Regime source: ${regimeSource === "a6_snapshots" ? "persisted A6 snapshots" : "OHLCV proxy fallback"}`,
     `Window bars: ${validation.selectedWindows[0]?.barCount ?? validationOptions.windowBars}`,
+    `Requested windows per regime: ${requestedWindowsPerRegime}`,
     `Selected windows: ${validation.selectedWindows.length} (${coverage})`,
     persistedRegimes.length === 0
       ? "Note: no persisted A6 regime snapshots were available, so this run used OHLCV proxy labels for research-only validation."
       : "",
+    warnings.length > 0 ? "" : "",
+    warnings.length > 0 ? "### Validation Warnings" : "",
+    ...warnings.map((warning) => `- ${warning}`),
     "",
     "### Multi-Window Results",
     aggregateTable(validation.aggregates),
@@ -386,6 +436,7 @@ async function main(): Promise<void> {
     "- Added portfolio research composition via `lib/backtest/portfolioBacktest.ts` with equal, custom, and regime-weighted allocations.",
     "- Added multi-window regime validation via `lib/backtest/regimeValidation.ts` with non-overlapping regime windows and stability rankings.",
     "- Added OHLCV proxy regime fallback for TREND_UP, TREND_DOWN, HIGH_VOL, LOW_VOL, NEWS_SHOCK, and CHOP when persisted A6 snapshots are unavailable.",
+    "- Proxy validation uses meaningful windows by default: 144 bars preferred and 72 bars minimum. Coverage is reported honestly when fewer than the requested windows are available.",
     "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
     "",
     "## Strategy Analytics",
@@ -408,6 +459,7 @@ async function main(): Promise<void> {
     "",
     "- If persisted A6 snapshots are absent, reported regime samples are proxy-classified and should not be treated as A6 detector validation.",
     "- BTC-USD currently has far fewer stored 1h feature rows than bars in the fetched range, and no daily feature rows were returned. The runner uses feature-aligned bars so windows remain executable.",
+    "- If meaningful proxy windows cannot provide the requested windows per regime, the report intentionally keeps lower sample counts rather than shrinking to 1-2 bar windows.",
     "- Current portfolio research uses scaled simulated trade PnL and should not be treated as a full broker-grade portfolio accounting engine.",
     "",
     "## Limitations",
