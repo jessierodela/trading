@@ -20,7 +20,7 @@ import {
   type RegimeValidationOptions,
   type RegimeValidationSource,
 } from "@/lib/backtest/regimeValidation";
-import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics } from "@/lib/backtest/types";
+import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics, SimulatedTrade } from "@/lib/backtest/types";
 
 interface InstrumentArg {
   symbol: string;
@@ -41,6 +41,49 @@ interface RoutingSummary {
   avgReturnToDrawdown: number | null;
 }
 
+type RegimeSourceDisplay =
+  | "gpt_a6_detector_snapshots"
+  | "deterministic_proxy_research_snapshots"
+  | "ohlcv_fallback_labels";
+
+interface PersistedRegimeContext extends RegimeContext {
+  regimeModelVersion: string | null;
+  promptVersion: string | null;
+  rawResponse: unknown;
+}
+
+interface RouterWindowAuditRow {
+  regime: RegimeLabel;
+  startTs: string;
+  endTs: string;
+  tradeCount: number;
+  selectedStrategies: string;
+  returnPct: number;
+  maxDrawdownPct: number;
+  profitFactor: number | null;
+  expectancy: number | null;
+  grossProfit: number;
+  grossLossAbs: number;
+  exposurePct: number | null;
+}
+
+interface RouterMetricAudit {
+  windows: number;
+  noTradeWindows: number;
+  nonNullProfitFactorWindows: number;
+  noLossProfitFactorWindows: number;
+  tinyLossProfitFactorWindows: number;
+  reportedAverageProfitFactor: number | null;
+  globalProfitFactor: number | null;
+  averageExpectancy: number | null;
+  globalExpectancy: number | null;
+  averageReturnPct: number | null;
+  totalReturnPct: number | null;
+  totalTrades: number;
+  selectedStrategyCounts: Record<string, number>;
+  rows: RouterWindowAuditRow[];
+}
+
 interface ValidationWarningContext {
   requestedWindowsPerRegime: number;
   configuredWindowBars: number;
@@ -54,6 +97,7 @@ interface ValidationWarningContext {
 const MIN_PROXY_WINDOW_BARS = 72;
 const DEFAULT_PROXY_WINDOW_BARS = 144;
 const NEAR_ZERO_TRADES_PER_WINDOW = 0.25;
+const TINY_GROSS_LOSS_USD = 1;
 
 function parseInstruments(): InstrumentArg[] {
   const symbols = (process.env.SYMBOLS ?? "BTC-USD")
@@ -94,10 +138,18 @@ async function fetchBounds(symbol: string, exchange: Exchange, timeframe: Timefr
   };
 }
 
-async function fetchRegimes(symbol: string, exchange: Exchange, startTs: string, endTs: string): Promise<RegimeContext[]> {
+async function fetchRegimes(symbol: string, exchange: Exchange, startTs: string, endTs: string): Promise<PersistedRegimeContext[]> {
   const pool = getPgPool();
-  const { rows } = await pool.query<{ ts: Date; regime: RegimeLabel; reliability: string }>(
-    `select distinct on (ts) ts, regime, reliability
+  const { rows } = await pool.query<{
+    ts: Date;
+    regime: RegimeLabel;
+    reliability: string;
+    regime_model_version: string | null;
+    prompt_version: string | null;
+    raw_response: unknown;
+  }>(
+    `select distinct on (ts)
+       ts, regime, reliability, regime_model_version, prompt_version, raw_response
      from regime_snapshots
      where symbol = $1 and exchange = $2 and ts >= $3 and ts < $4
        and (feature_version is null or feature_version = $5)
@@ -108,6 +160,9 @@ async function fetchRegimes(symbol: string, exchange: Exchange, startTs: string,
     ts: row.ts.toISOString(),
     regime: row.regime,
     reliability: Number(row.reliability),
+    regimeModelVersion: row.regime_model_version,
+    promptVersion: row.prompt_version,
+    rawResponse: row.raw_response,
   }));
 }
 
@@ -160,6 +215,110 @@ function summarizeMetrics(label: string, metrics: BacktestMetrics[]): RoutingSum
     avgTrades: avg(metrics.map((m) => m.numberOfTrades)),
     avgExposure: avg(metrics.map((m) => m.exposurePct).filter((value): value is number => value !== null)),
     avgReturnToDrawdown: avg(metrics.map((m) => m.returnToDrawdown).filter((value): value is number => value !== null)),
+  };
+}
+
+function grossProfit(trades: SimulatedTrade[]): number {
+  return trades.filter((trade) => trade.pnl > 0).reduce((sum, trade) => sum + trade.pnl, 0);
+}
+
+function grossLossAbs(trades: SimulatedTrade[]): number {
+  return Math.abs(trades.filter((trade) => trade.pnl < 0).reduce((sum, trade) => sum + trade.pnl, 0));
+}
+
+function profitFactorFromTrades(trades: SimulatedTrade[]): number | null {
+  const losses = grossLossAbs(trades);
+  if (losses === 0) return null;
+  return grossProfit(trades) / losses;
+}
+
+function sourceDisplayFor(regimeSource: RegimeValidationSource, persistedRegimes: PersistedRegimeContext[]): RegimeSourceDisplay {
+  if (regimeSource === "ohlcv_proxy") return "ohlcv_fallback_labels";
+  const hasDeterministicRows = persistedRegimes.some((row) =>
+    row.regimeModelVersion?.includes("deterministic") === true ||
+    (typeof row.rawResponse === "object" && row.rawResponse !== null &&
+      "source" in row.rawResponse &&
+      String((row.rawResponse as { source?: unknown }).source).includes("deterministic")),
+  );
+  return hasDeterministicRows ? "deterministic_proxy_research_snapshots" : "gpt_a6_detector_snapshots";
+}
+
+function sourceDisplayLabel(source: RegimeSourceDisplay): string {
+  switch (source) {
+    case "gpt_a6_detector_snapshots":
+      return "GPT/A6 detector snapshots";
+    case "deterministic_proxy_research_snapshots":
+      return "deterministic proxy research snapshots";
+    case "ohlcv_fallback_labels":
+      return "OHLCV fallback labels";
+  }
+}
+
+function sourceCaution(source: RegimeSourceDisplay): string | null {
+  if (source === "gpt_a6_detector_snapshots") return null;
+  if (source === "deterministic_proxy_research_snapshots") {
+    return "Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 detector outputs.";
+  }
+  return "Note: no persisted regime snapshots were available, so this run used in-memory OHLCV fallback labels.";
+}
+
+function routerMetricAudit(base: BacktestInput, windows: RegimeCandidateWindow[]): RouterMetricAudit {
+  const results = windows.map((window) => ({
+    window,
+    result: runBacktest({
+      ...sliceInput(base, window, DEFAULT_A6_REGIME_ROUTER_CONFIG.id),
+      strategyRouter: defaultA6RegimeRouter,
+    }),
+  }));
+  const allTrades = results.flatMap(({ result }) => result.trades);
+  const rows = results.map(({ window, result }) => {
+    const profit = grossProfit(result.trades);
+    const lossAbs = grossLossAbs(result.trades);
+    const selectedStrategies = [...new Set(result.trades.map((trade) => trade.strategyId))].sort().join(", ");
+    return {
+      regime: window.regime,
+      startTs: window.startTs,
+      endTs: window.endTs,
+      tradeCount: result.trades.length,
+      selectedStrategies: selectedStrategies || "none",
+      returnPct: result.metrics.totalReturnPct,
+      maxDrawdownPct: result.metrics.maxDrawdownPct,
+      profitFactor: result.metrics.profitFactor,
+      expectancy: result.metrics.expectancy,
+      grossProfit: profit,
+      grossLossAbs: lossAbs,
+      exposurePct: result.metrics.exposurePct,
+    };
+  });
+  const strategyCounts: Record<string, number> = {};
+  for (const trade of allTrades) {
+    strategyCounts[trade.strategyId] = (strategyCounts[trade.strategyId] ?? 0) + 1;
+  }
+
+  return {
+    windows: results.length,
+    noTradeWindows: results.filter(({ result }) => result.trades.length === 0).length,
+    nonNullProfitFactorWindows: results.filter(({ result }) => result.metrics.profitFactor !== null).length,
+    noLossProfitFactorWindows: results.filter(({ result }) => result.trades.length > 0 && grossLossAbs(result.trades) === 0).length,
+    tinyLossProfitFactorWindows: results.filter(({ result }) => {
+      const lossAbs = grossLossAbs(result.trades);
+      return lossAbs > 0 && lossAbs < TINY_GROSS_LOSS_USD;
+    }).length,
+    reportedAverageProfitFactor: avg(results
+      .map(({ result }) => result.metrics.profitFactor)
+      .filter((value): value is number => value !== null)),
+    globalProfitFactor: profitFactorFromTrades(allTrades),
+    averageExpectancy: avg(results
+      .map(({ result }) => result.metrics.expectancy)
+      .filter((value): value is number => value !== null)),
+    globalExpectancy: allTrades.length === 0 ? null : allTrades.reduce((sum, trade) => sum + trade.pnl, 0) / allTrades.length,
+    averageReturnPct: avg(results.map(({ result }) => result.metrics.totalReturnPct)),
+    totalReturnPct: base.config.initialCapital === 0
+      ? null
+      : allTrades.reduce((sum, trade) => sum + trade.pnl, 0) / base.config.initialCapital * 100,
+    totalTrades: allTrades.length,
+    selectedStrategyCounts: strategyCounts,
+    rows,
   };
 }
 
@@ -250,6 +409,54 @@ function summaryTable(rows: RoutingSummary[]): string {
   );
 }
 
+function routerMetricAuditSection(audit: RouterMetricAudit): string[] {
+  const strategyCounts = Object.entries(audit.selectedStrategyCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([strategyId, count]) => `${strategyId}: ${count}`)
+    .join(", ") || "none";
+  return [
+    "### Router Metric Audit",
+    "",
+    "Router profit factor in the summary is the arithmetic average of non-null per-window profit factors. Windows with no losing trades have `null` profit factor and are excluded from that average, so the global trade-level profit factor below is included as a cross-check.",
+    "",
+    table(
+      ["windows", "noTrade", "pfWindows", "noLossPF", "tinyLossPF", "avgPF", "globalPF", "avgExpectancy", "globalExpectancy", "avgReturn", "totalTradeReturn", "trades", "selectedStrategies"],
+      [[
+        String(audit.windows),
+        String(audit.noTradeWindows),
+        String(audit.nonNullProfitFactorWindows),
+        String(audit.noLossProfitFactorWindows),
+        String(audit.tinyLossProfitFactorWindows),
+        fmt(audit.reportedAverageProfitFactor),
+        fmt(audit.globalProfitFactor),
+        fmt(audit.averageExpectancy, 4),
+        fmt(audit.globalExpectancy, 4),
+        fmt(audit.averageReturnPct),
+        fmt(audit.totalReturnPct),
+        String(audit.totalTrades),
+        strategyCounts,
+      ]],
+    ),
+    "",
+    table(
+      ["regime", "start", "trades", "strategies", "return", "maxDD", "PF", "expectancy", "grossProfit", "grossLoss", "exposure"],
+      audit.rows.map((row) => [
+        row.regime,
+        row.startTs.slice(0, 10),
+        String(row.tradeCount),
+        row.selectedStrategies,
+        fmt(row.returnPct),
+        fmt(row.maxDrawdownPct),
+        fmt(row.profitFactor),
+        fmt(row.expectancy, 4),
+        fmt(row.grossProfit, 2),
+        fmt(row.grossLossAbs, 2),
+        fmt(row.exposurePct),
+      ]),
+    ),
+  ];
+}
+
 function featureAlignedBars(bars: Bar[], features: FeatureSnapshot[]): Bar[] {
   if (features.length === 0) return [];
   const featureTs = new Set(features.map((feature) => feature.ts));
@@ -332,6 +539,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
   const regimes = regimeSource === "a6_snapshots"
     ? persistedRegimes
     : buildOhlcvProxyRegimes(executableBars, features);
+  const regimeSourceDisplay = sourceDisplayFor(regimeSource, persistedRegimes);
   const config = baseConfig(instrument, bounds.startTs, bounds.endTs);
   const baseInput: BacktestInput = { config, bars: executableBars, features, dailyFeatures, regimes };
   const {
@@ -360,6 +568,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
   const validation = runRegimeValidation(validationOptions);
 
   const routing = routingSummaries(baseInput, validation.selectedWindows);
+  const routerAudit = routerMetricAudit(baseInput, validation.selectedWindows);
   const portfolios = portfolioSummaries(baseInput, validation.selectedWindows);
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
@@ -380,13 +589,11 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     `Instrument: symbol=${instrument.symbol}, exchange=${instrument.exchange}, assetType=${instrument.assetType}, dataSource=${instrument.dataSource}`,
     `Range: ${bounds.startTs} to ${bounds.endTs}`,
     `Rows: bars=${bars.length}, executableBars=${executableBars.length}, features=${features.length}, dailyFeatures=${dailyFeatures.length}, persistedRegimes=${persistedRegimes.length}, researchRegimes=${regimes.length}`,
-    `Regime source: ${regimeSource === "a6_snapshots" ? "persisted A6 snapshots" : "OHLCV proxy fallback"}`,
+    `Regime source: ${sourceDisplayLabel(regimeSourceDisplay)}`,
     `Window bars: ${validation.selectedWindows[0]?.barCount ?? validationOptions.windowBars}`,
     `Requested windows per regime: ${requestedWindowsPerRegime}`,
     `Selected windows: ${validation.selectedWindows.length} (${coverage})`,
-    persistedRegimes.length === 0
-      ? "Note: no persisted A6 regime snapshots were available, so this run used OHLCV proxy labels for research-only validation."
-      : "",
+    sourceCaution(regimeSourceDisplay) ?? "",
     warnings.length > 0 ? "" : "",
     warnings.length > 0 ? "### Validation Warnings" : "",
     ...warnings.map((warning) => `- ${warning}`),
@@ -396,6 +603,8 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     "",
     "### A6 Routing Results",
     summaryTable(routing),
+    "",
+    ...routerMetricAuditSection(routerAudit),
     "",
     "### Portfolio Results",
     summaryTable(portfolios),
@@ -437,6 +646,8 @@ async function main(): Promise<void> {
     "- Added portfolio research composition via `lib/backtest/portfolioBacktest.ts` with equal, custom, and regime-weighted allocations.",
     "- Added multi-window regime validation via `lib/backtest/regimeValidation.ts` with non-overlapping regime windows and stability rankings.",
     "- Added OHLCV proxy regime fallback for TREND_UP, TREND_DOWN, HIGH_VOL, LOW_VOL, NEWS_SHOCK, and CHOP when persisted A6 snapshots are unavailable.",
+    "- Report regime source labels now distinguish GPT/A6 detector snapshots, deterministic proxy research snapshots, and OHLCV fallback labels.",
+    "- Added a Router Metric Audit section to cross-check average profit factor, global profit factor, no-trade windows, and per-window routed trades.",
     "- Proxy validation uses meaningful windows by default: 144 bars preferred and 72 bars minimum. Coverage is reported honestly when fewer than the requested windows are available.",
     "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
     "",
@@ -451,14 +662,14 @@ async function main(): Promise<void> {
     "## Architecture Changes",
     "",
     "- A6 routing is configuration-driven through `createRegimeStrategyRouter`; the engine receives a router interface and does not know the regime map.",
-    "- Regime validation prefers persisted A6 snapshots. If none exist, it builds research-only proxy labels from OHLCV volatility, range, trend, and shock features.",
+    "- Regime validation prefers persisted snapshots, but the report labels whether those rows came from the GPT/A6 detector or deterministic proxy research generation. If none exist, it builds in-memory OHLCV fallback labels.",
     "- `regime -> []` and missing regime mappings produce no trade, allowing future capital-preservation experiments.",
     "- Portfolio research validates `sum(weights) <= 100%` and rejects implicit leverage.",
     "- Validation tooling accepts `symbol`, `exchange`, `assetType`, and `dataSource` for multi-asset expansion.",
     "",
     "## Issues Found",
     "",
-    "- If persisted A6 snapshots are absent, reported regime samples are proxy-classified and should not be treated as A6 detector validation.",
+    "- Deterministic proxy research snapshots and OHLCV fallback labels are not described as GPT/A6 detector validation.",
     "- BTC-USD data coverage is reported per run as bars, executable bars, 1h features, daily features, and persisted regimes. If any coverage falls short, the report keeps sample counts lower rather than manufacturing windows.",
     "- If meaningful proxy windows cannot provide the requested windows per regime, the report intentionally keeps lower sample counts rather than shrinking to 1-2 bar windows.",
     "- Current portfolio research uses scaled simulated trade PnL and should not be treated as a full broker-grade portfolio accounting engine.",
