@@ -16,6 +16,7 @@ import {
   type RegimeStrategyRouterConfig,
 } from "@/lib/backtest/strategyRouter";
 import {
+  aggregateRegimeMetrics,
   buildOhlcvProxyRegimes,
   REQUIRED_REGIMES,
   runRegimeValidation,
@@ -24,6 +25,7 @@ import {
   type RegimeValidationOptions,
   type RegimeValidationResult,
   type RegimeValidationSource,
+  type RegimeWindowBacktest,
 } from "@/lib/backtest/regimeValidation";
 import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics, SimulatedTrade } from "@/lib/backtest/types";
 
@@ -912,29 +914,46 @@ function buildExperimentalRouterConfigs(
   ];
 }
 
+function routerFullStatsForConfig(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+  config: RegimeStrategyRouterConfig,
+): FullStats {
+  const audit = routerMetricAudit(base, windows, config);
+  const rtdds = audit.rows
+    .map((r) => r.maxDrawdownPct === 0 ? null : r.returnPct / r.maxDrawdownPct)
+    .filter((v): v is number => v !== null);
+  const syntheticEntry: RoutingSummary = {
+    label: config.id,
+    samples: audit.windows,
+    avgReturn: audit.averageReturnPct,
+    avgDrawdown: avg(audit.rows.map((r) => r.maxDrawdownPct)),
+    avgProfitFactor: audit.reportedAverageProfitFactor,
+    avgExpectancy: audit.averageExpectancy,
+    avgTrades: avg(audit.rows.map((r) => r.tradeCount)),
+    avgExposure: avg(audit.rows.map((r) => r.exposurePct).filter((v): v is number => v !== null)),
+    avgReturnToDrawdown: avg(rtdds),
+  };
+  return routerFullStatsFromAudit(audit, syntheticEntry);
+}
+
 function experimentalRouterStats(
   base: BacktestInput,
   windows: RegimeCandidateWindow[],
   configs: RegimeStrategyRouterConfig[],
 ): FullStats[] {
-  return configs.map((config) => {
-    const audit = routerMetricAudit(base, windows, config);
-    const rtdds = audit.rows
-      .map((r) => r.maxDrawdownPct === 0 ? null : r.returnPct / r.maxDrawdownPct)
-      .filter((v): v is number => v !== null);
-    const syntheticEntry: RoutingSummary = {
-      label: config.id,
-      samples: audit.windows,
-      avgReturn: audit.averageReturnPct,
-      avgDrawdown: avg(audit.rows.map((r) => r.maxDrawdownPct)),
-      avgProfitFactor: audit.reportedAverageProfitFactor,
-      avgExpectancy: audit.averageExpectancy,
-      avgTrades: avg(audit.rows.map((r) => r.tradeCount)),
-      avgExposure: avg(audit.rows.map((r) => r.exposurePct).filter((v): v is number => v !== null)),
-      avgReturnToDrawdown: avg(rtdds),
-    };
-    return routerFullStatsFromAudit(audit, syntheticEntry);
-  });
+  return configs.map((config) => routerFullStatsForConfig(base, windows, config));
+}
+
+function computeAggregatesForWindows(base: BacktestInput, windows: RegimeCandidateWindow[]): AggregatedRegimeMetrics[] {
+  const strategyIds = STRATEGY_REGISTRY.map((strategy) => strategy.id);
+  const backtests: RegimeWindowBacktest[] = [];
+  for (const window of windows) {
+    for (const strategyId of strategyIds) {
+      backtests.push({ window, strategyId, result: runBacktest(sliceInput(base, window, strategyId)) });
+    }
+  }
+  return aggregateRegimeMetrics(backtests, strategyIds);
 }
 
 function routerConfigComparisonSection(
@@ -974,8 +993,9 @@ function routerConfigComparisonSection(
   ]);
 
   return [
-    "### Router Configuration Comparison",
+    "### Router Configuration Comparison (In-Sample Discovery)",
     "",
+    "IN-SAMPLE: router maps are derived from the same primary-config windows they are evaluated on, so these results are hypothesis discovery, not validation. See Walk-Forward Router Validation below for out-of-sample evidence. " +
     "Five experimental router configurations evaluated against the default A6 router on the same primary-config windows. " +
     "conservative_router trades only if the regime's top strategy has avgReturn > 0 AND avgPF > 1. " +
     "momentum_only_router uses momentum_continuation for every regime. " +
@@ -1046,6 +1066,153 @@ function validationConfigComparisonSection(results: ConfigRunResult[], primaryLa
     table(
       ["config", "total windows", "windows TU/TD/HV/LV/NS/CH", "min purity%", "med purity%", "avg purity%", "best static (ret)", "best static (rtDD)", "router avg ret%", "router gPF", "router gExpect", "delta vs best ret%", "noTrade", "trades", "verdict"],
       rows,
+    ),
+    "",
+  ];
+}
+
+interface WalkForwardFoldResult {
+  config: RegimeStrategyRouterConfig;
+  train: FullStats;
+  test: FullStats;
+  testVerdict: boolean;
+}
+
+// Derives router maps from train windows ONLY, then evaluates the fixed maps on both
+// train and test windows. Verdict compares each router's test stats against test-window
+// benchmarks (best static by return, best static by ret/DD, equal-weight, regime-weight).
+function runWalkForwardFold(
+  base: BacktestInput,
+  trainWindows: RegimeCandidateWindow[],
+  testWindows: RegimeCandidateWindow[],
+): WalkForwardFoldResult[] {
+  const trainAggregates = computeAggregatesForWindows(base, trainWindows);
+  const trainDefaultAudit = routerMetricAudit(base, trainWindows);
+  const trainConfigs = buildExperimentalRouterConfigs(trainAggregates, trainDefaultAudit);
+  const allConfigs: RegimeStrategyRouterConfig[] = [DEFAULT_A6_REGIME_ROUTER_CONFIG, ...trainConfigs];
+
+  const testStatic = staticStrategyFullStats(base, testWindows);
+  const testPortfolio = portfolioComparisonStats(base, testWindows);
+
+  return allConfigs.map((config) => {
+    const train = routerFullStatsForConfig(base, trainWindows, config);
+    const test = routerFullStatsForConfig(base, testWindows, config);
+    const testVerdict = routerBeatsAll(test, testStatic, testPortfolio);
+    return { config, train, test, testVerdict };
+  });
+}
+
+function regimeCoverageString(windows: RegimeCandidateWindow[]): string {
+  return REQUIRED_REGIMES.map((r) => windows.filter((w) => w.regime === r).length).join("/");
+}
+
+function periodMetricTable(
+  entries: Array<{ label: string; stats: FullStats }>,
+  verdicts?: boolean[],
+): string {
+  const rows: string[][] = [
+    ["avg return (%)", ...entries.map((e) => fmt(e.stats.avgReturn))],
+    ["median return (%)", ...entries.map((e) => fmt(e.stats.medianReturn))],
+    ["max drawdown (%)", ...entries.map((e) => fmt(e.stats.maxDrawdown))],
+    ["global PF", ...entries.map((e) => fmt(e.stats.globalProfitFactor))],
+    ["global expectancy ($)", ...entries.map((e) => fmt(e.stats.globalExpectancy, 4))],
+    ["trade count", ...entries.map((e) => String(e.stats.tradeCount))],
+    ["no-trade windows", ...entries.map((e) => String(e.stats.noTradeWindows))],
+    ["ret/DD", ...entries.map((e) => fmt(e.stats.avgReturnToDrawdown))],
+  ];
+  if (verdicts) {
+    rows.push(["verdict vs benchmarks", ...verdicts.map((v) => (v ? "VALIDATED" : "NO"))]);
+  }
+  return table(["metric", ...entries.map((e) => e.label)], rows);
+}
+
+function walkForwardRouterSection(base: BacktestInput, selectedWindows: RegimeCandidateWindow[]): string[] {
+  const sorted = [...selectedWindows].sort((a, b) => a.startTs.localeCompare(b.startTs));
+  if (sorted.length < 10) {
+    return [
+      "### Walk-Forward Router Validation",
+      "",
+      `Only ${sorted.length} selected windows are available; at least 10 are needed for a meaningful chronological train/test split. Walk-forward validation skipped.`,
+      "",
+    ];
+  }
+
+  const splitIndex = Math.floor(sorted.length * 0.7);
+  const trainWindows = sorted.slice(0, splitIndex);
+  const testWindows = sorted.slice(splitIndex);
+  const fold = runWalkForwardFold(base, trainWindows, testWindows);
+
+  const trainEntries = fold.map((f) => ({ label: f.config.id, stats: f.train }));
+  const testEntries = fold.map((f) => ({ label: f.config.id, stats: f.test }));
+  const testVerdicts = fold.map((f) => f.testVerdict);
+
+  // Train-derived regime maps (may differ from in-sample maps because they use train data only)
+  const mapRows = fold.map((f) => [
+    f.config.id,
+    ...REQUIRED_REGIMES.map((r) => {
+      const strategies = f.config.regimeStrategyMap[r] ?? [];
+      return strategies.length === 0
+        ? "—"
+        : strategies
+            .join("+")
+            .replace(/breakout_expansion/g, "be")
+            .replace(/momentum_continuation/g, "mc")
+            .replace(/mean_reversion_bounce/g, "mrb")
+            .replace(/trend_pullback/g, "tp");
+    }),
+  ]);
+
+  // Optional rolling expanding-window folds for robustness
+  const rollingBoundaries: Array<{ trainEnd: number; testEnd: number }> = [
+    { trainEnd: Math.floor(sorted.length * 0.4), testEnd: Math.floor(sorted.length * 0.6) },
+    { trainEnd: Math.floor(sorted.length * 0.6), testEnd: Math.floor(sorted.length * 0.8) },
+    { trainEnd: Math.floor(sorted.length * 0.8), testEnd: sorted.length },
+  ].filter((b) => b.trainEnd > 0 && b.testEnd > b.trainEnd);
+
+  const rollingFolds = rollingBoundaries.map((b) =>
+    runWalkForwardFold(base, sorted.slice(0, b.trainEnd), sorted.slice(b.trainEnd, b.testEnd)),
+  );
+  const routerOrder = fold.map((f) => f.config.id);
+  const rollingRows = routerOrder.map((id, idx) => {
+    const perFold = rollingFolds.map((rf) => rf[idx]);
+    const validatedCount = perFold.filter((r) => r.testVerdict).length;
+    return [
+      id,
+      ...perFold.map((r) => fmt(r.test.avgReturn)),
+      ...perFold.map((r) => (r.testVerdict ? "Y" : "N")),
+      `${validatedCount}/${rollingFolds.length}`,
+    ];
+  });
+
+  return [
+    "### Walk-Forward Router Validation",
+    "",
+    "OUT-OF-SAMPLE: router maps are derived from train windows only, then the fixed maps are scored on held-out test windows. This is the honest test of whether the in-sample router improvements survive. Windows are split chronologically by start time (no shuffling). Verdict compares each router's test-period stats against test-period benchmarks (best static by avg return, best static by ret/DD, equal-weight, regime-weight); VALIDATED requires beating all four.",
+    "",
+    `Primary 70/30 split: train = ${trainWindows.length} windows (regime coverage TU/TD/HV/LV/NS/CH = ${regimeCoverageString(trainWindows)}), test = ${testWindows.length} windows (coverage = ${regimeCoverageString(testWindows)}).`,
+    "",
+    "Train period (in-sample; maps fitted here):",
+    "",
+    periodMetricTable(trainEntries),
+    "",
+    "Test period (out-of-sample; maps frozen from train):",
+    "",
+    periodMetricTable(testEntries, testVerdicts),
+    "",
+    "Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):",
+    "",
+    table(["router", ...REQUIRED_REGIMES], mapRows),
+    "",
+    `Rolling expanding-window folds (${rollingFolds.length} folds; each re-derives maps from its train prefix and scores the next chronological slice). Columns: test avg return % per fold, then test verdict per fold (Y/N), then folds validated.`,
+    "",
+    table(
+      [
+        "router",
+        ...rollingBoundaries.map((_, i) => `f${i + 1} ret%`),
+        ...rollingBoundaries.map((_, i) => `f${i + 1} ok`),
+        "validated",
+      ],
+      rollingRows,
     ),
     "",
   ];
@@ -1215,6 +1382,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     "",
     ...routerVsStaticSection(staticFull, routerFull, portfolioFull),
     ...routerConfigComparisonSection(allRouterStats, staticFull, portfolioFull, experimentalConfigs),
+    ...walkForwardRouterSection(baseInput, validation.selectedWindows),
     ...regimePuritySection(validation.selectedWindows, minPurityPct),
     ...validationConfigComparisonSection(configResults, primaryResult.config.label),
     "### Stability Rankings",
@@ -1263,7 +1431,8 @@ async function main(): Promise<void> {
     "- Added Router vs Best Static Strategy comparison with median return, max drawdown, global profit factor, global expectancy, trade count, and no-trade windows. Router verdict is VALIDATED only if it beats best-static-by-avg-return, best-static-by-ret/DD, equal-weight, and regime-weight simultaneously.",
     "- Added regime-window purity diagnostics reporting min, median, and avg dominantRegimePct overall and per regime.",
     "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
-    "- Added Router Configuration Comparison: five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates.",
+    "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
+    "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
     "",
     "## Strategy Analytics",
     "",
