@@ -956,6 +956,59 @@ function computeAggregatesForWindows(base: BacktestInput, windows: RegimeCandida
   return aggregateRegimeMetrics(backtests, strategyIds);
 }
 
+interface RegimeStrategyStat {
+  symbol: string;
+  regime: RegimeLabel;
+  strategyId: string;
+  samples: number;
+  avgReturn: number | null;
+  globalProfitFactor: number | null;
+  globalExpectancy: number | null;
+  maxDrawdown: number | null;
+  avgReturnToDrawdown: number | null;
+  tradeCount: number;
+  medianPurity: number | null;
+}
+
+// True trade-level global stats per (regime, strategy) for one asset, used to power
+// the Cross-Asset Opportunity Ranking. Trades are pooled within each regime's windows.
+function crossAssetRegimeStrategyStats(
+  symbol: string,
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+): RegimeStrategyStat[] {
+  const strategyIds = STRATEGY_REGISTRY.map((strategy) => strategy.id);
+  const out: RegimeStrategyStat[] = [];
+  for (const regime of REQUIRED_REGIMES) {
+    const regimeWindows = windows.filter((w) => w.regime === regime);
+    if (regimeWindows.length === 0) continue;
+    const medianPurity = medianOf(regimeWindows.map((w) => w.dominantRegimePct));
+    for (const strategyId of strategyIds) {
+      const results = regimeWindows.map((w) => runBacktest(sliceInput(base, w, strategyId)));
+      const allTrades = results.flatMap((r) => r.trades);
+      const metrics = results.map((r) => r.metrics);
+      const returns = metrics.map((m) => m.totalReturnPct);
+      const drawdowns = metrics.map((m) => m.maxDrawdownPct);
+      const rtdds = metrics.map((m) => m.returnToDrawdown).filter((v): v is number => v !== null);
+      const lossAbs = grossLossAbs(allTrades);
+      out.push({
+        symbol,
+        regime,
+        strategyId,
+        samples: regimeWindows.length,
+        avgReturn: avg(returns),
+        globalProfitFactor: lossAbs === 0 ? null : grossProfit(allTrades) / lossAbs,
+        globalExpectancy: allTrades.length === 0 ? null : allTrades.reduce((s, t) => s + t.pnl, 0) / allTrades.length,
+        maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+        avgReturnToDrawdown: avg(rtdds),
+        tradeCount: allTrades.length,
+        medianPurity,
+      });
+    }
+  }
+  return out;
+}
+
 function routerConfigComparisonSection(
   allRouterStats: FullStats[],
   staticFull: FullStats[],
@@ -974,12 +1027,14 @@ function routerConfigComparisonSection(
     ["max drawdown (%)", ...contestants.map(([, s]) => fmt(s.maxDrawdown))],
     ["avg drawdown (%)", ...contestants.map(([, s]) => fmt(s.avgDrawdown))],
     ["global PF", ...contestants.map(([, s]) => fmt(s.globalProfitFactor))],
+    ["avg PF", ...contestants.map(([, s]) => fmt(s.avgProfitFactor))],
     ["global expectancy ($)", ...contestants.map(([, s]) => fmt(s.globalExpectancy, 4))],
+    ["avg expectancy ($)", ...contestants.map(([, s]) => fmt(s.avgExpectancy, 4))],
     ["exposure (%)", ...contestants.map(([, s]) => fmt(s.avgExposure))],
     ["trade count", ...contestants.map(([, s]) => String(s.tradeCount))],
     ["no-trade windows", ...contestants.map(([, s]) => String(s.noTradeWindows))],
     ["ret/DD", ...contestants.map(([, s]) => fmt(s.avgReturnToDrawdown))],
-    ["verdict", ...allRouterStats.map((s) => (routerBeatsAll(s, staticFull, portfolioFull) ? "VALIDATED" : "NO"))],
+    ["verdict", ...allRouterStats.map((s) => (routerBeatsAll(s, staticFull, portfolioFull) ? "VALIDATED" : "NOT VALIDATED"))],
   ];
 
   // Regime map summary rows: default A6 router + 5 experimental
@@ -1121,26 +1176,51 @@ function periodMetricTable(
     ["ret/DD", ...entries.map((e) => fmt(e.stats.avgReturnToDrawdown))],
   ];
   if (verdicts) {
-    rows.push(["verdict vs benchmarks", ...verdicts.map((v) => (v ? "VALIDATED" : "NO"))]);
+    rows.push(["verdict vs benchmarks", ...verdicts.map((v) => (v ? "VALIDATED" : "NOT VALIDATED"))]);
   }
   return table(["metric", ...entries.map((e) => e.label)], rows);
 }
 
-function walkForwardRouterSection(base: BacktestInput, selectedWindows: RegimeCandidateWindow[]): string[] {
+interface WalkForwardData {
+  trainWindows: RegimeCandidateWindow[];
+  testWindows: RegimeCandidateWindow[];
+  primaryFold: WalkForwardFoldResult[];
+  rollingFolds: WalkForwardFoldResult[][];
+  rollingBoundaries: Array<{ trainEnd: number; testEnd: number }>;
+}
+
+function computeWalkForward(base: BacktestInput, selectedWindows: RegimeCandidateWindow[]): WalkForwardData | null {
   const sorted = [...selectedWindows].sort((a, b) => a.startTs.localeCompare(b.startTs));
-  if (sorted.length < 10) {
-    return [
-      "### Walk-Forward Router Validation",
-      "",
-      `Only ${sorted.length} selected windows are available; at least 10 are needed for a meaningful chronological train/test split. Walk-forward validation skipped.`,
-      "",
-    ];
-  }
+  if (sorted.length < 10) return null;
 
   const splitIndex = Math.floor(sorted.length * 0.7);
   const trainWindows = sorted.slice(0, splitIndex);
   const testWindows = sorted.slice(splitIndex);
-  const fold = runWalkForwardFold(base, trainWindows, testWindows);
+  const primaryFold = runWalkForwardFold(base, trainWindows, testWindows);
+
+  const rollingBoundaries: Array<{ trainEnd: number; testEnd: number }> = [
+    { trainEnd: Math.floor(sorted.length * 0.4), testEnd: Math.floor(sorted.length * 0.6) },
+    { trainEnd: Math.floor(sorted.length * 0.6), testEnd: Math.floor(sorted.length * 0.8) },
+    { trainEnd: Math.floor(sorted.length * 0.8), testEnd: sorted.length },
+  ].filter((b) => b.trainEnd > 0 && b.testEnd > b.trainEnd);
+  const rollingFolds = rollingBoundaries.map((b) =>
+    runWalkForwardFold(base, sorted.slice(0, b.trainEnd), sorted.slice(b.trainEnd, b.testEnd)),
+  );
+
+  return { trainWindows, testWindows, primaryFold, rollingFolds, rollingBoundaries };
+}
+
+function walkForwardRouterSection(data: WalkForwardData | null): string[] {
+  if (!data) {
+    return [
+      "### Walk-Forward Router Validation",
+      "",
+      "Fewer than 10 selected windows are available; at least 10 are needed for a meaningful chronological train/test split. Walk-forward validation skipped.",
+      "",
+    ];
+  }
+
+  const { trainWindows, testWindows, primaryFold: fold, rollingFolds, rollingBoundaries } = data;
 
   const trainEntries = fold.map((f) => ({ label: f.config.id, stats: f.train }));
   const testEntries = fold.map((f) => ({ label: f.config.id, stats: f.test }));
@@ -1162,16 +1242,6 @@ function walkForwardRouterSection(base: BacktestInput, selectedWindows: RegimeCa
     }),
   ]);
 
-  // Optional rolling expanding-window folds for robustness
-  const rollingBoundaries: Array<{ trainEnd: number; testEnd: number }> = [
-    { trainEnd: Math.floor(sorted.length * 0.4), testEnd: Math.floor(sorted.length * 0.6) },
-    { trainEnd: Math.floor(sorted.length * 0.6), testEnd: Math.floor(sorted.length * 0.8) },
-    { trainEnd: Math.floor(sorted.length * 0.8), testEnd: sorted.length },
-  ].filter((b) => b.trainEnd > 0 && b.testEnd > b.trainEnd);
-
-  const rollingFolds = rollingBoundaries.map((b) =>
-    runWalkForwardFold(base, sorted.slice(0, b.trainEnd), sorted.slice(b.trainEnd, b.testEnd)),
-  );
   const routerOrder = fold.map((f) => f.config.id);
   const rollingRows = routerOrder.map((id, idx) => {
     const perFold = rollingFolds.map((rf) => rf[idx]);
@@ -1213,6 +1283,165 @@ function walkForwardRouterSection(base: BacktestInput, selectedWindows: RegimeCa
         "validated",
       ],
       rollingRows,
+    ),
+    "",
+  ];
+}
+
+interface WalkForwardSummary {
+  bestRouterLabel: string;
+  bestRouterTestAvgReturn: number | null;
+  bestRouterTestGlobalPF: number | null;
+  bestRouterTestGlobalExpectancy: number | null;
+  bestRouterTestVerdict: boolean;
+  foldsValidated: number;
+  totalFolds: number;
+  anyRouterTestValidated: boolean;
+  finalVerdict: string;
+}
+
+interface AssetSummary {
+  symbol: string;
+  assetType: string;
+  regimeSourceLabel: string;
+  dataCoverage: { bars: number; features: number; dailyFeatures: number; regimes: number };
+  selectedWindows: number;
+  windowsByRegime: Record<RegimeLabel, number>;
+  medianPurity: number | null;
+  avgPurity: number | null;
+  bestStaticByReturn: { label: string; value: number | null };
+  bestStaticByRtDD: { label: string; value: number | null };
+  regimeStrategyStats: RegimeStrategyStat[];
+  walkForward: WalkForwardSummary | null;
+}
+
+// Conservative final verdict combining the 70/30 test result with rolling-fold robustness.
+function finalRouterVerdict(testVerdict: boolean, foldsValidated: number, totalFolds: number): string {
+  if (testVerdict && totalFolds > 0 && foldsValidated === totalFolds) return "VALIDATED";
+  if (testVerdict || foldsValidated >= 1) return "NEEDS MORE DATA";
+  return "NOT VALIDATED";
+}
+
+function summarizeWalkForward(data: WalkForwardData | null): WalkForwardSummary | null {
+  if (!data) return null;
+  const { primaryFold, rollingFolds } = data;
+  const totalFolds = rollingFolds.length;
+  const validated = primaryFold.filter((f) => f.testVerdict);
+  const pool = validated.length > 0 ? validated : primaryFold;
+  const best = pool.reduce((b, c) =>
+    (c.test.avgReturn ?? Number.NEGATIVE_INFINITY) > (b.test.avgReturn ?? Number.NEGATIVE_INFINITY) ? c : b,
+  );
+  const foldsValidated = rollingFolds.reduce((n, fold) => {
+    const entry = fold.find((f) => f.config.id === best.config.id);
+    return n + (entry?.testVerdict ? 1 : 0);
+  }, 0);
+  return {
+    bestRouterLabel: best.config.id,
+    bestRouterTestAvgReturn: best.test.avgReturn,
+    bestRouterTestGlobalPF: best.test.globalProfitFactor,
+    bestRouterTestGlobalExpectancy: best.test.globalExpectancy,
+    bestRouterTestVerdict: best.testVerdict,
+    foldsValidated,
+    totalFolds,
+    anyRouterTestValidated: validated.length > 0,
+    finalVerdict: finalRouterVerdict(best.testVerdict, foldsValidated, totalFolds),
+  };
+}
+
+function multiAssetCoverageSection(summaries: AssetSummary[]): string[] {
+  return [
+    "## Multi-Asset Data Coverage",
+    "",
+    "Per-asset data depth and window selection at the primary config. Assets with no stored bars are reported as skipped elsewhere and omitted here.",
+    "",
+    table(
+      ["asset", "type", "regime source", "bars", "features", "dailyFeat", "regimes", "windows", "by regime TU/TD/HV/LV/NS/CH", "med purity%", "avg purity%"],
+      summaries.map((s) => [
+        s.symbol,
+        s.assetType,
+        s.regimeSourceLabel,
+        String(s.dataCoverage.bars),
+        String(s.dataCoverage.features),
+        String(s.dataCoverage.dailyFeatures),
+        String(s.dataCoverage.regimes),
+        String(s.selectedWindows),
+        REQUIRED_REGIMES.map((r) => String(s.windowsByRegime[r])).join("/"),
+        fmt(s.medianPurity),
+        fmt(s.avgPurity),
+      ]),
+    ),
+    "",
+  ];
+}
+
+function crossAssetOpportunitySection(summaries: AssetSummary[]): string[] {
+  const all = summaries.flatMap((s) => s.regimeStrategyStats);
+  // Only meaningful rows: at least one trade. Rank by global expectancy (primary edge signal).
+  const ranked = all
+    .filter((r) => r.tradeCount > 0 && r.globalExpectancy !== null)
+    .sort((a, b) => (b.globalExpectancy ?? Number.NEGATIVE_INFINITY) - (a.globalExpectancy ?? Number.NEGATIVE_INFINITY));
+  const topN = ranked.slice(0, 30);
+
+  if (topN.length === 0) {
+    return [
+      "## Cross-Asset Opportunity Ranking",
+      "",
+      "No asset/regime/strategy combination produced trades across the selected windows.",
+      "",
+    ];
+  }
+
+  return [
+    "## Cross-Asset Opportunity Ranking",
+    "",
+    "Every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.",
+    "",
+    table(
+      ["#", "asset", "regime", "strategy", "samples", "med purity%", "avg ret%", "global PF", "global expectancy ($)", "max DD%", "ret/DD", "trades"],
+      topN.map((r, i) => [
+        String(i + 1),
+        r.symbol,
+        r.regime,
+        r.strategyId,
+        String(r.samples),
+        fmt(r.medianPurity),
+        fmt(r.avgReturn),
+        fmt(r.globalProfitFactor),
+        fmt(r.globalExpectancy, 4),
+        fmt(r.maxDrawdown),
+        fmt(r.avgReturnToDrawdown),
+        String(r.tradeCount),
+      ]),
+    ),
+    "",
+  ];
+}
+
+function crossAssetRouterValidationSection(summaries: AssetSummary[]): string[] {
+  return [
+    "## Cross-Asset Router Validation Summary",
+    "",
+    "One row per asset. 'best router' is the highest test-period avg-return router from the 70/30 walk-forward (preferring any that beat all four benchmarks). 'test verdict' = beats best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the held-out test set. 'final verdict' is conservative: VALIDATED only if the best router beats all benchmarks AND validates every rolling fold; NEEDS MORE DATA if it shows partial out-of-sample edge; otherwise NOT VALIDATED.",
+    "",
+    table(
+      ["asset", "windows", "med purity%", "best static (ret)", "best static (ret/DD)", "best router", "router test ret%", "router test gPF", "router test gExpect", "test verdict", "folds validated", "final verdict"],
+      summaries.map((s) => {
+        const wf = s.walkForward;
+        return [
+          s.symbol,
+          String(s.selectedWindows),
+          fmt(s.medianPurity),
+          `${s.bestStaticByReturn.label} (${fmt(s.bestStaticByReturn.value)}%)`,
+          `${s.bestStaticByRtDD.label} (${fmt(s.bestStaticByRtDD.value)})`,
+          wf ? wf.bestRouterLabel : "n/a",
+          wf ? fmt(wf.bestRouterTestAvgReturn) : "n/a",
+          wf ? fmt(wf.bestRouterTestGlobalPF) : "n/a",
+          wf ? fmt(wf.bestRouterTestGlobalExpectancy, 4) : "n/a",
+          wf ? (wf.bestRouterTestVerdict ? "VALIDATED" : "NOT VALIDATED") : "n/a",
+          wf ? `${wf.foldsValidated}/${wf.totalFolds}` : "n/a",
+          wf ? wf.finalVerdict : "INSUFFICIENT WINDOWS",
+        ];
+      }),
     ),
     "",
   ];
@@ -1268,12 +1497,30 @@ function validationWarnings(context: ValidationWarningContext): string[] {
   return warnings;
 }
 
-async function runInstrument(instrument: InstrumentArg): Promise<string> {
+interface InstrumentReport {
+  markdown: string;
+  summary: AssetSummary | null;
+}
+
+async function runInstrument(instrument: InstrumentArg): Promise<InstrumentReport> {
   const timeframe: Timeframe = "1h";
   const bounds = process.env.START_TS && process.env.END_TS
     ? { startTs: process.env.START_TS, endTs: process.env.END_TS }
     : await fetchBounds(instrument.symbol, instrument.exchange, timeframe);
-  if (!bounds) return `## ${instrument.symbol}\n\nNo stored ${timeframe} bars found.\n`;
+  if (!bounds) {
+    const markdown = [
+      `## ${instrument.symbol}`,
+      "",
+      `Instrument: symbol=${instrument.symbol}, exchange=${instrument.exchange}, assetType=${instrument.assetType}, dataSource=${instrument.dataSource}`,
+      "",
+      `${instrument.symbol} skipped — no stored ${timeframe} bars available for configured data source (${instrument.dataSource}).`,
+      instrument.assetType === "EQUITY"
+        ? "Equity OHLCV ingestion is not implemented yet; add an equity data source and backfill before this asset can be analyzed."
+        : "Backfill this symbol (e.g. npm run backfill:crypto:bulk) then compute features and regimes before re-running.",
+      "",
+    ].join("\n");
+    return { markdown, summary: null };
+  }
 
   const pool = getPgPool();
   const barStore = new PgBarStore(pool);
@@ -1335,6 +1582,24 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
   const experimentalConfigs = buildExperimentalRouterConfigs(validation.aggregates, routerAudit);
   const expStats = experimentalRouterStats(baseInput, validation.selectedWindows, experimentalConfigs);
   const allRouterStats = [routerFull, ...expStats];
+  const walkForwardData = computeWalkForward(baseInput, validation.selectedWindows);
+  const regimeStrategyStats = crossAssetRegimeStrategyStats(instrument.symbol, baseInput, validation.selectedWindows);
+  const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
+  const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
+  const summary: AssetSummary = {
+    symbol: instrument.symbol,
+    assetType: instrument.assetType,
+    regimeSourceLabel: sourceDisplayLabel(regimeSourceDisplay),
+    dataCoverage: { bars: bars.length, features: features.length, dailyFeatures: dailyFeatures.length, regimes: persistedRegimes.length },
+    selectedWindows: validation.selectedWindows.length,
+    windowsByRegime: coverageCounts(validation.selectedWindows),
+    medianPurity: primaryResult.purity.medianDominantRegimePct,
+    avgPurity: primaryResult.purity.avgDominantRegimePct,
+    bestStaticByReturn: { label: bestByReturn?.label ?? "n/a", value: bestByReturn?.avgReturn ?? null },
+    bestStaticByRtDD: { label: bestByRtDD?.label ?? "n/a", value: bestByRtDD?.avgReturnToDrawdown ?? null },
+    regimeStrategyStats,
+    walkForward: summarizeWalkForward(walkForwardData),
+  };
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
     configuredWindowBars: effectiveWindowBars,
@@ -1348,7 +1613,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     .map((regime) => `${regime}: ${validation.selectedWindows.filter((window) => window.regime === regime).length}`)
     .join(", ");
 
-  return [
+  const markdown = [
     `## ${instrument.symbol}`,
     "",
     `Instrument: symbol=${instrument.symbol}, exchange=${instrument.exchange}, assetType=${instrument.assetType}, dataSource=${instrument.dataSource}`,
@@ -1358,6 +1623,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     `Window bars: ${validation.selectedWindows[0]?.barCount ?? effectiveWindowBars} (primary config: ${primaryResult.config.label})`,
     `Requested windows per regime: ${requestedWindowsPerRegime}`,
     `Selected windows: ${validation.selectedWindows.length} (${coverage})`,
+    `Purity: median=${fmt(primaryResult.purity.medianDominantRegimePct)}%, avg=${fmt(primaryResult.purity.avgDominantRegimePct)}%`,
     sourceCaution(regimeSourceDisplay) ?? "",
     warnings.length > 0 ? "" : "",
     warnings.length > 0 ? "### Validation Warnings" : "",
@@ -1382,7 +1648,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     "",
     ...routerVsStaticSection(staticFull, routerFull, portfolioFull),
     ...routerConfigComparisonSection(allRouterStats, staticFull, portfolioFull, experimentalConfigs),
-    ...walkForwardRouterSection(baseInput, validation.selectedWindows),
+    ...walkForwardRouterSection(walkForwardData),
     ...regimePuritySection(validation.selectedWindows, minPurityPct),
     ...validationConfigComparisonSection(configResults, primaryResult.config.label),
     "### Stability Rankings",
@@ -1401,19 +1667,35 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     ),
     "",
   ].join("\n");
+
+  return { markdown, summary };
 }
 
 async function main(): Promise<void> {
   const sections: string[] = [];
+  const summaries: AssetSummary[] = [];
   const instruments = parseInstruments();
   for (const instrument of instruments) {
-    sections.push(await runInstrument(instrument));
+    const result = await runInstrument(instrument);
+    sections.push(result.markdown);
+    if (result.summary) summaries.push(result.summary);
   }
 
+  const crossAssetSections = summaries.length > 0
+    ? [
+        ...multiAssetCoverageSection(summaries),
+        ...crossAssetOpportunitySection(summaries),
+        ...crossAssetRouterValidationSection(summaries),
+      ]
+    : ["## Multi-Asset Data Coverage", "", "No assets had sufficient stored data to analyze.", ""];
+
   const report = [
-    "# P4 Expanded Strategy Analytics And Routing Report",
+    "# P5 Multi-Asset Strategy Research Report",
     "",
-    "Generated by `scripts/runExpandedBacktestResearch.ts`.",
+    "Generated by `scripts/runExpandedBacktestResearch.ts` (`npm run research:p5:multiasset`).",
+    "",
+    `Assets analyzed: ${summaries.length} of ${instruments.length} requested (${summaries.map((s) => s.symbol).join(", ") || "none"}).`,
+    "The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_ROUTING_REPORT.md`.",
     "",
     "## Implementation Summary",
     "",
@@ -1466,17 +1748,21 @@ async function main(): Promise<void> {
     "- Statistical confidence depends on available persisted bars, features, and A6 regime snapshots. Proxy mode improves coverage but is not a substitute for persisted A6 labels.",
     "- staticStrategyFullStats and portfolioComparisonStats re-run backtests independently of routingSummaries and portfolioSummaries; this is intentional to keep the comparison section isolated but doubles computation.",
     "",
+    ...crossAssetSections,
+    "## Per-Asset Detail",
+    "",
     ...sections,
     "## Recommendations",
     "",
-    "1. Prefer decisions based on stability rankings and expectancy, not isolated total-return winners.",
-    "2. Increase each regime to 20 non-overlapping windows per asset before drawing production conclusions.",
-    "3. Add ETH-USD and SOL-USD once feature/regime coverage matches BTC-USD.",
-    "4. Revisit portfolio drawdown modeling if research suggests regime allocation is promising.",
+    "1. Prefer decisions based on stability rankings, walk-forward out-of-sample evidence, and expectancy — not isolated in-sample total-return winners.",
+    "2. Treat the Cross-Asset Opportunity Ranking as a hypothesis generator; confirm any edge with the walk-forward verdict before acting.",
+    "3. No router is validated unless it beats best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on held-out test windows.",
+    "4. Increase each regime to 20 non-overlapping windows per asset before drawing production conclusions.",
+    "5. Add equity/ETF ingestion (SPY/QQQ/AAPL/MSFT/NVDA) so the same pipeline can rank equities; they are skipped honestly until a data source exists.",
     "",
   ].join("\n");
 
-  const reportPath = path.join(process.cwd(), "P4_EXPANDED_STRATEGY_ANALYTICS_AND_ROUTING_REPORT.md");
+  const reportPath = path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
   fs.writeFileSync(reportPath, report);
   console.log(`wrote ${reportPath}`);
 }

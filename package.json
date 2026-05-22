@@ -19,8 +19,12 @@
     "backfill:btc:bootstrap": "dotenv -e .env.local -- tsx scripts/backfillBtcBootstrap.ts",
     "features:btc:bulk": "dotenv -e .env.local -- tsx scripts/computeBtcFeaturesBulk.ts",
     "regimes:btc:bulk": "dotenv -e .env.local -- tsx scripts/computeBtcRegimesBulk.ts",
+    "backfill:crypto:bulk": "dotenv -e .env.local -- tsx scripts/backfillCryptoBulk.ts",
+    "features:asset:bulk": "dotenv -e .env.local -- tsx scripts/computeAssetFeaturesBulk.ts",
+    "regimes:asset:bulk": "dotenv -e .env.local -- tsx scripts/computeAssetRegimesBulk.ts",
     "research:p5": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts",
-    "research:p5:expanded": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts"
+    "research:p5:expanded": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts",
+    "research:p5:multiasset": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",
