@@ -392,6 +392,72 @@ function aggregateTable(aggregates: AggregatedRegimeMetrics[]): string {
   );
 }
 
+function rankValue(
+  row: AggregatedRegimeMetrics,
+  rows: AggregatedRegimeMetrics[],
+  pick: (value: AggregatedRegimeMetrics) => number | null,
+  direction: "high" | "low",
+): number {
+  const sorted = rows
+    .map((value) => ({ value, metric: pick(value) }))
+    .filter((value): value is { value: AggregatedRegimeMetrics; metric: number } => value.metric !== null && Number.isFinite(value.metric))
+    .sort((a, b) => direction === "high" ? b.metric - a.metric : a.metric - b.metric);
+  const index = sorted.findIndex((value) => value.value.strategyId === row.strategyId);
+  return index === -1 ? rows.length + 1 : index + 1;
+}
+
+function bestStrategyByRegimeTable(aggregates: AggregatedRegimeMetrics[]): string {
+  const rows: string[][] = [];
+  for (const regime of REQUIRED_REGIMES) {
+    const regimeRows = aggregates.filter((row) => row.regime === regime && row.samples > 0);
+    const ranked = regimeRows
+      .map((row) => {
+        const ranks = [
+          rankValue(row, regimeRows, (value) => value.averageReturn, "high"),
+          rankValue(row, regimeRows, (value) => value.medianReturn, "high"),
+          rankValue(row, regimeRows, (value) => value.maxDrawdown, "low"),
+          rankValue(row, regimeRows, (value) => value.averageExpectancy, "high"),
+          rankValue(row, regimeRows, (value) => value.averageProfitFactor, "high"),
+          rankValue(row, regimeRows, (value) => value.averageWinRate, "high"),
+          rankValue(row, regimeRows, (value) => value.averageExposure, "low"),
+          rankValue(row, regimeRows, (value) => value.returnToDrawdown, "high"),
+        ];
+        return {
+          row,
+          compositeRank: ranks.reduce((sum, value) => sum + value, 0) / ranks.length,
+        };
+      })
+      .sort((a, b) =>
+        a.compositeRank - b.compositeRank ||
+        (b.row.averageReturn ?? Number.NEGATIVE_INFINITY) - (a.row.averageReturn ?? Number.NEGATIVE_INFINITY),
+      );
+    ranked.forEach((entry, index) => {
+      rows.push([
+        regime,
+        String(index + 1),
+        entry.row.strategyId,
+        fmt(entry.compositeRank),
+        String(entry.row.samples),
+        fmt(entry.row.averageReturn),
+        fmt(entry.row.medianReturn),
+        fmt(entry.row.maxDrawdown),
+        fmt(entry.row.averageExpectancy, 4),
+        fmt(entry.row.averageProfitFactor),
+        fmt(entry.row.averageWinRate),
+        fmt(entry.row.averageExposure),
+        fmt(entry.row.returnToDrawdown),
+      ]);
+    });
+    if (ranked.length === 0) {
+      rows.push([regime, "n/a", "n/a", "n/a", "0", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"]);
+    }
+  }
+  return table(
+    ["regime", "rank", "strategy", "score", "samples", "avgReturn", "medReturn", "maxDD", "expectancy", "PF", "winRate", "exposure", "ret/DD"],
+    rows,
+  );
+}
+
 function summaryTable(rows: RoutingSummary[]): string {
   return table(
     ["label", "samples", "avgReturn", "avgDD", "avgPF", "avgExpectancy", "avgTrades", "avgExposure", "ret/DD"],
@@ -563,7 +629,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     regimeSource,
     windowsPerRegime: requestedWindowsPerRegime,
     windowBars: effectiveWindowBars,
-    minDominantRegimePct: regimeSource === "ohlcv_proxy" ? 50 : 65,
+    minDominantRegimePct: regimeSourceDisplay === "gpt_a6_detector_snapshots" ? 65 : 50,
   };
   const validation = runRegimeValidation(validationOptions);
 
@@ -600,6 +666,12 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     "",
     "### Multi-Window Results",
     aggregateTable(validation.aggregates),
+    "",
+    "### Best Strategy By Regime",
+    "",
+    "Composite score is the average ordinal rank across avg return, median return, max drawdown, expectancy, profit factor, win rate, exposure, and return-to-drawdown. Lower score is better; drawdown and exposure are ranked low-to-high.",
+    "",
+    bestStrategyByRegimeTable(validation.aggregates),
     "",
     "### A6 Routing Results",
     summaryTable(routing),
@@ -645,9 +717,11 @@ async function main(): Promise<void> {
     "- Added configurable A6 regime routing via `lib/backtest/strategyRouter.ts`; the engine accepts a router but does not hardcode mappings.",
     "- Added portfolio research composition via `lib/backtest/portfolioBacktest.ts` with equal, custom, and regime-weighted allocations.",
     "- Added multi-window regime validation via `lib/backtest/regimeValidation.ts` with non-overlapping regime windows and stability rankings.",
+    "- Tuned deterministic proxy regime classification toward 144-bar research windows, including shock clusters, high-volatility clusters, and range-bound CHOP behavior.",
     "- Added OHLCV proxy regime fallback for TREND_UP, TREND_DOWN, HIGH_VOL, LOW_VOL, NEWS_SHOCK, and CHOP when persisted A6 snapshots are unavailable.",
     "- Report regime source labels now distinguish GPT/A6 detector snapshots, deterministic proxy research snapshots, and OHLCV fallback labels.",
     "- Added a Router Metric Audit section to cross-check average profit factor, global profit factor, no-trade windows, and per-window routed trades.",
+    "- Added a Best Strategy By Regime leaderboard using multi-metric ordinal ranks.",
     "- Proxy validation uses meaningful windows by default: 144 bars preferred and 72 bars minimum. Coverage is reported honestly when fewer than the requested windows are available.",
     "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
     "",

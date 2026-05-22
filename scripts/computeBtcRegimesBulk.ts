@@ -11,7 +11,7 @@ import type { Bar, FeatureSnapshot, RegimeContext, RegimeLabel } from "@/lib/qua
 const SYMBOL = "BTC-USD";
 const EXCHANGE = "COINBASE";
 const TIMEFRAME = "1h";
-const MODEL_VERSION = `${REGIME_MODEL_VERSION}.deterministic-bulk.window144`;
+const MODEL_VERSION = `${REGIME_MODEL_VERSION}.deterministic-bulk.window144.coverage-v6`;
 
 interface RegimeStoragePolicy {
   directionalBias: "UP" | "DOWN" | "NEUTRAL";

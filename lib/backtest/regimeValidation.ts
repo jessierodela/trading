@@ -62,6 +62,7 @@ export interface AggregatedRegimeMetrics {
   medianReturn: number | null;
   averageDrawdown: number | null;
   medianDrawdown: number | null;
+  maxDrawdown: number | null;
   averageExpectancy: number | null;
   averageProfitFactor: number | null;
   averageWinRate: number | null;
@@ -99,7 +100,7 @@ const TIMEFRAME_MS: Record<BacktestConfig["timeframe"], number> = {
   "1d": 24 * 60 * 60 * 1000,
 };
 
-const DEFAULT_PROXY_LOOKBACK_BARS = 24;
+const DEFAULT_PROXY_LOOKBACK_BARS = 144;
 
 function avg(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -131,8 +132,22 @@ function rollingSlice<T>(rows: T[], index: number, lookback: number): T[] {
   return rows.slice(Math.max(0, index - lookback + 1), index + 1);
 }
 
+function rollingSum(values: number[], index: number, lookback: number): number {
+  return rollingSlice(values, index, lookback).reduce((sum, value) => sum + value, 0);
+}
+
+function rollingMax(values: number[], index: number, lookback: number): number {
+  const rows = rollingSlice(values, index, lookback);
+  return rows.length === 0 ? 0 : Math.max(...rows);
+}
+
 function reliabilityForProxy(score: number): number {
   return Math.max(0.35, Math.min(0.95, score));
+}
+
+function thresholdRatio(value: number, threshold: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(threshold) || threshold <= 0) return 0;
+  return value / threshold;
 }
 
 export function buildOhlcvProxyRegimes(
@@ -155,43 +170,111 @@ export function buildOhlcvProxyRegimes(
   });
   const rollingVol = oneBarReturns.map((_, index) => stddev(rollingSlice(oneBarReturns, index, lookbackBars)) ?? 0);
   const atrPct = bars.map((bar, index) => featureByTs.get(bar.ts)?.atrPct ?? rangePct[index]);
+  const volatilityMetric = rollingVol.map((value, index) => Math.max(value, atrPct[index]));
+  const relativeVolume = bars.map((bar) => featureByTs.get(bar.ts)?.relativeVolume20 ?? 1);
+  const candleRangeAtr = bars.map((bar, index) => featureByTs.get(bar.ts)?.candleRangeAtr ?? Math.max(0, rangePct[index] / Math.max(atrPct[index], 0.0001)));
+  const ema20SlopePct = bars.map((bar) => {
+    const slope = featureByTs.get(bar.ts)?.ema20Slope;
+    return typeof slope === "number" && bar.close !== 0 ? Math.abs(slope / bar.close * 100) : 0;
+  });
+  const rsi14 = bars.map((bar) => featureByTs.get(bar.ts)?.rsi14 ?? null);
 
   const absOneBarReturns = oneBarReturns.map(Math.abs);
   const absRollingReturns = rollingReturns.map(Math.abs);
-  const shockReturnThreshold = quantile(absOneBarReturns, 0.98) ?? 0;
-  const shockRangeThreshold = quantile(rangePct, 0.98) ?? 0;
-  const highVolThreshold = quantile(rollingVol.map((value, index) => Math.max(value, atrPct[index])), 0.67) ?? 0;
-  const lowVolThreshold = quantile(rollingVol.map((value, index) => Math.max(value, atrPct[index])), 0.33) ?? 0;
-  const trendThreshold = quantile(absRollingReturns, 0.6) ?? 0;
-  const chopThreshold = quantile(absRollingReturns, 0.35) ?? 0;
+  const pathMovement = absOneBarReturns.map((_, index) => rollingSum(absOneBarReturns, index, lookbackBars));
+  const efficiency = absRollingReturns.map((value, index) => pathMovement[index] === 0 ? 0 : value / pathMovement[index]);
+  const signChanges = oneBarReturns.map((value, index) => {
+    if (index === 0) return 0;
+    const previous = oneBarReturns[index - 1];
+    if (Math.abs(value) < 0.01 || Math.abs(previous) < 0.01) return 0;
+    return Math.sign(value) !== Math.sign(previous) ? 1 : 0;
+  });
+  const signChangeRate = signChanges.map((_, index) =>
+    rollingSum(signChanges, index, lookbackBars) / Math.max(1, Math.min(index, lookbackBars - 1)),
+  );
+
+  const shockReturnThreshold = quantile(absOneBarReturns, 0.985) ?? 0;
+  const shockRangeThreshold = quantile(rangePct, 0.985) ?? 0;
+  const shockVolumeThreshold = Math.max(quantile(relativeVolume, 0.985) ?? 0, 2.5);
+  const shockCandleAtrThreshold = Math.max(quantile(candleRangeAtr, 0.985) ?? 0, 2.5);
+  const extremeShockReturnThreshold = quantile(absOneBarReturns, 0.995) ?? shockReturnThreshold;
+  const extremeShockRangeThreshold = quantile(rangePct, 0.995) ?? shockRangeThreshold;
+  const shockPulse = bars.map((_, index) => index > 0 && (
+    absOneBarReturns[index] >= shockReturnThreshold ||
+    rangePct[index] >= shockRangeThreshold ||
+    relativeVolume[index] >= shockVolumeThreshold ||
+    candleRangeAtr[index] >= shockCandleAtrThreshold
+  ) ? 1 : 0);
+  const extremeShockPulse = bars.map((_, index) => index > 0 && (
+    absOneBarReturns[index] >= extremeShockReturnThreshold ||
+    rangePct[index] >= extremeShockRangeThreshold
+  ) ? 1 : 0);
+  const shockClusterLookback = Math.max(24, Math.floor(lookbackBars * 0.75));
+  const shockCounts = shockPulse.map((_, index) => rollingSum(shockPulse, index, shockClusterLookback));
+  const extremeShockCounts = extremeShockPulse.map((_, index) => rollingSum(extremeShockPulse, index, shockClusterLookback));
+
+  const highVolThreshold = quantile(volatilityMetric, 0.62) ?? 0;
+  const extremeVolThreshold = quantile(volatilityMetric, 0.78) ?? highVolThreshold;
+  const ultraVolThreshold = quantile(volatilityMetric, 0.86) ?? extremeVolThreshold;
+  const lowVolThreshold = quantile(volatilityMetric, 0.28) ?? 0;
+  const trendThreshold = quantile(absRollingReturns, 0.58) ?? 0;
+  const strongTrendThreshold = quantile(absRollingReturns, 0.78) ?? trendThreshold;
+  const chopTrendThreshold = quantile(absRollingReturns, 0.45) ?? 0;
+  const chopEfficiencyThreshold = quantile(efficiency, 0.38) ?? 0;
+  const flatSlopeThreshold = quantile(ema20SlopePct, 0.45) ?? 0;
 
   return bars.map((bar, index) => {
-    const volatility = Math.max(rollingVol[index], atrPct[index]);
+    const volatility = volatilityMetric[index];
     const trend = rollingReturns[index];
     const absTrend = Math.abs(trend);
     const absReturn = absOneBarReturns[index];
-    const isShock = index > 0 && (
-      absReturn >= shockReturnThreshold ||
-      rangePct[index] >= shockRangeThreshold
+    const shockCount = shockCounts[index];
+    const shockIntensity = Math.max(
+      thresholdRatio(rollingMax(absOneBarReturns, index, shockClusterLookback), shockReturnThreshold),
+      thresholdRatio(rollingMax(rangePct, index, shockClusterLookback), shockRangeThreshold),
+      thresholdRatio(rollingMax(relativeVolume, index, shockClusterLookback), shockVolumeThreshold),
+      thresholdRatio(rollingMax(candleRangeAtr, index, shockClusterLookback), shockCandleAtrThreshold),
     );
+    const isShockCluster = (
+      shockCount >= Math.max(5, Math.floor(shockClusterLookback * 0.04)) ||
+      extremeShockCounts[index] >= 1
+    ) && volatility >= highVolThreshold * 0.8;
+    const rsi = rsi14[index];
+    const neutralMomentum = rsi === null || (rsi >= 40 && rsi <= 60);
+    const flatTrend = ema20SlopePct[index] <= flatSlopeThreshold || absTrend <= chopTrendThreshold;
+    const isChop = neutralMomentum &&
+      flatTrend &&
+      signChangeRate[index] >= 0.42 &&
+      efficiency[index] <= Math.max(chopEfficiencyThreshold, 0.22) &&
+      volatility > lowVolThreshold * 0.9 &&
+      volatility < extremeVolThreshold * 1.1;
 
-    if (isShock) {
-      return { ts: bar.ts, regime: "NEWS_SHOCK", reliability: reliabilityForProxy(0.75 + absReturn / Math.max(shockReturnThreshold * 4, 1)) };
+    if (isShockCluster && absTrend <= trendThreshold) {
+      return { ts: bar.ts, regime: "NEWS_SHOCK", reliability: reliabilityForProxy(0.58 + shockIntensity * 0.1 + shockCount / Math.max(shockClusterLookback, 1)) };
     }
-    if (trend >= trendThreshold && absTrend > volatility * 0.75) {
-      return { ts: bar.ts, regime: "TREND_UP", reliability: reliabilityForProxy(0.55 + absTrend / Math.max(trendThreshold * 6, 1)) };
+    if (volatility >= ultraVolThreshold) {
+      return { ts: bar.ts, regime: "HIGH_VOL", reliability: reliabilityForProxy(0.58 + volatility / Math.max(highVolThreshold * 6, 1)) };
     }
-    if (trend <= -trendThreshold && absTrend > volatility * 0.75) {
+    if (trend <= -trendThreshold && absTrend > volatility * 0.35) {
       return { ts: bar.ts, regime: "TREND_DOWN", reliability: reliabilityForProxy(0.55 + absTrend / Math.max(trendThreshold * 6, 1)) };
     }
-    if (volatility >= highVolThreshold) {
+    if (volatility >= extremeVolThreshold) {
+      return { ts: bar.ts, regime: "HIGH_VOL", reliability: reliabilityForProxy(0.55 + volatility / Math.max(highVolThreshold * 6, 1)) };
+    }
+    if (trend >= trendThreshold && absTrend > volatility * 0.4) {
+      return { ts: bar.ts, regime: "TREND_UP", reliability: reliabilityForProxy(0.55 + absTrend / Math.max(trendThreshold * 6, 1)) };
+    }
+    if (isChop) {
+      return { ts: bar.ts, regime: "CHOP", reliability: reliabilityForProxy(0.55 + (1 - efficiency[index]) * 0.2 + signChangeRate[index] * 0.1) };
+    }
+    if (volatility >= highVolThreshold && shockCount > 0) {
       return { ts: bar.ts, regime: "HIGH_VOL", reliability: reliabilityForProxy(0.55 + volatility / Math.max(highVolThreshold * 6, 1)) };
     }
     if (volatility <= lowVolThreshold && absTrend <= trendThreshold) {
       return { ts: bar.ts, regime: "LOW_VOL", reliability: reliabilityForProxy(0.55 + (lowVolThreshold - volatility) / Math.max(lowVolThreshold * 4, 1)) };
     }
-    if (absTrend <= chopThreshold || absTrend <= volatility) {
-      return { ts: bar.ts, regime: "CHOP", reliability: reliabilityForProxy(0.6) };
+    if (absTrend <= chopTrendThreshold || absTrend <= volatility) {
+      return { ts: bar.ts, regime: "CHOP", reliability: reliabilityForProxy(0.58 + (1 - efficiency[index]) * 0.15) };
     }
     return {
       ts: bar.ts,
@@ -347,6 +430,7 @@ export function aggregateRegimeMetrics(
         medianReturn: median(returns),
         averageDrawdown: avg(drawdowns),
         medianDrawdown: median(drawdowns),
+        maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
         averageExpectancy: avg(expectancies),
         averageProfitFactor: avg(profitFactors),
         averageWinRate: avg(winRates),
