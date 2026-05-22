@@ -41,6 +41,35 @@ interface RoutingSummary {
   avgReturnToDrawdown: number | null;
 }
 
+interface FullStats {
+  label: string;
+  samples: number;
+  avgReturn: number | null;
+  medianReturn: number | null;
+  maxDrawdown: number | null;
+  avgDrawdown: number | null;
+  globalProfitFactor: number | null;
+  avgProfitFactor: number | null;
+  globalExpectancy: number | null;
+  avgExpectancy: number | null;
+  avgExposure: number | null;
+  tradeCount: number;
+  noTradeWindows: number;
+  avgReturnToDrawdown: number | null;
+}
+
+interface RegimePurityStats {
+  minDominantRegimePct: number | null;
+  medianDominantRegimePct: number | null;
+  avgDominantRegimePct: number | null;
+  perRegime: Partial<Record<RegimeLabel, {
+    samples: number;
+    min: number | null;
+    median: number | null;
+    avg: number | null;
+  }>>;
+}
+
 type RegimeSourceDisplay =
   | "gpt_a6_detector_snapshots"
   | "deterministic_proxy_research_snapshots"
@@ -99,6 +128,15 @@ const DEFAULT_PROXY_WINDOW_BARS = 144;
 const NEAR_ZERO_TRADES_PER_WINDOW = 0.25;
 const TINY_GROSS_LOSS_USD = 1;
 
+const PORTFOLIO_REGIME_WEIGHTS: NonNullable<PortfolioBacktestConfig["regimeWeights"]> = {
+  TREND_UP: { breakout_expansion: 0.6, momentum_continuation: 0.4 },
+  TREND_DOWN: { momentum_continuation: 1 },
+  HIGH_VOL: { mean_reversion_bounce: 0.7, trend_pullback: 0.3 },
+  LOW_VOL: { mean_reversion_bounce: 1 },
+  NEWS_SHOCK: { momentum_continuation: 1 },
+  CHOP: { momentum_continuation: 0.5, mean_reversion_bounce: 0.5 },
+};
+
 function parseInstruments(): InstrumentArg[] {
   const symbols = (process.env.SYMBOLS ?? "BTC-USD")
     .split(",")
@@ -116,6 +154,13 @@ function parseInstruments(): InstrumentArg[] {
 function avg(values: number[]): number | null {
   if (values.length === 0) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function medianOf(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
 function fmt(value: number | null | undefined, digits = 2): string {
@@ -346,14 +391,7 @@ function portfolioSummaries(base: BacktestInput, windows: RegimeCandidateWindow[
   const regime: PortfolioBacktestConfig = {
     mode: "regime_weight",
     strategyIds,
-    regimeWeights: {
-      TREND_UP: { breakout_expansion: 0.6, momentum_continuation: 0.4 },
-      TREND_DOWN: { momentum_continuation: 1 },
-      HIGH_VOL: { mean_reversion_bounce: 0.7, trend_pullback: 0.3 },
-      LOW_VOL: { mean_reversion_bounce: 1 },
-      NEWS_SHOCK: { momentum_continuation: 1 },
-      CHOP: { momentum_continuation: 0.5, mean_reversion_bounce: 0.5 },
-    },
+    regimeWeights: PORTFOLIO_REGIME_WEIGHTS,
   };
   return [equal, custom, regime].map((portfolioConfig) => {
     const metrics = windows.map((window) => runPortfolioBacktest(
@@ -362,6 +400,118 @@ function portfolioSummaries(base: BacktestInput, windows: RegimeCandidateWindow[
     ).metrics);
     return summarizeMetrics(portfolioConfig.mode, metrics);
   });
+}
+
+function staticStrategyFullStats(base: BacktestInput, windows: RegimeCandidateWindow[]): FullStats[] {
+  return STRATEGY_REGISTRY.map((strategy) => {
+    const results = windows.map((window) => runBacktest(sliceInput(base, window, strategy.id)));
+    const allTrades = results.flatMap((r) => r.trades);
+    const metrics = results.map((r) => r.metrics);
+    const returns = metrics.map((m) => m.totalReturnPct);
+    const drawdowns = metrics.map((m) => m.maxDrawdownPct);
+    const pfs = metrics.map((m) => m.profitFactor).filter((v): v is number => v !== null);
+    const expectancies = metrics.map((m) => m.expectancy).filter((v): v is number => v !== null);
+    const exposures = metrics.map((m) => m.exposurePct).filter((v): v is number => v !== null);
+    const rtdds = metrics.map((m) => m.returnToDrawdown).filter((v): v is number => v !== null);
+    const lossAbs = grossLossAbs(allTrades);
+    return {
+      label: strategy.id,
+      samples: windows.length,
+      avgReturn: avg(returns),
+      medianReturn: medianOf(returns),
+      maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+      avgDrawdown: avg(drawdowns),
+      globalProfitFactor: lossAbs === 0 ? null : grossProfit(allTrades) / lossAbs,
+      avgProfitFactor: avg(pfs),
+      globalExpectancy: allTrades.length === 0 ? null : allTrades.reduce((s, t) => s + t.pnl, 0) / allTrades.length,
+      avgExpectancy: avg(expectancies),
+      avgExposure: avg(exposures),
+      tradeCount: allTrades.length,
+      noTradeWindows: results.filter((r) => r.trades.length === 0).length,
+      avgReturnToDrawdown: avg(rtdds),
+    };
+  });
+}
+
+function routerFullStatsFromAudit(audit: RouterMetricAudit, routerSummary: RoutingSummary): FullStats {
+  const returns = audit.rows.map((r) => r.returnPct);
+  const drawdowns = audit.rows.map((r) => r.maxDrawdownPct);
+  const exposures = audit.rows.map((r) => r.exposurePct).filter((v): v is number => v !== null);
+  return {
+    label: DEFAULT_A6_REGIME_ROUTER_CONFIG.id,
+    samples: audit.windows,
+    avgReturn: audit.averageReturnPct,
+    medianReturn: medianOf(returns),
+    maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+    avgDrawdown: avg(drawdowns),
+    globalProfitFactor: audit.globalProfitFactor,
+    avgProfitFactor: audit.reportedAverageProfitFactor,
+    globalExpectancy: audit.globalExpectancy,
+    avgExpectancy: audit.averageExpectancy,
+    avgExposure: avg(exposures),
+    tradeCount: audit.totalTrades,
+    noTradeWindows: audit.noTradeWindows,
+    avgReturnToDrawdown: routerSummary.avgReturnToDrawdown,
+  };
+}
+
+function portfolioComparisonStats(base: BacktestInput, windows: RegimeCandidateWindow[]): FullStats[] {
+  const strategyIds = STRATEGY_REGISTRY.map((strategy) => strategy.id);
+  const configs: PortfolioBacktestConfig[] = [
+    { mode: "equal_weight", strategyIds },
+    { mode: "regime_weight", strategyIds, regimeWeights: PORTFOLIO_REGIME_WEIGHTS },
+  ];
+  return configs.map((config) => {
+    const results = windows.map((window) => runPortfolioBacktest(
+      sliceInput(base, window, `portfolio_${config.mode}`),
+      config,
+    ));
+    const allTrades = results.flatMap((r) => r.trades);
+    const metrics = results.map((r) => r.metrics);
+    const returns = metrics.map((m) => m.totalReturnPct);
+    const drawdowns = metrics.map((m) => m.maxDrawdownPct);
+    const pfs = metrics.map((m) => m.profitFactor).filter((v): v is number => v !== null);
+    const expectancies = metrics.map((m) => m.expectancy).filter((v): v is number => v !== null);
+    const exposures = metrics.map((m) => m.exposurePct).filter((v): v is number => v !== null);
+    const rtdds = metrics.map((m) => m.returnToDrawdown).filter((v): v is number => v !== null);
+    const lossAbs = grossLossAbs(allTrades);
+    return {
+      label: config.mode,
+      samples: windows.length,
+      avgReturn: avg(returns),
+      medianReturn: medianOf(returns),
+      maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+      avgDrawdown: avg(drawdowns),
+      globalProfitFactor: lossAbs === 0 ? null : grossProfit(allTrades) / lossAbs,
+      avgProfitFactor: avg(pfs),
+      globalExpectancy: allTrades.length === 0 ? null : allTrades.reduce((s, t) => s + t.pnl, 0) / allTrades.length,
+      avgExpectancy: avg(expectancies),
+      avgExposure: avg(exposures),
+      tradeCount: allTrades.length,
+      noTradeWindows: results.filter((r) => r.trades.length === 0).length,
+      avgReturnToDrawdown: avg(rtdds),
+    };
+  });
+}
+
+function computeRegimePurity(selectedWindows: RegimeCandidateWindow[]): RegimePurityStats {
+  const all = selectedWindows.map((w) => w.dominantRegimePct);
+  const perRegime: RegimePurityStats["perRegime"] = {};
+  for (const regime of REQUIRED_REGIMES) {
+    const values = selectedWindows.filter((w) => w.regime === regime).map((w) => w.dominantRegimePct);
+    perRegime[regime] = {
+      samples: values.length,
+      min: values.length === 0 ? null : Math.min(...values),
+      median: medianOf(values),
+      avg: avg(values),
+    };
+  }
+  return {
+    minDominantRegimePct: all.length === 0 ? null : Math.min(...all),
+    medianDominantRegimePct: medianOf(all),
+    avgDominantRegimePct: avg(all),
+    perRegime,
+  };
 }
 
 function table(headers: string[], rows: string[][]): string {
@@ -523,6 +673,87 @@ function routerMetricAuditSection(audit: RouterMetricAudit): string[] {
   ];
 }
 
+function routerVsStaticSection(
+  staticStats: FullStats[],
+  routerStats: FullStats,
+  portfolioStats: FullStats[],
+): string[] {
+  const sortedByReturn = [...staticStats].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY));
+  const sortedByRtDD = [...staticStats].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY));
+  const bestByReturn = sortedByReturn[0];
+  const bestByRtDD = sortedByRtDD[0];
+  const equalWeight = portfolioStats.find((p) => p.label === "equal_weight");
+  const regimeWeight = portfolioStats.find((p) => p.label === "regime_weight");
+
+  const contestants: Array<[string, FullStats | undefined]> = [
+    [DEFAULT_A6_REGIME_ROUTER_CONFIG.id, routerStats],
+    [`${bestByReturn?.label ?? "n/a"} (best avg return)`, bestByReturn],
+    [`${bestByRtDD?.label ?? "n/a"} (best ret/DD)`, bestByRtDD],
+    ["equal_weight", equalWeight],
+    ["regime_weight", regimeWeight],
+  ];
+
+  const rows: string[][] = [
+    ["avg return (%)", ...contestants.map(([, s]) => fmt(s?.avgReturn))],
+    ["median return (%)", ...contestants.map(([, s]) => fmt(s?.medianReturn))],
+    ["max drawdown (%)", ...contestants.map(([, s]) => fmt(s?.maxDrawdown))],
+    ["avg drawdown (%)", ...contestants.map(([, s]) => fmt(s?.avgDrawdown))],
+    ["global PF", ...contestants.map(([, s]) => fmt(s?.globalProfitFactor))],
+    ["avg PF", ...contestants.map(([, s]) => fmt(s?.avgProfitFactor))],
+    ["global expectancy ($)", ...contestants.map(([, s]) => fmt(s?.globalExpectancy, 4))],
+    ["avg expectancy ($)", ...contestants.map(([, s]) => fmt(s?.avgExpectancy, 4))],
+    ["exposure (%)", ...contestants.map(([, s]) => fmt(s?.avgExposure))],
+    ["trade count", ...contestants.map(([, s]) => String(s?.tradeCount ?? "n/a"))],
+    ["no-trade windows", ...contestants.map(([, s]) => String(s?.noTradeWindows ?? "n/a"))],
+    ["ret/DD", ...contestants.map(([, s]) => fmt(s?.avgReturnToDrawdown))],
+  ];
+
+  return [
+    "### Router vs Best Static Strategy Comparison",
+    "",
+    "All contestants evaluated across the same non-overlapping regime windows. ret/DD is the average of per-window (totalReturnPct / maxDrawdownPct) ratios; windows with zero drawdown are excluded from that average. Global profit factor and global expectancy aggregate all trades across all windows combined.",
+    "",
+    table(
+      ["metric", ...contestants.map(([label]) => label)],
+      rows,
+    ),
+    "",
+    `Best static by avg return: **${bestByReturn?.label ?? "n/a"}** (${fmt(bestByReturn?.avgReturn)}%)`,
+    `Best static by ret/DD: **${bestByRtDD?.label ?? "n/a"}** (ret/DD = ${fmt(bestByRtDD?.avgReturnToDrawdown)})`,
+    "",
+  ];
+}
+
+function regimePuritySection(selectedWindows: RegimeCandidateWindow[], minDominantRegimePct: number): string[] {
+  const purity = computeRegimePurity(selectedWindows);
+  return [
+    "### Regime-Window Purity Diagnostics",
+    "",
+    "dominantRegimePct is the share of bars in a window labeled with the window's dominant regime. All selected windows pass the configured minimum threshold.",
+    "",
+    table(
+      ["stat", "value"],
+      [
+        ["selection threshold (%)", String(minDominantRegimePct)],
+        ["min dominantRegimePct (%)", fmt(purity.minDominantRegimePct)],
+        ["median dominantRegimePct (%)", fmt(purity.medianDominantRegimePct)],
+        ["avg dominantRegimePct (%)", fmt(purity.avgDominantRegimePct)],
+      ],
+    ),
+    "",
+    "Per-regime purity summary:",
+    "",
+    table(
+      ["regime", "samples", "min (%)", "median (%)", "avg (%)"],
+      REQUIRED_REGIMES.map((regime) => {
+        const s = purity.perRegime[regime];
+        return [regime, String(s?.samples ?? 0), fmt(s?.min), fmt(s?.median), fmt(s?.avg)];
+      }),
+    ),
+    "",
+  ];
+}
+
 function featureAlignedBars(bars: Bar[], features: FeatureSnapshot[]): Bar[] {
   if (features.length === 0) return [];
   const featureTs = new Set(features.map((feature) => feature.ts));
@@ -619,6 +850,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
   const requestedWindowsPerRegime = Number(process.env.WINDOWS_PER_REGIME ?? 10);
   const configuredWindowBars = configuredWindowBarsFor(regimeSource);
   const effectiveWindowBars = effectiveWindowBarsFor(regimeSource, configuredWindowBars);
+  const minPurityPct = regimeSourceDisplay === "gpt_a6_detector_snapshots" ? 65 : 50;
   const validationOptions: RegimeValidationOptions = {
     instrument,
     baseConfig: validationBaseConfig,
@@ -629,13 +861,17 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     regimeSource,
     windowsPerRegime: requestedWindowsPerRegime,
     windowBars: effectiveWindowBars,
-    minDominantRegimePct: regimeSourceDisplay === "gpt_a6_detector_snapshots" ? 65 : 50,
+    minDominantRegimePct: minPurityPct,
   };
   const validation = runRegimeValidation(validationOptions);
 
   const routing = routingSummaries(baseInput, validation.selectedWindows);
   const routerAudit = routerMetricAudit(baseInput, validation.selectedWindows);
   const portfolios = portfolioSummaries(baseInput, validation.selectedWindows);
+  const staticFull = staticStrategyFullStats(baseInput, validation.selectedWindows);
+  const routerEntry = routing.find((r) => r.label === DEFAULT_A6_REGIME_ROUTER_CONFIG.id) ?? routing[routing.length - 1];
+  const routerFull = routerFullStatsFromAudit(routerAudit, routerEntry);
+  const portfolioFull = portfolioComparisonStats(baseInput, validation.selectedWindows);
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
     configuredWindowBars,
@@ -681,6 +917,8 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     "### Portfolio Results",
     summaryTable(portfolios),
     "",
+    ...routerVsStaticSection(staticFull, routerFull, portfolioFull),
+    ...regimePuritySection(validation.selectedWindows, minPurityPct),
     "### Stability Rankings",
     table(
       ["regime", "strategy", "samples", "score", "returnStd", "drawdownStd", "profitFactorStd", "expectancyStd"],
@@ -724,6 +962,8 @@ async function main(): Promise<void> {
     "- Added a Best Strategy By Regime leaderboard using multi-metric ordinal ranks.",
     "- Proxy validation uses meaningful windows by default: 144 bars preferred and 72 bars minimum. Coverage is reported honestly when fewer than the requested windows are available.",
     "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
+    "- Added Router vs Best Static Strategy comparison with median return, max drawdown, global profit factor, global expectancy, trade count, and no-trade windows.",
+    "- Added regime-window purity diagnostics reporting min, median, and avg dominantRegimePct overall and per regime.",
     "",
     "## Strategy Analytics",
     "",
@@ -740,6 +980,7 @@ async function main(): Promise<void> {
     "- `regime -> []` and missing regime mappings produce no trade, allowing future capital-preservation experiments.",
     "- Portfolio research validates `sum(weights) <= 100%` and rejects implicit leverage.",
     "- Validation tooling accepts `symbol`, `exchange`, `assetType`, and `dataSource` for multi-asset expansion.",
+    "- PORTFOLIO_REGIME_WEIGHTS extracted as a module-level constant shared by portfolio summaries and comparison stats.",
     "",
     "## Issues Found",
     "",
@@ -754,6 +995,7 @@ async function main(): Promise<void> {
     "- Portfolio equity realizes scaled trade PnL at exits and does not model intra-trade capital contention.",
     "- Strategy simulations preserve the current long-only/default P4 assumptions unless explicitly configured otherwise.",
     "- Statistical confidence depends on available persisted bars, features, and A6 regime snapshots. Proxy mode improves coverage but is not a substitute for persisted A6 labels.",
+    "- staticStrategyFullStats and portfolioComparisonStats re-run backtests independently of routingSummaries and portfolioSummaries; this is intentional to keep the comparison section isolated but doubles computation.",
     "",
     ...sections,
     "## Recommendations",
