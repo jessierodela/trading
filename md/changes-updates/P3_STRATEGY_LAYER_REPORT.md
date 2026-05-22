@@ -85,7 +85,7 @@ The strategy smoke covers required-null handling, each strategy firing on handcr
 - `_smoke/strategies.ts`
 - `package.json`
 - `components/layout/SignalsPanel.tsx`
-- `P3_STRATEGY_LAYER_REPORT.md`
+- `md/changes-updates/P3_STRATEGY_LAYER_REPORT.md`
 - `md/changes-updates/P3_STRATEGY_LAYER_CHANGES.md`
 
 ## Explicit non-goals

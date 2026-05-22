@@ -19,7 +19,7 @@ The new layer consumes validated `FeatureSnapshot` rows and emits versioned `Str
 - Added `POST /api/strategies/run` for feature-backed strategy execution.
 - Added `_smoke/strategies.ts` and `npm run smoke:strategies`.
 - Added dashboard copy clarifying deterministic strategy signals vs GPT commentary.
-- Added full implementation report at `P3_STRATEGY_LAYER_REPORT.md`.
+- Added full implementation report at `md/changes-updates/P3_STRATEGY_LAYER_REPORT.md`.
 
 ## Pre-merge hardening
 

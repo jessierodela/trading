@@ -17,7 +17,7 @@ The engine makes deterministic strategy performance measurable with next-bar ent
 - Added `GET /api/backtests/[id]`.
 - Added `_smoke/backtest.ts`.
 - Added `npm run smoke:backtest`.
-- Added `P4_BACKTESTING_ENGINE_REPORT.md`.
+- Added `md/changes-updates/P4_BACKTESTING_ENGINE_REPORT.md`.
 - Added default gap rejection for backtest bars and features.
 - Added smoke coverage proving missing 1H bar/feature gaps are rejected and entries do not bridge gaps.
 - Hardened `POST /api/backtests/run` validation for invalid timestamps, unsupported exchanges, and unsupported timeframes.
