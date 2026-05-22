@@ -18,6 +18,8 @@ The engine makes deterministic strategy performance measurable with next-bar ent
 - Added `_smoke/backtest.ts`.
 - Added `npm run smoke:backtest`.
 - Added `P4_BACKTESTING_ENGINE_REPORT.md`.
+- Added default gap rejection for backtest bars and features.
+- Added smoke coverage proving missing 1H bar/feature gaps are rejected and entries do not bridge gaps.
 
 ## Validation
 
@@ -27,7 +29,7 @@ Passed:
 - `npm.cmd run smoke:features` - 71 assertions
 - `npm.cmd run smoke:p2d` - 23 assertions
 - `npm.cmd run smoke:strategies` - 99 assertions
-- `npm.cmd run smoke:backtest` - 75 assertions
+- `npm.cmd run smoke:backtest` - 82 assertions
 
 Build warning:
 - Existing `components/layout/SignalsPanel.tsx` `react-hooks/exhaustive-deps` warning remains.

@@ -22,12 +22,14 @@ Implemented:
 - V1 supports long trades first. Short signals are skipped unless explicitly allowed.
 - The engine is simulation-only. It does not submit orders, create trade intents, run paper trading, or call a production risk engine.
 - The engine is pure: arrays in, `BacktestResult` out. No DB, network, GPT, or clock calls occur inside simulation logic.
+- V1 rejects gapped bar or feature windows by default. This avoids silently bridging missing 1H candles and missing stop/target/drawdown events inside data gaps.
 
 ## Entry And Exit Rules
 
 - Strategies are evaluated on feature bar `i`.
 - Entry happens on the next bar open at `i + 1`.
 - Last-bar signals are skipped because no next bar exists.
+- Entries cannot bridge missing candle intervals because bars and features must be contiguous for the configured timeframe.
 - Only `trigger` signals can open trades.
 - Signals without usable `stopLoss` or `invalidationPrice` are skipped.
 - Long trades reject stops above or equal to entry.
@@ -106,7 +108,7 @@ Validated locally:
 - `npm.cmd run smoke:features`: passed, 71 assertions.
 - `npm.cmd run smoke:p2d`: passed, 23 assertions.
 - `npm.cmd run smoke:strategies`: passed, 99 assertions.
-- `npm.cmd run smoke:backtest`: passed, 75 assertions.
+- `npm.cmd run smoke:backtest`: passed, 82 assertions.
 
 ## Files Changed
 

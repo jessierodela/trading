@@ -190,6 +190,15 @@ function expectThrow(label: string, fn: () => void): void {
   assert(label, threw);
 }
 
+function captureError(fn: () => void): Error | null {
+  try {
+    fn();
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
+}
+
 function testValidation(): void {
   console.log("\n=== validation ===");
   const base = targetWinInput();
@@ -207,6 +216,24 @@ function testValidation(): void {
   expectThrow("rejects negative slippage", () => runBacktest({ ...base, config: config({ slippageBps: -1 }) }));
   expectThrow("rejects maxConcurrentPositions other than 1", () => runBacktest({ ...base, config: { ...config(), maxConcurrentPositions: 2 as 1 } }));
   expectThrow("rejects unknown strategy id", () => runBacktest({ ...base, config: config({ strategyId: "missing" }) }));
+
+  const barGapError = captureError(() => runBacktest({
+    ...base,
+    bars: [base.bars[0], base.bars[1], base.bars[3], base.bars[4]],
+    features: [base.features[0], base.features[1]],
+  }));
+  assert("rejects missing 1H bar gap", !!barGapError);
+  assert("bar gap error message mentions gap", barGapError?.message.toLowerCase().includes("gap") === true);
+  assert("bar gap error message mentions missing interval", barGapError?.message.toLowerCase().includes("missing interval") === true);
+
+  const featureGapError = captureError(() => runBacktest({
+    ...base,
+    bars: [bar(0), bar(1), bar(2), bar(3), bar(4)],
+    features: [prevFeature(0), signalFeature(2)],
+  }));
+  assert("rejects missing 1H feature gap", !!featureGapError);
+  assert("feature gap error message mentions gap", featureGapError?.message.toLowerCase().includes("gap") === true);
+  assert("feature gap error message mentions missing interval", featureGapError?.message.toLowerCase().includes("missing interval") === true);
 }
 
 function testSimulation(): void {
@@ -273,6 +300,13 @@ function testSimulation(): void {
     features: [prevFeature(0), signalFeature(1)],
   });
   assert("last-bar signal is skipped", lastSignal.trades.length === 0);
+
+  const acrossGap = captureError(() => runBacktest({
+    ...targetWinInput(),
+    bars: [bar(0), bar(1, { close: 104 }), bar(3, { open: 100, high: 113, low: 99, close: 112 })],
+    features: [prevFeature(0), signalFeature(1)],
+  }));
+  assert("does not enter across a gap", acrossGap?.message.toLowerCase().includes("gap") === true, acrossGap?.message);
 
   const closedAtEnd = runBacktest(flatInput(true));
   assert("open position closes at final bar when configured", closedAtEnd.trades[0].reasonExited === "end_of_test");

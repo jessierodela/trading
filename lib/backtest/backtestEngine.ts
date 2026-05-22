@@ -4,6 +4,7 @@ import type {
   RegimeContext,
   RegimeLabel,
   StrategySignal,
+  Timeframe,
 } from "@/lib/quant/types";
 import { getStrategyById } from "@/lib/strategies/strategyRegistry";
 import { applyEntrySlippage, applyExitSlippage, feeForNotional } from "./slippage";
@@ -18,6 +19,13 @@ import type {
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
+const TIMEFRAME_MS: Record<Timeframe, number> = {
+  "1m": 60 * 1000,
+  "5m": 5 * 60 * 1000,
+  "15m": 15 * 60 * 1000,
+  "1h": HOUR_MS,
+  "1d": DAY_MS,
+};
 
 interface OpenPosition {
   signal: StrategySignal;
@@ -54,6 +62,24 @@ function assertAscendingUnique<T extends { ts: string }>(label: string, rows: T[
   }
 }
 
+function assertContiguous<T extends { ts: string }>(
+  label: string,
+  rows: T[],
+  timeframe: Timeframe,
+): void {
+  const expectedMs = TIMEFRAME_MS[timeframe];
+  for (let i = 1; i < rows.length; i++) {
+    const prevMs = Date.parse(rows[i - 1].ts);
+    const curMs = Date.parse(rows[i].ts);
+    if (curMs - prevMs !== expectedMs) {
+      throw new Error(
+        `${label} gap detected: missing interval between ${rows[i - 1].ts} and ${rows[i].ts} ` +
+        `for timeframe ${timeframe}`,
+      );
+    }
+  }
+}
+
 function validateInputs(input: BacktestInput): void {
   const { config, bars, features } = input;
   if (Date.parse(config.endTs) <= Date.parse(config.startTs)) throw new Error("endTs must be greater than startTs");
@@ -70,6 +96,8 @@ function validateInputs(input: BacktestInput): void {
 
   assertAscendingUnique("bars", bars);
   assertAscendingUnique("features", features);
+  assertContiguous("bars", bars, config.timeframe);
+  assertContiguous("features", features, config.timeframe);
 
   const barTs = new Set(bars.map((b) => b.ts));
   for (const bar of bars) {
@@ -372,4 +400,3 @@ export function runBacktest(input: BacktestInput): BacktestResult {
     metrics,
   };
 }
-
