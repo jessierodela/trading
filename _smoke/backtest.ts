@@ -1,8 +1,10 @@
 import type { Bar, FeatureSnapshot, RegimeContext, StrategySignal } from "../lib/quant/types";
 import { createOpenPositionFromSignal, runBacktest } from "../lib/backtest/backtestEngine";
 import { calculateBacktestMetrics } from "../lib/backtest/metrics";
+import { runPortfolioBacktest } from "../lib/backtest/portfolioBacktest";
 import { InMemoryBacktestReportStore } from "../lib/backtest/reportStore";
 import { applyEntrySlippage, applyExitSlippage, feeForNotional } from "../lib/backtest/slippage";
+import { defaultA6RegimeRouter } from "../lib/backtest/strategyRouter";
 import type { BacktestConfig, BacktestInput, SimulatedTrade } from "../lib/backtest/types";
 import { STRATEGY_VERSIONS } from "../lib/versions";
 
@@ -365,6 +367,32 @@ async function testMetricsAndStore(): Promise<void> {
   assert("CAGR returns null for short windows", metrics.cagrPct === null);
   assert("metric notes explain short CAGR", metrics.notes.some((note) => note.includes("CAGR")));
 
+  const zeroMetrics = calculateBacktestMetrics(config(), [], [equityCurve[0]], [bar(0)]);
+  assert("zero trades expectancy is null", zeroMetrics.expectancy === null);
+  assert("zero trades avgWin is null", zeroMetrics.avgWin === null);
+  assert("zero trades avgLoss is null", zeroMetrics.avgLoss === null);
+  assert("zero trades max winning streak is zero", zeroMetrics.maxWinningStreak === 0);
+  assert("zero trades max losing streak is zero", zeroMetrics.maxLosingStreak === 0);
+
+  const oneTradeMetrics = calculateBacktestMetrics(config({ startTs: ts(0), endTs: ts(4) }), [win.trades[0]], equityCurve, [bar(0), bar(1), bar(2), bar(3)]);
+  assert("one trade avg duration bars is set", oneTradeMetrics.avgTradeDurationBars === win.trades[0].holdBars);
+  assert("one trade median duration bars is set", oneTradeMetrics.medianTradeDurationBars === win.trades[0].holdBars);
+  assert("one trade trade frequency is set", oneTradeMetrics.tradeFrequency !== null && oneTradeMetrics.tradeFrequency > 0);
+
+  const allWinners = calculateBacktestMetrics(config({ startTs: ts(0), endTs: ts(4) }), [win.trades[0], { ...win.trades[0], entryTs: ts(3), exitTs: ts(3) }], equityCurve, [bar(0), bar(1), bar(2), bar(3)]);
+  assert("all winners expectancy is positive", allWinners.expectancy !== null && allWinners.expectancy > 0);
+  assert("all winners max winning streak is counted", allWinners.maxWinningStreak === 2);
+  assert("all winners avgLoss is null", allWinners.avgLoss === null);
+
+  const allLosers = calculateBacktestMetrics(config({ startTs: ts(0), endTs: ts(4) }), [loss.trades[0], lossTrade], equityCurve, [bar(0), bar(1), bar(2), bar(3)]);
+  assert("all losers expectancy is negative", allLosers.expectancy !== null && allLosers.expectancy < 0);
+  assert("all losers max losing streak is counted", allLosers.maxLosingStreak === 2);
+  assert("all losers avgWin is null", allLosers.avgWin === null);
+
+  assert("mixed outcomes avgLoss is positive magnitude", metrics.avgLoss !== null && metrics.avgLoss > 0);
+  assert("mixed outcomes profit per bar is calculated", metrics.profitPerBar !== null);
+  assert("mixed outcomes return-to-drawdown is calculated", metrics.returnToDrawdown !== null);
+
   const result = runBacktest(targetWinInput({ regimes: [regime("TREND_UP", 0)] }));
   const store = new InMemoryBacktestReportStore();
   const inserted = await store.insertRun(result);
@@ -398,15 +426,47 @@ function testDeterminismAndPurity(): void {
   assert("result includes metrics notes", Array.isArray(a.metrics.notes));
 }
 
+function testResearchRoutingAndPortfolio(): void {
+  console.log("\n=== research routing and portfolio ===");
+  const routed = runBacktest({
+    ...targetWinInput({ regimes: [regime("TREND_UP", 0)] }),
+    config: config({ strategyId: "a6_regime_router", endTs: ts(5) }),
+    strategyRouter: defaultA6RegimeRouter,
+  });
+  assert("A6 routed backtest can produce a trade", routed.trades.length === 1);
+  assert("A6 routed trade records selected strategy", routed.trades[0].strategyId === "momentum_continuation" || routed.trades[0].strategyId === "breakout_expansion");
+
+  const noTradeRoute = runBacktest({
+    ...targetWinInput({ regimes: [regime("LOW_VOL", 0)] }),
+    config: config({ strategyId: "a6_regime_router", endTs: ts(5) }),
+    strategyRouter: defaultA6RegimeRouter,
+  });
+  assert("A6 routed no-signal regime can stay flat", noTradeRoute.trades.length === 0);
+
+  const portfolio = runPortfolioBacktest(
+    targetWinInput({ regimes: [regime("TREND_UP", 0)] }),
+    { mode: "equal_weight", strategyIds: ["momentum_continuation"] },
+  );
+  assert("portfolio backtest returns metrics", portfolio.metrics.numberOfTrades === 1);
+  assert("portfolio contribution is tracked", portfolio.strategyContribution[0].strategyId === "momentum_continuation");
+  assert("portfolio attribution is keyed by strategy", portfolio.strategyAttribution.momentum_continuation.trades === 1);
+
+  expectThrow("portfolio rejects leverage weights", () => runPortfolioBacktest(
+    targetWinInput(),
+    { mode: "custom_weight", strategyIds: ["momentum_continuation", "trend_pullback"], weights: { momentum_continuation: 0.8, trend_pullback: 0.8 } },
+  ));
+}
+
 async function main(): Promise<void> {
   testValidation();
   testSimulation();
   await testMetricsAndStore();
+  testResearchRoutingAndPortfolio();
   testDeterminismAndPurity();
 
   console.log(`\n${failed === 0 ? "all checks passed" : `${failed} check(s) failed`} (${passed} passed)`);
-  if (passed < 75) {
-    console.log(`FAIL: expected at least 75 assertions, got ${passed}`);
+  if (passed < 100) {
+    console.log(`FAIL: expected at least 100 assertions, got ${passed}`);
     failed++;
   }
   if (failed > 0) process.exit(1);

@@ -6,8 +6,13 @@ import {
 } from "@/lib/storage";
 import { runBacktest } from "@/lib/backtest/backtestEngine";
 import { PgBacktestReportStore } from "@/lib/backtest/reportStore";
+import {
+  createRegimeStrategyRouter,
+  DEFAULT_A6_REGIME_ROUTER_CONFIG,
+  type RegimeStrategyMap,
+} from "@/lib/backtest/strategyRouter";
 import { FEATURE_VERSION } from "@/lib/versions";
-import type { BacktestConfig } from "@/lib/backtest/types";
+import type { BacktestAssetType, BacktestConfig, StrategyRouter } from "@/lib/backtest/types";
 import type { Exchange, RegimeContext, Timeframe } from "@/lib/quant/types";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +21,8 @@ export const revalidate = 0;
 interface RunBacktestBody {
   symbol?: string;
   exchange?: string;
+  assetType?: string;
+  dataSource?: string;
   timeframe?: string;
   strategyId?: string;
   featureVersion?: string;
@@ -29,6 +36,11 @@ interface RunBacktestBody {
   defaultRewardRisk?: number;
   closeOpenPositionAtEnd?: boolean;
   persist?: boolean;
+  router?: {
+    id?: string;
+    version?: string;
+    regimeStrategyMap?: RegimeStrategyMap;
+  };
 }
 
 interface ErrorResponse {
@@ -39,6 +51,7 @@ interface ErrorResponse {
 
 const ALLOWED_EXCHANGES: Exchange[] = ["COINBASE", "BINANCE", "POLYGON"];
 const ALLOWED_TIMEFRAMES: Timeframe[] = ["1h"];
+const ALLOWED_ASSET_TYPES: BacktestAssetType[] = ["CRYPTO", "EQUITY", "ETF", "UNKNOWN"];
 
 function isAllowedExchange(value: string | undefined): value is Exchange {
   return value !== undefined && ALLOWED_EXCHANGES.includes(value as Exchange);
@@ -46,6 +59,10 @@ function isAllowedExchange(value: string | undefined): value is Exchange {
 
 function isAllowedTimeframe(value: string | undefined): value is Timeframe {
   return value !== undefined && ALLOWED_TIMEFRAMES.includes(value as Timeframe);
+}
+
+function isAllowedAssetType(value: string | undefined): value is BacktestAssetType {
+  return value === undefined || ALLOWED_ASSET_TYPES.includes(value as BacktestAssetType);
 }
 
 function authError(req: NextRequest): NextResponse<ErrorResponse> | null {
@@ -68,6 +85,9 @@ function parseConfig(body: RunBacktestBody): { config: BacktestConfig; persist: 
   if (!isAllowedExchange(body.exchange)) {
     return { error: `exchange must be one of: ${ALLOWED_EXCHANGES.join(", ")}` };
   }
+  if (!isAllowedAssetType(body.assetType)) {
+    return { error: `assetType must be one of: ${ALLOWED_ASSET_TYPES.join(", ")}` };
+  }
   if (!isAllowedTimeframe(body.timeframe)) {
     return { error: "timeframe is required and must be 1h in v1" };
   }
@@ -83,6 +103,8 @@ function parseConfig(body: RunBacktestBody): { config: BacktestConfig; persist: 
     config: {
       symbol: body.symbol,
       exchange: body.exchange,
+      assetType: body.assetType,
+      dataSource: body.dataSource,
       timeframe: body.timeframe,
       strategyId: body.strategyId,
       featureVersion: body.featureVersion ?? FEATURE_VERSION,
@@ -100,6 +122,15 @@ function parseConfig(body: RunBacktestBody): { config: BacktestConfig; persist: 
       sameBarStopFirst: true,
     },
   };
+}
+
+function routerFor(body: RunBacktestBody, config: BacktestConfig): StrategyRouter | undefined {
+  if (config.strategyId !== DEFAULT_A6_REGIME_ROUTER_CONFIG.id && !body.router) return undefined;
+  return createRegimeStrategyRouter({
+    id: body.router?.id ?? DEFAULT_A6_REGIME_ROUTER_CONFIG.id,
+    version: body.router?.version ?? DEFAULT_A6_REGIME_ROUTER_CONFIG.version,
+    regimeStrategyMap: body.router?.regimeStrategyMap ?? DEFAULT_A6_REGIME_ROUTER_CONFIG.regimeStrategyMap,
+  });
 }
 
 function subtractUtcDays(ts: string, days: number): string {
@@ -167,7 +198,14 @@ export async function POST(req: NextRequest) {
       fetchRegimes(pool, config),
     ]);
 
-    const result = runBacktest({ config, bars, features, dailyFeatures, regimes });
+    const result = runBacktest({
+      config,
+      bars,
+      features,
+      dailyFeatures,
+      regimes,
+      strategyRouter: routerFor(body, config),
+    });
     let persisted: { id: number; publicId: string; tradesInserted: number } | null = null;
     if (persist) {
       const run = await reportStore.insertRun(result);
@@ -187,6 +225,21 @@ export async function POST(req: NextRequest) {
         maxDrawdownPct: result.metrics.maxDrawdownPct,
         winRatePct: result.metrics.winRatePct,
         profitFactor: result.metrics.profitFactor,
+        expectancy: result.metrics.expectancy,
+        avgWin: result.metrics.avgWin,
+        avgLoss: result.metrics.avgLoss,
+        maxWinningStreak: result.metrics.maxWinningStreak,
+        maxLosingStreak: result.metrics.maxLosingStreak,
+        exposurePct: result.metrics.exposurePct,
+        avgTradeDurationBars: result.metrics.avgTradeDurationBars,
+        avgTradeDurationMs: result.metrics.avgTradeDurationMs,
+        medianTradeDurationBars: result.metrics.medianTradeDurationBars,
+        medianTradeDurationMs: result.metrics.medianTradeDurationMs,
+        sharpeRatio: result.metrics.sharpeRatio,
+        sortinoRatio: result.metrics.sortinoRatio,
+        profitPerBar: result.metrics.profitPerBar,
+        returnToDrawdown: result.metrics.returnToDrawdown,
+        tradeFrequency: result.metrics.tradeFrequency,
         numberOfTrades: result.metrics.numberOfTrades,
       },
       firstTrade: result.trades[0] ?? null,

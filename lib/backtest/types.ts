@@ -7,10 +7,28 @@ import type {
   StrategySignal,
   Timeframe,
 } from "@/lib/quant/types";
+import type { StrategyInput } from "@/lib/strategies/types";
+
+export type BacktestAssetType = "CRYPTO" | "EQUITY" | "ETF" | "UNKNOWN";
+
+export interface BacktestInstrumentContext {
+  symbol: string;
+  exchange: Exchange;
+  assetType?: BacktestAssetType;
+  dataSource?: string;
+}
+
+export interface StrategyRouter {
+  id: string;
+  version: string;
+  evaluate(input: StrategyInput): StrategySignal | null;
+}
 
 export interface BacktestConfig {
   symbol: string;
   exchange: Exchange;
+  assetType?: BacktestAssetType;
+  dataSource?: string;
   timeframe: Timeframe;
   strategyId: string;
   featureVersion: string;
@@ -39,6 +57,7 @@ export interface BacktestInput {
   features: FeatureSnapshot[];
   dailyFeatures?: FeatureSnapshot[];
   regimes?: RegimeContext[];
+  strategyRouter?: StrategyRouter;
 }
 
 export type TradeExitReason =
@@ -103,6 +122,22 @@ export interface BacktestMetrics {
   averageLoser: number | null;
   profitFactor: number | null;
   expectancyPerTrade: number | null;
+
+  expectancy: number | null;
+  avgWin: number | null;
+  avgLoss: number | null;
+  maxWinningStreak: number;
+  maxLosingStreak: number;
+  exposurePct: number | null;
+  avgTradeDurationBars: number | null;
+  avgTradeDurationMs: number | null;
+  medianTradeDurationBars: number | null;
+  medianTradeDurationMs: number | null;
+  sharpeRatio: number | null;
+  sortinoRatio: number | null;
+  profitPerBar: number | null;
+  returnToDrawdown: number | null;
+  tradeFrequency: number | null;
 
   sharpeApprox: number | null;
   sortinoApprox: number | null;

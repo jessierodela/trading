@@ -334,7 +334,7 @@ function markToMarket(position: OpenPosition | null, bar: Bar): { equityDelta: n
 export function runBacktest(input: BacktestInput): BacktestResult {
   validateInputs(input);
   const { config, bars, features } = input;
-  const strategy = getStrategyById(config.strategyId);
+  const strategy = input.strategyRouter ?? getStrategyById(config.strategyId);
   if (!strategy) throw new Error(`unknown strategyId: ${config.strategyId}`);
 
   const barIndexByTs = new Map(bars.map((bar, index) => [bar.ts, index]));
@@ -382,7 +382,7 @@ export function runBacktest(input: BacktestInput): BacktestResult {
       regime,
     });
     if (!signal || signal.signalType !== "trigger") continue;
-    if (regime?.regime === "NEWS_SHOCK") continue;
+    if (!input.strategyRouter && regime?.regime === "NEWS_SHOCK") continue;
 
     open = createOpenPositionFromSignal(signal, bars[nextBarIndex], nextBarIndex, equity, input);
   }

@@ -16,7 +16,8 @@
     "smoke:backtest": "tsx _smoke/backtest.ts",
     "smoke:p2d:live": "dotenv -e .env.local -- tsx _smoke/features_crossvalidate_live.ts",
     "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
-    "backfill:btc:bootstrap": "tsx scripts/backfillBtcBootstrap.ts"
+    "backfill:btc:bootstrap": "tsx scripts/backfillBtcBootstrap.ts",
+    "research:p5": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",
