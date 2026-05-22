@@ -21,6 +21,7 @@ export const REQUIRED_REGIMES: RegimeLabel[] = [
 export interface RegimeCandidateWindow {
   instrument: BacktestInstrumentContext;
   regime: RegimeLabel;
+  regimeSource: RegimeValidationSource;
   startTs: string;
   endTs: string;
   score: number;
@@ -31,6 +32,8 @@ export interface RegimeCandidateWindow {
   avgAtrPct: number | null;
 }
 
+export type RegimeValidationSource = "a6_snapshots" | "ohlcv_proxy";
+
 export interface RegimeValidationOptions {
   instrument: BacktestInstrumentContext;
   baseConfig: Omit<BacktestConfig, "symbol" | "exchange" | "strategyId" | "startTs" | "endTs">;
@@ -38,6 +41,7 @@ export interface RegimeValidationOptions {
   features: FeatureSnapshot[];
   dailyFeatures?: FeatureSnapshot[];
   regimes: RegimeContext[];
+  regimeSource?: RegimeValidationSource;
   strategyIds?: string[];
   windowBars?: number;
   windowsPerRegime?: number;
@@ -79,6 +83,7 @@ export interface StabilityRanking {
 
 export interface RegimeValidationResult {
   instrument: BacktestInstrumentContext;
+  regimeSource: RegimeValidationSource;
   selectedWindows: RegimeCandidateWindow[];
   backtests: RegimeWindowBacktest[];
   aggregates: AggregatedRegimeMetrics[];
@@ -93,6 +98,8 @@ const TIMEFRAME_MS: Record<BacktestConfig["timeframe"], number> = {
   "1h": 60 * 60 * 1000,
   "1d": 24 * 60 * 60 * 1000,
 };
+
+const DEFAULT_PROXY_LOOKBACK_BARS = 24;
 
 function avg(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -111,6 +118,87 @@ function stddev(values: number[]): number | null {
   const mean = avg(values);
   if (mean === null) return null;
   return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1));
+}
+
+function quantile(values: number[], percentile: number): number | null {
+  const finite = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (finite.length === 0) return null;
+  const index = Math.min(finite.length - 1, Math.max(0, Math.floor((finite.length - 1) * percentile)));
+  return finite[index];
+}
+
+function rollingSlice<T>(rows: T[], index: number, lookback: number): T[] {
+  return rows.slice(Math.max(0, index - lookback + 1), index + 1);
+}
+
+function reliabilityForProxy(score: number): number {
+  return Math.max(0.35, Math.min(0.95, score));
+}
+
+export function buildOhlcvProxyRegimes(
+  bars: Bar[],
+  features: FeatureSnapshot[] = [],
+  lookbackBars = DEFAULT_PROXY_LOOKBACK_BARS,
+): RegimeContext[] {
+  if (bars.length === 0) return [];
+
+  const featureByTs = new Map(features.map((feature) => [feature.ts, feature]));
+  const oneBarReturns = bars.map((bar, index) => {
+    if (index === 0) return 0;
+    const previousClose = bars[index - 1].close;
+    return previousClose === 0 ? 0 : (bar.close - previousClose) / previousClose * 100;
+  });
+  const rangePct = bars.map((bar) => bar.open === 0 ? 0 : (bar.high - bar.low) / bar.open * 100);
+  const rollingReturns = bars.map((bar, index) => {
+    const anchor = bars[Math.max(0, index - lookbackBars)];
+    return anchor.close === 0 ? 0 : (bar.close - anchor.close) / anchor.close * 100;
+  });
+  const rollingVol = oneBarReturns.map((_, index) => stddev(rollingSlice(oneBarReturns, index, lookbackBars)) ?? 0);
+  const atrPct = bars.map((bar, index) => featureByTs.get(bar.ts)?.atrPct ?? rangePct[index]);
+
+  const absOneBarReturns = oneBarReturns.map(Math.abs);
+  const absRollingReturns = rollingReturns.map(Math.abs);
+  const shockReturnThreshold = quantile(absOneBarReturns, 0.98) ?? 0;
+  const shockRangeThreshold = quantile(rangePct, 0.98) ?? 0;
+  const highVolThreshold = quantile(rollingVol.map((value, index) => Math.max(value, atrPct[index])), 0.67) ?? 0;
+  const lowVolThreshold = quantile(rollingVol.map((value, index) => Math.max(value, atrPct[index])), 0.33) ?? 0;
+  const trendThreshold = quantile(absRollingReturns, 0.6) ?? 0;
+  const chopThreshold = quantile(absRollingReturns, 0.35) ?? 0;
+
+  return bars.map((bar, index) => {
+    const volatility = Math.max(rollingVol[index], atrPct[index]);
+    const trend = rollingReturns[index];
+    const absTrend = Math.abs(trend);
+    const absReturn = absOneBarReturns[index];
+    const isShock = index > 0 && (
+      absReturn >= shockReturnThreshold ||
+      rangePct[index] >= shockRangeThreshold
+    );
+
+    if (isShock) {
+      return { ts: bar.ts, regime: "NEWS_SHOCK", reliability: reliabilityForProxy(0.75 + absReturn / Math.max(shockReturnThreshold * 4, 1)) };
+    }
+    if (trend >= trendThreshold && absTrend > volatility * 0.75) {
+      return { ts: bar.ts, regime: "TREND_UP", reliability: reliabilityForProxy(0.55 + absTrend / Math.max(trendThreshold * 6, 1)) };
+    }
+    if (trend <= -trendThreshold && absTrend > volatility * 0.75) {
+      return { ts: bar.ts, regime: "TREND_DOWN", reliability: reliabilityForProxy(0.55 + absTrend / Math.max(trendThreshold * 6, 1)) };
+    }
+    if (volatility >= highVolThreshold) {
+      return { ts: bar.ts, regime: "HIGH_VOL", reliability: reliabilityForProxy(0.55 + volatility / Math.max(highVolThreshold * 6, 1)) };
+    }
+    if (volatility <= lowVolThreshold && absTrend <= trendThreshold) {
+      return { ts: bar.ts, regime: "LOW_VOL", reliability: reliabilityForProxy(0.55 + (lowVolThreshold - volatility) / Math.max(lowVolThreshold * 4, 1)) };
+    }
+    if (absTrend <= chopThreshold || absTrend <= volatility) {
+      return { ts: bar.ts, regime: "CHOP", reliability: reliabilityForProxy(0.6) };
+    }
+    return {
+      ts: bar.ts,
+      regime: trend >= 0 ? "TREND_UP" : "TREND_DOWN",
+      reliability: reliabilityForProxy(0.5),
+    };
+  });
 }
 
 function latestRegimeAtOrBefore(regimes: RegimeContext[], ts: string): RegimeContext | null {
@@ -174,6 +262,7 @@ export function scoreCandidateWindows(options: RegimeValidationOptions): RegimeC
     candidates.push({
       instrument: options.instrument,
       regime,
+      regimeSource: options.regimeSource ?? "a6_snapshots",
       startTs: startBar.ts,
       endTs,
       score,
@@ -323,12 +412,15 @@ export function runRegimeValidation(options: RegimeValidationOptions): RegimeVal
 
   return {
     instrument: options.instrument,
+    regimeSource: options.regimeSource ?? "a6_snapshots",
     selectedWindows,
     backtests,
     aggregates: aggregateRegimeMetrics(backtests, strategyIds),
     stabilityRankings: rankStability(backtests, strategyIds),
     notes: [
-      "Window scoring favors dominant A6 regime coverage and regime reliability.",
+      options.regimeSource === "ohlcv_proxy"
+        ? "Window scoring uses OHLCV proxy regime labels because persisted A6 snapshots were unavailable."
+        : "Window scoring favors dominant A6 regime coverage and regime reliability.",
       "Selected windows are non-overlapping within each regime.",
     ],
   };

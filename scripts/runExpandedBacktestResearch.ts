@@ -12,10 +12,14 @@ import {
   defaultA6RegimeRouter,
 } from "@/lib/backtest/strategyRouter";
 import {
+  buildOhlcvProxyRegimes,
   REQUIRED_REGIMES,
   runRegimeValidation,
   type AggregatedRegimeMetrics,
   type RegimeCandidateWindow,
+  type RegimeValidationOptions,
+  type RegimeValidationResult,
+  type RegimeValidationSource,
 } from "@/lib/backtest/regimeValidation";
 import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics } from "@/lib/backtest/types";
 
@@ -232,6 +236,45 @@ function summaryTable(rows: RoutingSummary[]): string {
   );
 }
 
+function featureAlignedBars(bars: Bar[], features: FeatureSnapshot[]): Bar[] {
+  if (features.length === 0) return [];
+  const featureTs = new Set(features.map((feature) => feature.ts));
+  return bars.filter((bar) => featureTs.has(bar.ts));
+}
+
+function defaultWindowBarsFor(regimeSource: RegimeValidationSource): number {
+  if (process.env.WINDOW_BARS) return Number(process.env.WINDOW_BARS);
+  return regimeSource === "ohlcv_proxy" ? 8 : 24 * 14;
+}
+
+function coverageCounts(windows: RegimeCandidateWindow[]): Record<RegimeLabel, number> {
+  return Object.fromEntries(
+    REQUIRED_REGIMES.map((regime) => [regime, windows.filter((window) => window.regime === regime).length]),
+  ) as Record<RegimeLabel, number>;
+}
+
+function hasRequestedCoverage(windows: RegimeCandidateWindow[], windowsPerRegime: number): boolean {
+  const counts = coverageCounts(windows);
+  return REQUIRED_REGIMES.every((regime) => counts[regime] >= windowsPerRegime);
+}
+
+function runValidationWithCoverage(options: RegimeValidationOptions): RegimeValidationResult {
+  const first = runRegimeValidation(options);
+  const requested = options.windowsPerRegime ?? 10;
+  if (options.regimeSource !== "ohlcv_proxy" || hasRequestedCoverage(first.selectedWindows, requested) || process.env.WINDOW_BARS) {
+    return first;
+  }
+
+  const attempts = [4, 2, 1].filter((windowBars) => windowBars < (options.windowBars ?? Number.POSITIVE_INFINITY));
+  let best = first;
+  for (const windowBars of attempts) {
+    const candidate = runRegimeValidation({ ...options, windowBars });
+    if (candidate.selectedWindows.length > best.selectedWindows.length) best = candidate;
+    if (hasRequestedCoverage(candidate.selectedWindows, requested)) return candidate;
+  }
+  return best;
+}
+
 async function runInstrument(instrument: InstrumentArg): Promise<string> {
   const timeframe: Timeframe = "1h";
   const bounds = process.env.START_TS && process.env.END_TS
@@ -242,15 +285,20 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
   const pool = getPgPool();
   const barStore = new PgBarStore(pool);
   const featureStore = new PgFeatureStore(pool);
-  const [bars, features, dailyFeatures, regimes] = await Promise.all([
+  const [bars, features, dailyFeatures, persistedRegimes] = await Promise.all([
     barStore.fetchRange({ ...instrument, timeframe }, { startTs: bounds.startTs, endTs: bounds.endTs }),
     featureStore.fetchRange({ ...instrument, timeframe, featureVersion: FEATURE_VERSION }, bounds),
     featureStore.fetchRange({ ...instrument, timeframe: "1d", featureVersion: FEATURE_VERSION }, bounds),
     fetchRegimes(instrument.symbol, instrument.exchange, bounds.startTs, bounds.endTs),
   ]);
 
+  const executableBars = featureAlignedBars(bars, features);
+  const regimeSource: RegimeValidationSource = persistedRegimes.length > 0 ? "a6_snapshots" : "ohlcv_proxy";
+  const regimes = regimeSource === "a6_snapshots"
+    ? persistedRegimes
+    : buildOhlcvProxyRegimes(executableBars, features);
   const config = baseConfig(instrument, bounds.startTs, bounds.endTs);
-  const baseInput: BacktestInput = { config, bars, features, dailyFeatures, regimes };
+  const baseInput: BacktestInput = { config, bars: executableBars, features, dailyFeatures, regimes };
   const {
     symbol: _symbol,
     exchange: _exchange,
@@ -259,16 +307,19 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     endTs: _endTs,
     ...validationBaseConfig
   } = config;
-  const validation = runRegimeValidation({
+  const validationOptions: RegimeValidationOptions = {
     instrument,
     baseConfig: validationBaseConfig,
-    bars,
+    bars: executableBars,
     features,
     dailyFeatures,
     regimes,
+    regimeSource,
     windowsPerRegime: Number(process.env.WINDOWS_PER_REGIME ?? 10),
-    windowBars: Number(process.env.WINDOW_BARS ?? 24 * 14),
-  });
+    windowBars: defaultWindowBarsFor(regimeSource),
+    minDominantRegimePct: regimeSource === "ohlcv_proxy" ? 50 : 65,
+  };
+  const validation = runValidationWithCoverage(validationOptions);
 
   const routing = routingSummaries(baseInput, validation.selectedWindows);
   const portfolios = portfolioSummaries(baseInput, validation.selectedWindows);
@@ -281,10 +332,12 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     "",
     `Instrument: symbol=${instrument.symbol}, exchange=${instrument.exchange}, assetType=${instrument.assetType}, dataSource=${instrument.dataSource}`,
     `Range: ${bounds.startTs} to ${bounds.endTs}`,
-    `Rows: bars=${bars.length}, features=${features.length}, dailyFeatures=${dailyFeatures.length}, regimes=${regimes.length}`,
+    `Rows: bars=${bars.length}, executableBars=${executableBars.length}, features=${features.length}, dailyFeatures=${dailyFeatures.length}, persistedRegimes=${persistedRegimes.length}, researchRegimes=${regimes.length}`,
+    `Regime source: ${regimeSource === "a6_snapshots" ? "persisted A6 snapshots" : "OHLCV proxy fallback"}`,
+    `Window bars: ${validation.selectedWindows[0]?.barCount ?? validationOptions.windowBars}`,
     `Selected windows: ${validation.selectedWindows.length} (${coverage})`,
-    regimes.length === 0
-      ? "Issue: no A6 regime snapshots were available for this instrument, so multi-window regime, routing, and regime-weighted portfolio validation could not produce samples."
+    persistedRegimes.length === 0
+      ? "Note: no persisted A6 regime snapshots were available, so this run used OHLCV proxy labels for research-only validation."
       : "",
     "",
     "### Multi-Window Results",
@@ -332,6 +385,7 @@ async function main(): Promise<void> {
     "- Added configurable A6 regime routing via `lib/backtest/strategyRouter.ts`; the engine accepts a router but does not hardcode mappings.",
     "- Added portfolio research composition via `lib/backtest/portfolioBacktest.ts` with equal, custom, and regime-weighted allocations.",
     "- Added multi-window regime validation via `lib/backtest/regimeValidation.ts` with non-overlapping regime windows and stability rankings.",
+    "- Added OHLCV proxy regime fallback for TREND_UP, TREND_DOWN, HIGH_VOL, LOW_VOL, NEWS_SHOCK, and CHOP when persisted A6 snapshots are unavailable.",
     "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
     "",
     "## Strategy Analytics",
@@ -345,14 +399,15 @@ async function main(): Promise<void> {
     "## Architecture Changes",
     "",
     "- A6 routing is configuration-driven through `createRegimeStrategyRouter`; the engine receives a router interface and does not know the regime map.",
+    "- Regime validation prefers persisted A6 snapshots. If none exist, it builds research-only proxy labels from OHLCV volatility, range, trend, and shock features.",
     "- `regime -> []` and missing regime mappings produce no trade, allowing future capital-preservation experiments.",
     "- Portfolio research validates `sum(weights) <= 100%` and rejects implicit leverage.",
     "- Validation tooling accepts `symbol`, `exchange`, `assetType`, and `dataSource` for multi-asset expansion.",
     "",
     "## Issues Found",
     "",
-    "- The connected database has no BTC-USD A6 regime snapshots in `regime_snapshots` for the fetched range, so the required 10+ windows per regime could not be selected in this run.",
-    "- BTC-USD has far fewer stored 1h feature rows than bars in the fetched range, and no daily feature rows were returned. This limits immediate multi-window research coverage.",
+    "- If persisted A6 snapshots are absent, reported regime samples are proxy-classified and should not be treated as A6 detector validation.",
+    "- BTC-USD currently has far fewer stored 1h feature rows than bars in the fetched range, and no daily feature rows were returned. The runner uses feature-aligned bars so windows remain executable.",
     "- Current portfolio research uses scaled simulated trade PnL and should not be treated as a full broker-grade portfolio accounting engine.",
     "",
     "## Limitations",
@@ -360,7 +415,7 @@ async function main(): Promise<void> {
     "- This remains research only. No live, broker, paper trading, order manager, or capital deployment path is introduced.",
     "- Portfolio equity realizes scaled trade PnL at exits and does not model intra-trade capital contention.",
     "- Strategy simulations preserve the current long-only/default P4 assumptions unless explicitly configured otherwise.",
-    "- Statistical confidence depends on available persisted bars, features, and A6 regime snapshots.",
+    "- Statistical confidence depends on available persisted bars, features, and A6 regime snapshots. Proxy mode improves coverage but is not a substitute for persisted A6 labels.",
     "",
     ...sections,
     "## Recommendations",

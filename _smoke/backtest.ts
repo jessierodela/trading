@@ -2,6 +2,7 @@ import type { Bar, FeatureSnapshot, RegimeContext, StrategySignal } from "../lib
 import { createOpenPositionFromSignal, runBacktest } from "../lib/backtest/backtestEngine";
 import { calculateBacktestMetrics } from "../lib/backtest/metrics";
 import { runPortfolioBacktest } from "../lib/backtest/portfolioBacktest";
+import { buildOhlcvProxyRegimes, REQUIRED_REGIMES, runRegimeValidation } from "../lib/backtest/regimeValidation";
 import { InMemoryBacktestReportStore } from "../lib/backtest/reportStore";
 import { applyEntrySlippage, applyExitSlippage, feeForNotional } from "../lib/backtest/slippage";
 import { defaultA6RegimeRouter } from "../lib/backtest/strategyRouter";
@@ -455,6 +456,54 @@ function testResearchRoutingAndPortfolio(): void {
     targetWinInput(),
     { mode: "custom_weight", strategyIds: ["momentum_continuation", "trend_pullback"], weights: { momentum_continuation: 0.8, trend_pullback: 0.8 } },
   ));
+
+  const proxyBars = Array.from({ length: 96 }, (_, index) => {
+    const cycle = index % 24;
+    const trend = index < 32 ? index * 0.7 : index < 64 ? (64 - index) * 0.7 : Math.sin(index) * 2;
+    const shock = cycle === 0 ? 12 : 0;
+    const price = 100 + trend + shock;
+    return bar(index, {
+      open: price,
+      high: price + (cycle === 0 ? 10 : cycle < 8 ? 4 : 1),
+      low: price - (cycle === 0 ? 9 : cycle < 8 ? 4 : 1),
+      close: price + (index < 32 ? 0.5 : index < 64 ? -0.5 : 0),
+    });
+  });
+  const proxyFeatures = proxyBars.map((b, index) => feature(index, {
+    close: b.close,
+    atrPct: index % 24 === 0 ? 15 : index % 24 < 8 ? 5 : 0.4,
+  }));
+  const proxyRegimes = buildOhlcvProxyRegimes(proxyBars, proxyFeatures, 6);
+  assert("OHLCV proxy emits one regime per bar", proxyRegimes.length === proxyBars.length);
+  assert("OHLCV proxy labels are supported regimes", proxyRegimes.every((row) => REQUIRED_REGIMES.includes(row.regime)));
+  const proxyValidation = runRegimeValidation({
+    instrument: { symbol: "BTC-USD", exchange: "COINBASE", assetType: "CRYPTO", dataSource: "test" },
+    baseConfig: {
+      assetType: "CRYPTO",
+      dataSource: "test",
+      timeframe: "1h",
+      featureVersion: "features.test.v1",
+      initialCapital: 10_000,
+      riskPerTradePct: 0.01,
+      maxPositionPct: 1,
+      maxConcurrentPositions: 1,
+      feeBps: 10,
+      slippageBps: 0,
+      defaultRewardRisk: 2,
+      closeOpenPositionAtEnd: true,
+      enterOnNextBarOpen: true,
+      sameBarStopFirst: true,
+    },
+    bars: proxyBars,
+    features: proxyFeatures,
+    regimes: proxyRegimes,
+    regimeSource: "ohlcv_proxy",
+    strategyIds: ["momentum_continuation"],
+    windowsPerRegime: 1,
+    windowBars: 4,
+    minDominantRegimePct: 25,
+  });
+  assert("OHLCV proxy validation can select windows", proxyValidation.selectedWindows.length > 0);
 }
 
 async function main(): Promise<void> {
