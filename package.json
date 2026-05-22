@@ -16,8 +16,11 @@
     "smoke:backtest": "tsx _smoke/backtest.ts",
     "smoke:p2d:live": "dotenv -e .env.local -- tsx _smoke/features_crossvalidate_live.ts",
     "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
-    "backfill:btc:bootstrap": "tsx scripts/backfillBtcBootstrap.ts",
-    "research:p5": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts"
+    "backfill:btc:bootstrap": "dotenv -e .env.local -- tsx scripts/backfillBtcBootstrap.ts",
+    "features:btc:bulk": "dotenv -e .env.local -- tsx scripts/computeBtcFeaturesBulk.ts",
+    "regimes:btc:bulk": "dotenv -e .env.local -- tsx scripts/computeBtcRegimesBulk.ts",
+    "research:p5": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts",
+    "research:p5:expanded": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",

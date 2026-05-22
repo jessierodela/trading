@@ -97,11 +97,12 @@ async function fetchBounds(symbol: string, exchange: Exchange, timeframe: Timefr
 async function fetchRegimes(symbol: string, exchange: Exchange, startTs: string, endTs: string): Promise<RegimeContext[]> {
   const pool = getPgPool();
   const { rows } = await pool.query<{ ts: Date; regime: RegimeLabel; reliability: string }>(
-    `select ts, regime, reliability
+    `select distinct on (ts) ts, regime, reliability
      from regime_snapshots
      where symbol = $1 and exchange = $2 and ts >= $3 and ts < $4
-     order by ts asc`,
-    [symbol, exchange, startTs, endTs],
+       and (feature_version is null or feature_version = $5)
+     order by ts asc, inserted_at desc`,
+    [symbol, exchange, startTs, endTs, FEATURE_VERSION],
   );
   return rows.map((row) => ({
     ts: row.ts.toISOString(),
@@ -300,9 +301,9 @@ function validationWarnings(context: ValidationWarningContext): string[] {
       `Configured proxy window size (${context.configuredWindowBars}) was below ${MIN_PROXY_WINDOW_BARS}; validation used ${context.effectiveWindowBars} bars instead.`,
     );
   }
-  if (context.regimeSource === "ohlcv_proxy" && insufficient.length > 0) {
+  if (insufficient.length > 0) {
     warnings.push(
-      `Insufficient proxy coverage with meaningful windows; selected fewer than requested windows for ${insufficient.join(", ")}.`,
+      `Insufficient ${context.regimeSource === "ohlcv_proxy" ? "proxy" : "persisted snapshot"} coverage with meaningful windows; selected fewer than requested windows for ${insufficient.join(", ")}.`,
     );
   }
 
@@ -458,7 +459,7 @@ async function main(): Promise<void> {
     "## Issues Found",
     "",
     "- If persisted A6 snapshots are absent, reported regime samples are proxy-classified and should not be treated as A6 detector validation.",
-    "- BTC-USD currently has far fewer stored 1h feature rows than bars in the fetched range, and no daily feature rows were returned. The runner uses feature-aligned bars so windows remain executable.",
+    "- BTC-USD data coverage is reported per run as bars, executable bars, 1h features, daily features, and persisted regimes. If any coverage falls short, the report keeps sample counts lower rather than manufacturing windows.",
     "- If meaningful proxy windows cannot provide the requested windows per regime, the report intentionally keeps lower sample counts rather than shrinking to 1-2 bar windows.",
     "- Current portfolio research uses scaled simulated trade PnL and should not be treated as a full broker-grade portfolio accounting engine.",
     "",

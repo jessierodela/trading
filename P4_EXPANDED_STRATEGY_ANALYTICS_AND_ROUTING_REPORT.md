@@ -31,7 +31,7 @@ Validation coverage added in `_smoke/backtest.ts`: zero trades, one trade, all w
 ## Issues Found
 
 - If persisted A6 snapshots are absent, reported regime samples are proxy-classified and should not be treated as A6 detector validation.
-- BTC-USD currently has far fewer stored 1h feature rows than bars in the fetched range, and no daily feature rows were returned. The runner uses feature-aligned bars so windows remain executable.
+- BTC-USD data coverage is reported per run as bars, executable bars, 1h features, daily features, and persisted regimes. If any coverage falls short, the report keeps sample counts lower rather than manufacturing windows.
 - If meaningful proxy windows cannot provide the requested windows per regime, the report intentionally keeps lower sample counts rather than shrinking to 1-2 bar windows.
 - Current portfolio research uses scaled simulated trade PnL and should not be treated as a full broker-grade portfolio accounting engine.
 
@@ -45,36 +45,36 @@ Validation coverage added in `_smoke/backtest.ts`: zero trades, one trade, all w
 ## BTC-USD
 
 Instrument: symbol=BTC-USD, exchange=COINBASE, assetType=CRYPTO, dataSource=postgres
-Range: 2024-05-16T00:00:00.000Z to 2026-05-21T04:00:00.000Z
-Rows: bars=17634, executableBars=1008, features=1008, dailyFeatures=0, persistedRegimes=0, researchRegimes=1008
-Regime source: OHLCV proxy fallback
+Range: 2024-05-16T00:00:00.000Z to 2026-05-22T00:00:00.000Z
+Rows: bars=17654, executableBars=17654, features=17654, dailyFeatures=734, persistedRegimes=17654, researchRegimes=17654
+Regime source: persisted A6 snapshots
 Window bars: 144
 Requested windows per regime: 10
-Selected windows: 2 (TREND_UP: 0, TREND_DOWN: 1, HIGH_VOL: 0, LOW_VOL: 1, NEWS_SHOCK: 0, CHOP: 0)
-Note: no persisted A6 regime snapshots were available, so this run used OHLCV proxy labels for research-only validation.
+Selected windows: 32 (TREND_UP: 10, TREND_DOWN: 10, HIGH_VOL: 2, LOW_VOL: 10, NEWS_SHOCK: 0, CHOP: 0)
+
 
 ### Validation Warnings
-- Insufficient proxy coverage with meaningful windows; selected fewer than requested windows for TREND_UP: 0/10, TREND_DOWN: 1/10, HIGH_VOL: 0/10, LOW_VOL: 1/10, NEWS_SHOCK: 0/10, CHOP: 0/10.
+- Insufficient persisted snapshot coverage with meaningful windows; selected fewer than requested windows for HIGH_VOL: 2/10, NEWS_SHOCK: 0/10, CHOP: 0/10.
 
 ### Multi-Window Results
 | regime |strategy |samples |avgReturn |medReturn |avgDD |avgExpectancy |avgPF |avgWinRate |avgExposure |avgTrades |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| TREND_UP |momentum_continuation |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| TREND_UP |trend_pullback |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| TREND_UP |breakout_expansion |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| TREND_UP |mean_reversion_bounce |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| TREND_DOWN |momentum_continuation |1 |-0.54 |-0.54 |0.82 |-54.3195 |0.00 |0.00 |21.53 |1.00 |-0.66 |
-| TREND_DOWN |trend_pullback |1 |-0.85 |-0.85 |1.76 |-21.2193 |0.52 |25.00 |29.17 |4.00 |-0.48 |
-| TREND_DOWN |breakout_expansion |1 |-0.55 |-0.55 |0.57 |-55.4311 |0.00 |0.00 |15.97 |1.00 |-0.98 |
-| TREND_DOWN |mean_reversion_bounce |1 |-1.73 |-1.73 |1.73 |-57.6783 |0.00 |0.00 |2.08 |3.00 |-1.00 |
-| HIGH_VOL |momentum_continuation |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| HIGH_VOL |trend_pullback |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| HIGH_VOL |breakout_expansion |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| HIGH_VOL |mean_reversion_bounce |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
-| LOW_VOL |momentum_continuation |1 |-1.29 |-1.29 |1.31 |-64.7140 |0.00 |0.00 |40.97 |2.00 |-0.99 |
-| LOW_VOL |trend_pullback |1 |-3.75 |-3.75 |3.77 |-53.6370 |0.00 |0.00 |43.75 |7.00 |-1.00 |
-| LOW_VOL |breakout_expansion |1 |-1.22 |-1.22 |1.31 |-61.0531 |0.00 |0.00 |34.03 |2.00 |-0.93 |
-| LOW_VOL |mean_reversion_bounce |1 |-1.03 |-1.03 |1.82 |-25.6519 |0.44 |25.00 |39.58 |4.00 |-0.56 |
+| TREND_UP |momentum_continuation |10 |0.62 |0.40 |0.65 |23.9115 |1.71 |63.50 |86.74 |2.60 |0.96 |
+| TREND_UP |trend_pullback |10 |0.12 |0.21 |1.44 |14.5966 |3.26 |55.55 |52.43 |4.00 |0.08 |
+| TREND_UP |breakout_expansion |10 |0.62 |0.80 |0.99 |21.3809 |2.21 |62.50 |68.89 |3.20 |0.63 |
+| TREND_UP |mean_reversion_bounce |10 |0.15 |-0.06 |0.52 |9.9340 |0.13 |41.67 |5.90 |1.10 |0.28 |
+| TREND_DOWN |momentum_continuation |10 |-0.12 |0.00 |0.29 |-19.2559 |0.50 |37.50 |6.39 |0.60 |-0.40 |
+| TREND_DOWN |trend_pullback |10 |-1.35 |-1.21 |2.33 |-27.3141 |0.41 |28.50 |42.57 |4.90 |-0.58 |
+| TREND_DOWN |breakout_expansion |10 |-0.83 |-0.86 |1.31 |-33.6514 |0.39 |23.33 |20.97 |2.70 |-0.63 |
+| TREND_DOWN |mean_reversion_bounce |10 |-0.57 |0.00 |0.61 |-64.6589 |0.00 |0.00 |1.39 |0.90 |-0.93 |
+| HIGH_VOL |momentum_continuation |2 |-0.30 |-0.30 |0.88 |-15.8699 |0.58 |16.67 |64.93 |2.50 |-0.34 |
+| HIGH_VOL |trend_pullback |2 |-0.99 |-0.99 |1.83 |-14.5464 |0.61 |25.00 |49.65 |6.00 |-0.54 |
+| HIGH_VOL |breakout_expansion |2 |-0.93 |-0.93 |1.46 |-31.1474 |0.43 |16.67 |18.06 |3.00 |-0.64 |
+| HIGH_VOL |mean_reversion_bounce |2 |-0.72 |-0.72 |1.43 |-32.1496 |0.44 |16.67 |6.25 |4.00 |-0.50 |
+| LOW_VOL |momentum_continuation |10 |-0.03 |-0.05 |1.35 |2.2275 |2.41 |42.00 |56.32 |2.80 |-0.02 |
+| LOW_VOL |trend_pullback |10 |-1.31 |-0.73 |2.61 |-13.8067 |1.77 |32.34 |61.04 |6.20 |-0.50 |
+| LOW_VOL |breakout_expansion |10 |-0.71 |-0.63 |1.70 |-19.0458 |0.75 |32.93 |33.54 |4.60 |-0.42 |
+| LOW_VOL |mean_reversion_bounce |10 |-0.18 |0.40 |1.37 |20.3972 |0.63 |60.66 |25.35 |3.00 |-0.13 |
 | NEWS_SHOCK |momentum_continuation |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
 | NEWS_SHOCK |trend_pullback |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
 | NEWS_SHOCK |breakout_expansion |0 |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |n/a |
@@ -87,18 +87,18 @@ Note: no persisted A6 regime snapshots were available, so this run used OHLCV pr
 ### A6 Routing Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
-| momentum_continuation |2 |-0.92 |1.07 |0.00 |-59.5167 |1.50 |31.25 |-0.82 |
-| trend_pullback |2 |-2.30 |2.76 |0.26 |-37.4281 |5.50 |36.46 |-0.74 |
-| breakout_expansion |2 |-0.89 |0.94 |0.00 |-58.2421 |1.50 |25.00 |-0.95 |
-| mean_reversion_bounce |2 |-1.38 |1.77 |0.22 |-41.6651 |3.50 |20.83 |-0.78 |
-| a6_regime_router |2 |-1.89 |1.99 |0.17 |-43.5068 |4.50 |49.31 |-0.94 |
+| momentum_continuation |32 |0.13 |0.77 |1.73 |5.8703 |2.03 |50.76 |0.42 |
+| trend_pullback |32 |-0.86 |2.11 |1.64 |-9.1980 |5.09 |51.87 |0.10 |
+| breakout_expansion |32 |-0.35 |1.34 |0.96 |-11.7330 |3.47 |39.69 |0.08 |
+| mean_reversion_bounce |32 |-0.23 |0.87 |0.29 |-2.6038 |1.81 |10.59 |4.34 |
+| a6_regime_router |32 |-0.25 |1.17 |4.91 |-2.1509 |3.03 |44.21 |0.60 |
 
 ### Portfolio Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
-| equal_weight |2 |-1.37 |1.39 |0.15 |-11.1864 |12.00 |84.38 |-0.99 |
-| custom_weight |2 |-1.37 |1.39 |0.15 |-11.1864 |12.00 |84.38 |-0.99 |
-| regime_weight |2 |-1.77 |1.77 |0.14 |-32.4309 |5.00 |57.99 |-1.00 |
+| equal_weight |32 |-0.33 |0.91 |0.99 |-2.4266 |12.41 |90.06 |0.01 |
+| custom_weight |32 |-0.33 |0.91 |0.99 |-2.4266 |12.41 |90.06 |0.01 |
+| regime_weight |32 |-0.16 |0.78 |9.05 |-0.6443 |4.00 |50.37 |8.29 |
 
 ### Stability Rankings
 | regime |strategy |samples |score |returnStd |drawdownStd |profitFactorStd |expectancyStd |
@@ -107,26 +107,26 @@ Note: no persisted A6 regime snapshots were available, so this run used OHLCV pr
 | CHOP |trend_pullback |0 |n/a |n/a |n/a |n/a |n/a |
 | CHOP |breakout_expansion |0 |n/a |n/a |n/a |n/a |n/a |
 | CHOP |mean_reversion_bounce |0 |n/a |n/a |n/a |n/a |n/a |
-| HIGH_VOL |momentum_continuation |0 |n/a |n/a |n/a |n/a |n/a |
-| HIGH_VOL |trend_pullback |0 |n/a |n/a |n/a |n/a |n/a |
-| HIGH_VOL |breakout_expansion |0 |n/a |n/a |n/a |n/a |n/a |
-| HIGH_VOL |mean_reversion_bounce |0 |n/a |n/a |n/a |n/a |n/a |
-| LOW_VOL |momentum_continuation |1 |n/a |n/a |n/a |n/a |n/a |
-| LOW_VOL |trend_pullback |1 |n/a |n/a |n/a |n/a |n/a |
-| LOW_VOL |breakout_expansion |1 |n/a |n/a |n/a |n/a |n/a |
-| LOW_VOL |mean_reversion_bounce |1 |n/a |n/a |n/a |n/a |n/a |
+| HIGH_VOL |trend_pullback |2 |-3.37 |0.90 |0.39 |0.13 |8.12 |
+| HIGH_VOL |momentum_continuation |2 |-7.78 |0.60 |0.20 |0.82 |28.33 |
+| HIGH_VOL |breakout_expansion |2 |-10.73 |1.11 |0.56 |0.61 |36.89 |
+| HIGH_VOL |mean_reversion_bounce |2 |-11.16 |0.70 |0.32 |0.63 |40.11 |
+| LOW_VOL |breakout_expansion |10 |-8.28 |1.38 |0.88 |0.83 |27.20 |
+| LOW_VOL |trend_pullback |10 |-9.32 |1.80 |1.50 |3.93 |24.80 |
+| LOW_VOL |momentum_continuation |10 |-13.83 |1.03 |0.56 |4.49 |49.12 |
+| LOW_VOL |mean_reversion_bounce |10 |-16.86 |1.77 |1.36 |0.84 |62.76 |
 | NEWS_SHOCK |momentum_continuation |0 |n/a |n/a |n/a |n/a |n/a |
 | NEWS_SHOCK |trend_pullback |0 |n/a |n/a |n/a |n/a |n/a |
 | NEWS_SHOCK |breakout_expansion |0 |n/a |n/a |n/a |n/a |n/a |
 | NEWS_SHOCK |mean_reversion_bounce |0 |n/a |n/a |n/a |n/a |n/a |
-| TREND_DOWN |momentum_continuation |1 |n/a |n/a |n/a |n/a |n/a |
-| TREND_DOWN |trend_pullback |1 |n/a |n/a |n/a |n/a |n/a |
-| TREND_DOWN |breakout_expansion |1 |n/a |n/a |n/a |n/a |n/a |
-| TREND_DOWN |mean_reversion_bounce |1 |n/a |n/a |n/a |n/a |n/a |
-| TREND_UP |momentum_continuation |0 |n/a |n/a |n/a |n/a |n/a |
-| TREND_UP |trend_pullback |0 |n/a |n/a |n/a |n/a |n/a |
-| TREND_UP |breakout_expansion |0 |n/a |n/a |n/a |n/a |n/a |
-| TREND_UP |mean_reversion_bounce |0 |n/a |n/a |n/a |n/a |n/a |
+| TREND_DOWN |mean_reversion_bounce |10 |-2.71 |1.15 |1.16 |0.00 |6.23 |
+| TREND_DOWN |trend_pullback |10 |-6.56 |1.24 |0.95 |0.34 |18.31 |
+| TREND_DOWN |breakout_expansion |10 |-8.81 |0.80 |0.63 |0.55 |29.92 |
+| TREND_DOWN |momentum_continuation |10 |-10.75 |0.40 |0.43 |0.87 |40.85 |
+| TREND_UP |momentum_continuation |10 |-6.17 |0.66 |0.22 |1.09 |25.19 |
+| TREND_UP |trend_pullback |10 |-10.12 |1.18 |1.12 |5.52 |33.16 |
+| TREND_UP |breakout_expansion |10 |-10.88 |1.39 |0.44 |2.13 |42.07 |
+| TREND_UP |mean_reversion_bounce |10 |-16.95 |0.80 |0.58 |0.30 |66.70 |
 
 ## Recommendations
 
