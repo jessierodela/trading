@@ -37,6 +37,17 @@ interface ErrorResponse {
   stage?: string;
 }
 
+const ALLOWED_EXCHANGES: Exchange[] = ["COINBASE", "BINANCE", "POLYGON"];
+const ALLOWED_TIMEFRAMES: Timeframe[] = ["1h"];
+
+function isAllowedExchange(value: string | undefined): value is Exchange {
+  return value !== undefined && ALLOWED_EXCHANGES.includes(value as Exchange);
+}
+
+function isAllowedTimeframe(value: string | undefined): value is Timeframe {
+  return value !== undefined && ALLOWED_TIMEFRAMES.includes(value as Timeframe);
+}
+
 function authError(req: NextRequest): NextResponse<ErrorResponse> | null {
   const configured = process.env.BACKTEST_SECRET ?? process.env.STRATEGIES_SECRET ?? process.env.BACKFILL_SECRET;
   if (!configured) {
@@ -54,17 +65,25 @@ function authError(req: NextRequest): NextResponse<ErrorResponse> | null {
 function parseConfig(body: RunBacktestBody): { config: BacktestConfig; persist: boolean } | { error: string } {
   if (!body.symbol) return { error: "symbol is required" };
   if (!body.exchange) return { error: "exchange is required" };
-  if (!body.timeframe || body.timeframe !== "1h") return { error: "timeframe is required and must be 1h in v1" };
+  if (!isAllowedExchange(body.exchange)) {
+    return { error: `exchange must be one of: ${ALLOWED_EXCHANGES.join(", ")}` };
+  }
+  if (!isAllowedTimeframe(body.timeframe)) {
+    return { error: "timeframe is required and must be 1h in v1" };
+  }
   if (!body.strategyId || body.strategyId === "all") return { error: "strategyId is required and must be one strategy id" };
   if (!body.startTs || !body.endTs) return { error: "startTs and endTs are required" };
-  if (Date.parse(body.startTs) >= Date.parse(body.endTs)) return { error: "startTs must be < endTs" };
+  const startMs = Date.parse(body.startTs);
+  const endMs = Date.parse(body.endTs);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return { error: "startTs and endTs must be valid timestamps" };
+  if (startMs >= endMs) return { error: "startTs must be < endTs" };
 
   return {
     persist: body.persist ?? true,
     config: {
       symbol: body.symbol,
-      exchange: body.exchange as Exchange,
-      timeframe: body.timeframe as Timeframe,
+      exchange: body.exchange,
+      timeframe: body.timeframe,
       strategyId: body.strategyId,
       featureVersion: body.featureVersion ?? FEATURE_VERSION,
       startTs: body.startTs,
@@ -181,4 +200,3 @@ export async function POST(req: NextRequest) {
     );
   }
 }
-

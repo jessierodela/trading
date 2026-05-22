@@ -86,6 +86,10 @@ function tradeRowToBacktest(row: TradeDbRow): BacktestTradeRow {
   };
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 export class PgBacktestReportStore implements BacktestReportStore {
   constructor(private readonly pool: Pool) {}
 
@@ -144,6 +148,8 @@ export class PgBacktestReportStore implements BacktestReportStore {
 
   async fetchRun(idOrPublicId: string): Promise<BacktestRunRow | null> {
     const isNumeric = /^\d+$/.test(idOrPublicId);
+    if (!isNumeric && !isUuid(idOrPublicId)) return null;
+
     const { rows } = await this.pool.query<RunDbRow>(
       `select * from backtest.runs where ${isNumeric ? "id = $1" : "public_id = $1"} limit 1`,
       [idOrPublicId],

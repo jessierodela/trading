@@ -14,6 +14,8 @@ Implemented:
 - `GET /api/backtests/[id]` for authenticated persisted result reads.
 - `_smoke/backtest.ts` with handcrafted fixtures.
 - `npm run smoke:backtest`.
+- Backtest run API validation for invalid timestamps, unsupported exchanges, and unsupported timeframes.
+- Defensive persisted-run lookup that returns null/404 for malformed public IDs instead of surfacing database UUID parse errors.
 
 ## Backtest Assumptions
 
@@ -30,6 +32,7 @@ Implemented:
 - Entry happens on the next bar open at `i + 1`.
 - Last-bar signals are skipped because no next bar exists.
 - Entries cannot bridge missing candle intervals because bars and features must be contiguous for the configured timeframe.
+- API callers must provide valid `startTs` and `endTs`, a supported exchange, and the V1 `1h` timeframe before data fetch starts.
 - Only `trigger` signals can open trades.
 - Signals without usable `stopLoss` or `invalidationPrice` are skipped.
 - Long trades reject stops above or equal to entry.
