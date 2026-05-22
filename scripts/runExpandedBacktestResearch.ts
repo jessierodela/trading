@@ -8,8 +8,12 @@ import { STRATEGY_REGISTRY } from "@/lib/strategies/strategyRegistry";
 import { runBacktest } from "@/lib/backtest/backtestEngine";
 import { runPortfolioBacktest, type PortfolioBacktestConfig } from "@/lib/backtest/portfolioBacktest";
 import {
+  createRegimeStrategyRouter,
   DEFAULT_A6_REGIME_ROUTER_CONFIG,
+  DEFAULT_A6_REGIME_STRATEGY_MAP,
   defaultA6RegimeRouter,
+  type RegimeStrategyMap,
+  type RegimeStrategyRouterConfig,
 } from "@/lib/backtest/strategyRouter";
 import {
   buildOhlcvProxyRegimes,
@@ -333,12 +337,19 @@ function sourceCaution(source: RegimeSourceDisplay): string | null {
   return "Note: no persisted regime snapshots were available, so this run used in-memory OHLCV fallback labels.";
 }
 
-function routerMetricAudit(base: BacktestInput, windows: RegimeCandidateWindow[]): RouterMetricAudit {
+function routerMetricAudit(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+  routerConfig: RegimeStrategyRouterConfig = DEFAULT_A6_REGIME_ROUTER_CONFIG,
+): RouterMetricAudit {
+  const router = routerConfig === DEFAULT_A6_REGIME_ROUTER_CONFIG
+    ? defaultA6RegimeRouter
+    : createRegimeStrategyRouter(routerConfig);
   const results = windows.map((window) => ({
     window,
     result: runBacktest({
-      ...sliceInput(base, window, DEFAULT_A6_REGIME_ROUTER_CONFIG.id),
-      strategyRouter: defaultA6RegimeRouter,
+      ...sliceInput(base, window, routerConfig.id),
+      strategyRouter: router,
     }),
   }));
   const allTrades = results.flatMap(({ result }) => result.trades);
@@ -464,7 +475,7 @@ function routerFullStatsFromAudit(audit: RouterMetricAudit, routerSummary: Routi
   const drawdowns = audit.rows.map((r) => r.maxDrawdownPct);
   const exposures = audit.rows.map((r) => r.exposurePct).filter((v): v is number => v !== null);
   return {
-    label: DEFAULT_A6_REGIME_ROUTER_CONFIG.id,
+    label: routerSummary.label,
     samples: audit.windows,
     avgReturn: audit.averageReturnPct,
     medianReturn: medianOf(returns),
@@ -838,6 +849,168 @@ function regimePuritySection(selectedWindows: RegimeCandidateWindow[], minDomina
   ];
 }
 
+function buildExperimentalRouterConfigs(
+  aggregates: AggregatedRegimeMetrics[],
+  defaultRouterAudit: RouterMetricAudit,
+): RegimeStrategyRouterConfig[] {
+  // momentum_only: all regimes → momentum_continuation
+  const momentumOnlyMap: RegimeStrategyMap = Object.fromEntries(
+    REQUIRED_REGIMES.map((r) => [r, ["momentum_continuation"] as string[]]),
+  );
+
+  // top_by_regime_return: best avgReturn strategy per regime (any return, even negative)
+  const topByReturnMap: RegimeStrategyMap = {};
+  for (const regime of REQUIRED_REGIMES) {
+    const sorted = aggregates
+      .filter((a) => a.regime === regime && a.samples > 0 && a.averageReturn !== null)
+      .sort((a, b) => (b.averageReturn ?? Number.NEGATIVE_INFINITY) - (a.averageReturn ?? Number.NEGATIVE_INFINITY));
+    topByReturnMap[regime] = sorted.length > 0 ? [sorted[0].strategyId] : [];
+  }
+
+  // top_by_regime_retdd: best ret/DD strategy per regime; no trade if no strategy has ret/DD > 0
+  const topByRtDDMap: RegimeStrategyMap = {};
+  for (const regime of REQUIRED_REGIMES) {
+    const sorted = aggregates
+      .filter((a) => a.regime === regime && a.samples > 0 && a.returnToDrawdown !== null && a.returnToDrawdown > 0)
+      .sort((a, b) => (b.returnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.returnToDrawdown ?? Number.NEGATIVE_INFINITY));
+    topByRtDDMap[regime] = sorted.length > 0 ? [sorted[0].strategyId] : [];
+  }
+
+  // conservative: only trade if the best strategy for the regime has avgReturn > 0 AND avgPF > 1
+  const conservativeMap: RegimeStrategyMap = {};
+  for (const regime of REQUIRED_REGIMES) {
+    const sorted = aggregates
+      .filter((a) => a.regime === regime && a.samples > 0)
+      .sort((a, b) => (b.averageReturn ?? Number.NEGATIVE_INFINITY) - (a.averageReturn ?? Number.NEGATIVE_INFINITY));
+    const best = sorted[0];
+    const qualifies = best !== undefined &&
+      (best.averageReturn ?? Number.NEGATIVE_INFINITY) > 0 &&
+      (best.averageProfitFactor ?? 0) > 1;
+    conservativeMap[regime] = qualifies ? [best.strategyId] : [];
+  }
+
+  // no_trade_in_bad_regimes: default A6 map, but blank out any regime where the default router
+  // had negative avg return across the selected windows
+  const perRegimeAvgReturn: Partial<Record<RegimeLabel, number | null>> = {};
+  for (const regime of REQUIRED_REGIMES) {
+    const regimeRows = defaultRouterAudit.rows.filter((r) => r.regime === regime);
+    perRegimeAvgReturn[regime] = avg(regimeRows.map((r) => r.returnPct));
+  }
+  const noTradeInBadMap: RegimeStrategyMap = {};
+  for (const regime of REQUIRED_REGIMES) {
+    const regimeReturn = perRegimeAvgReturn[regime];
+    const defaultStrategies = DEFAULT_A6_REGIME_STRATEGY_MAP[regime] ?? [];
+    noTradeInBadMap[regime] = regimeReturn != null && regimeReturn > 0 ? [...defaultStrategies] : [];
+  }
+
+  return [
+    { id: "conservative_router", version: "research.v1", regimeStrategyMap: conservativeMap },
+    { id: "momentum_only_router", version: "research.v1", regimeStrategyMap: momentumOnlyMap },
+    { id: "top_by_regime_return_router", version: "research.v1", regimeStrategyMap: topByReturnMap },
+    { id: "top_by_regime_retdd_router", version: "research.v1", regimeStrategyMap: topByRtDDMap },
+    { id: "no_trade_in_bad_regimes_router", version: "research.v1", regimeStrategyMap: noTradeInBadMap },
+  ];
+}
+
+function experimentalRouterStats(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+  configs: RegimeStrategyRouterConfig[],
+): FullStats[] {
+  return configs.map((config) => {
+    const audit = routerMetricAudit(base, windows, config);
+    const rtdds = audit.rows
+      .map((r) => r.maxDrawdownPct === 0 ? null : r.returnPct / r.maxDrawdownPct)
+      .filter((v): v is number => v !== null);
+    const syntheticEntry: RoutingSummary = {
+      label: config.id,
+      samples: audit.windows,
+      avgReturn: audit.averageReturnPct,
+      avgDrawdown: avg(audit.rows.map((r) => r.maxDrawdownPct)),
+      avgProfitFactor: audit.reportedAverageProfitFactor,
+      avgExpectancy: audit.averageExpectancy,
+      avgTrades: avg(audit.rows.map((r) => r.tradeCount)),
+      avgExposure: avg(audit.rows.map((r) => r.exposurePct).filter((v): v is number => v !== null)),
+      avgReturnToDrawdown: avg(rtdds),
+    };
+    return routerFullStatsFromAudit(audit, syntheticEntry);
+  });
+}
+
+function routerConfigComparisonSection(
+  allRouterStats: FullStats[],
+  staticFull: FullStats[],
+  portfolioFull: FullStats[],
+  experimentalConfigs: RegimeStrategyRouterConfig[],
+): string[] {
+  const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
+  const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
+  const equalWeight = portfolioFull.find((p) => p.label === "equal_weight");
+  const regimeWeight = portfolioFull.find((p) => p.label === "regime_weight");
+
+  const contestants: Array<[string, FullStats]> = allRouterStats.map((s) => [s.label, s]);
+  const metricRows: string[][] = [
+    ["avg return (%)", ...contestants.map(([, s]) => fmt(s.avgReturn))],
+    ["median return (%)", ...contestants.map(([, s]) => fmt(s.medianReturn))],
+    ["max drawdown (%)", ...contestants.map(([, s]) => fmt(s.maxDrawdown))],
+    ["avg drawdown (%)", ...contestants.map(([, s]) => fmt(s.avgDrawdown))],
+    ["global PF", ...contestants.map(([, s]) => fmt(s.globalProfitFactor))],
+    ["global expectancy ($)", ...contestants.map(([, s]) => fmt(s.globalExpectancy, 4))],
+    ["exposure (%)", ...contestants.map(([, s]) => fmt(s.avgExposure))],
+    ["trade count", ...contestants.map(([, s]) => String(s.tradeCount))],
+    ["no-trade windows", ...contestants.map(([, s]) => String(s.noTradeWindows))],
+    ["ret/DD", ...contestants.map(([, s]) => fmt(s.avgReturnToDrawdown))],
+    ["verdict", ...allRouterStats.map((s) => (routerBeatsAll(s, staticFull, portfolioFull) ? "VALIDATED" : "NO"))],
+  ];
+
+  // Regime map summary rows: default A6 router + 5 experimental
+  const allConfigs = [DEFAULT_A6_REGIME_ROUTER_CONFIG, ...experimentalConfigs];
+  const regimeMapRows = allConfigs.map((config) => [
+    config.id,
+    ...REQUIRED_REGIMES.map((r) => {
+      const strategies = config.regimeStrategyMap[r] ?? [];
+      return strategies.length === 0 ? "—" : strategies.join("+");
+    }),
+  ]);
+
+  return [
+    "### Router Configuration Comparison",
+    "",
+    "Five experimental router configurations evaluated against the default A6 router on the same primary-config windows. " +
+    "conservative_router trades only if the regime's top strategy has avgReturn > 0 AND avgPF > 1. " +
+    "momentum_only_router uses momentum_continuation for every regime. " +
+    "top_by_regime_return_router picks the highest-avgReturn strategy per regime from the multi-window aggregates. " +
+    "top_by_regime_retdd_router picks the best ret/DD strategy per regime (no trade if no strategy has ret/DD > 0). " +
+    "no_trade_in_bad_regimes_router uses the default A6 map but blanks any regime where the default router had negative avg return.",
+    "",
+    `Verdict benchmarks: best static by avg return = **${bestByReturn?.label ?? "n/a"}** (${fmt(bestByReturn?.avgReturn)}%), ` +
+    `best static by ret/DD = **${bestByRtDD?.label ?? "n/a"}** (${fmt(bestByRtDD?.avgReturnToDrawdown)}), ` +
+    `equal_weight avg ret = ${fmt(equalWeight?.avgReturn)}%, regime_weight avg ret = ${fmt(regimeWeight?.avgReturn)}%.`,
+    "",
+    table(
+      ["metric", ...contestants.map(([label]) => label)],
+      metricRows,
+    ),
+    "",
+    "Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):",
+    "",
+    table(
+      ["router", ...REQUIRED_REGIMES],
+      regimeMapRows.map((row) => [
+        row[0],
+        ...row.slice(1).map((cell) =>
+          cell
+            .replace(/breakout_expansion/g, "be")
+            .replace(/momentum_continuation/g, "mc")
+            .replace(/mean_reversion_bounce/g, "mrb")
+            .replace(/trend_pullback/g, "tp"),
+        ),
+      ]),
+    ),
+    "",
+  ];
+}
+
 function validationConfigComparisonSection(results: ConfigRunResult[], primaryLabel: string): string[] {
   const rows = results.map((result) => {
     const { config, totalWindows, windowsByRegime, purity, staticFull, routerFull, portfolioFull } = result;
@@ -992,6 +1165,9 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
   const routerEntry = routing.find((r) => r.label === DEFAULT_A6_REGIME_ROUTER_CONFIG.id) ?? routing[routing.length - 1];
   const routerFull = routerFullStatsFromAudit(routerAudit, routerEntry);
   const portfolioFull = primaryResult.portfolioFull;
+  const experimentalConfigs = buildExperimentalRouterConfigs(validation.aggregates, routerAudit);
+  const expStats = experimentalRouterStats(baseInput, validation.selectedWindows, experimentalConfigs);
+  const allRouterStats = [routerFull, ...expStats];
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
     configuredWindowBars: effectiveWindowBars,
@@ -1038,6 +1214,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     summaryTable(portfolios),
     "",
     ...routerVsStaticSection(staticFull, routerFull, portfolioFull),
+    ...routerConfigComparisonSection(allRouterStats, staticFull, portfolioFull, experimentalConfigs),
     ...regimePuritySection(validation.selectedWindows, minPurityPct),
     ...validationConfigComparisonSection(configResults, primaryResult.config.label),
     "### Stability Rankings",
@@ -1086,6 +1263,7 @@ async function main(): Promise<void> {
     "- Added Router vs Best Static Strategy comparison with median return, max drawdown, global profit factor, global expectancy, trade count, and no-trade windows. Router verdict is VALIDATED only if it beats best-static-by-avg-return, best-static-by-ret/DD, equal-weight, and regime-weight simultaneously.",
     "- Added regime-window purity diagnostics reporting min, median, and avg dominantRegimePct overall and per regime.",
     "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
+    "- Added Router Configuration Comparison: five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates.",
     "",
     "## Strategy Analytics",
     "",
