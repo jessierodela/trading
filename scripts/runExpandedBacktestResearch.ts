@@ -18,6 +18,7 @@ import {
   type AggregatedRegimeMetrics,
   type RegimeCandidateWindow,
   type RegimeValidationOptions,
+  type RegimeValidationResult,
   type RegimeValidationSource,
 } from "@/lib/backtest/regimeValidation";
 import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics, SimulatedTrade } from "@/lib/backtest/types";
@@ -136,6 +137,31 @@ const PORTFOLIO_REGIME_WEIGHTS: NonNullable<PortfolioBacktestConfig["regimeWeigh
   NEWS_SHOCK: { momentum_continuation: 1 },
   CHOP: { momentum_continuation: 0.5, mean_reversion_bounce: 0.5 },
 };
+
+interface RunConfig {
+  label: string;
+  windowBars: number;
+  minDominantRegimePct: number;
+}
+
+interface ConfigRunResult {
+  config: RunConfig;
+  validation: RegimeValidationResult;
+  totalWindows: number;
+  windowsByRegime: Record<RegimeLabel, number>;
+  purity: RegimePurityStats;
+  staticFull: FullStats[];
+  routerFull: FullStats;
+  routerAudit: RouterMetricAudit;
+  portfolioFull: FullStats[];
+}
+
+const RUN_CONFIGS: RunConfig[] = [
+  { label: "144b/50%", windowBars: 144, minDominantRegimePct: 50 },
+  { label: "144b/65%", windowBars: 144, minDominantRegimePct: 65 },
+  { label: "336b/50%", windowBars: 336, minDominantRegimePct: 50 },
+  { label: "336b/65%", windowBars: 336, minDominantRegimePct: 65 },
+];
 
 function parseInstruments(): InstrumentArg[] {
   const symbols = (process.env.SYMBOLS ?? "BTC-USD")
@@ -494,6 +520,57 @@ function portfolioComparisonStats(base: BacktestInput, windows: RegimeCandidateW
   });
 }
 
+function routerBeatsAll(routerFull: FullStats, staticFull: FullStats[], portfolioFull: FullStats[]): boolean {
+  const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
+  const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
+  const equalWeight = portfolioFull.find((p) => p.label === "equal_weight");
+  const regimeWeight = portfolioFull.find((p) => p.label === "regime_weight");
+  const routerReturn = routerFull.avgReturn ?? Number.NEGATIVE_INFINITY;
+  const routerRtDD = routerFull.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY;
+  return (
+    routerReturn > (bestByReturn?.avgReturn ?? Number.NEGATIVE_INFINITY) &&
+    routerRtDD > (bestByRtDD?.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) &&
+    routerReturn > (equalWeight?.avgReturn ?? Number.NEGATIVE_INFINITY) &&
+    routerReturn > (regimeWeight?.avgReturn ?? Number.NEGATIVE_INFINITY)
+  );
+}
+
+function runConfigSummary(
+  baseInput: BacktestInput,
+  baseOptions: Omit<RegimeValidationOptions, "windowBars" | "minDominantRegimePct">,
+  config: RunConfig,
+): ConfigRunResult {
+  const validation = runRegimeValidation({
+    ...baseOptions,
+    windowBars: config.windowBars,
+    minDominantRegimePct: config.minDominantRegimePct,
+  });
+  const { selectedWindows } = validation;
+  const staticFull = staticStrategyFullStats(baseInput, selectedWindows);
+  const audit = routerMetricAudit(baseInput, selectedWindows);
+  const rtdds = audit.rows
+    .map((r) => r.maxDrawdownPct === 0 ? null : r.returnPct / r.maxDrawdownPct)
+    .filter((v): v is number => v !== null);
+  const syntheticEntry: RoutingSummary = {
+    label: DEFAULT_A6_REGIME_ROUTER_CONFIG.id,
+    samples: audit.windows,
+    avgReturn: audit.averageReturnPct,
+    avgDrawdown: avg(audit.rows.map((r) => r.maxDrawdownPct)),
+    avgProfitFactor: audit.reportedAverageProfitFactor,
+    avgExpectancy: audit.averageExpectancy,
+    avgTrades: avg(audit.rows.map((r) => r.tradeCount)),
+    avgExposure: avg(audit.rows.map((r) => r.exposurePct).filter((v): v is number => v !== null)),
+    avgReturnToDrawdown: avg(rtdds),
+  };
+  const routerFull = routerFullStatsFromAudit(audit, syntheticEntry);
+  const portfolioFull = portfolioComparisonStats(baseInput, selectedWindows);
+  const purity = computeRegimePurity(selectedWindows);
+  const windowsByRegime = Object.fromEntries(
+    REQUIRED_REGIMES.map((r) => [r, selectedWindows.filter((w) => w.regime === r).length]),
+  ) as Record<RegimeLabel, number>;
+  return { config, validation, totalWindows: selectedWindows.length, windowsByRegime, purity, staticFull, routerFull, routerAudit: audit, portfolioFull };
+}
+
 function computeRegimePurity(selectedWindows: RegimeCandidateWindow[]): RegimePurityStats {
   const all = selectedWindows.map((w) => w.dominantRegimePct);
   const perRegime: RegimePurityStats["perRegime"] = {};
@@ -708,6 +785,11 @@ function routerVsStaticSection(
     ["ret/DD", ...contestants.map(([, s]) => fmt(s?.avgReturnToDrawdown))],
   ];
 
+  const beats = routerBeatsAll(routerStats, staticStats, portfolioStats);
+  const verdict = beats
+    ? "Router verdict: **VALIDATED** — router beats best static by avg return, best static by ret/DD, equal-weight, and regime-weight."
+    : "Router verdict: **NOT VALIDATED** — router does not beat all four benchmarks (best static by avg return, best static by ret/DD, equal-weight, regime-weight). Do not claim A6 routing outperforms until all four are exceeded.";
+
   return [
     "### Router vs Best Static Strategy Comparison",
     "",
@@ -720,6 +802,8 @@ function routerVsStaticSection(
     "",
     `Best static by avg return: **${bestByReturn?.label ?? "n/a"}** (${fmt(bestByReturn?.avgReturn)}%)`,
     `Best static by ret/DD: **${bestByRtDD?.label ?? "n/a"}** (ret/DD = ${fmt(bestByRtDD?.avgReturnToDrawdown)})`,
+    "",
+    verdict,
     "",
   ];
 }
@@ -754,20 +838,50 @@ function regimePuritySection(selectedWindows: RegimeCandidateWindow[], minDomina
   ];
 }
 
+function validationConfigComparisonSection(results: ConfigRunResult[], primaryLabel: string): string[] {
+  const rows = results.map((result) => {
+    const { config, totalWindows, windowsByRegime, purity, staticFull, routerFull, portfolioFull } = result;
+    const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
+    const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
+    const beats = routerBeatsAll(routerFull, staticFull, portfolioFull);
+    const delta = routerFull.avgReturn !== null && bestByReturn?.avgReturn !== null
+      ? routerFull.avgReturn - bestByReturn.avgReturn
+      : null;
+    return [
+      config.label + (config.label === primaryLabel ? " ★" : ""),
+      String(totalWindows),
+      REQUIRED_REGIMES.map((r) => String(windowsByRegime[r])).join("/"),
+      fmt(purity.minDominantRegimePct),
+      fmt(purity.medianDominantRegimePct),
+      fmt(purity.avgDominantRegimePct),
+      bestByReturn?.label ?? "n/a",
+      bestByRtDD?.label ?? "n/a",
+      fmt(routerFull.avgReturn),
+      fmt(routerFull.globalProfitFactor),
+      fmt(routerFull.globalExpectancy, 4),
+      fmt(delta),
+      String(routerFull.noTradeWindows),
+      String(routerFull.tradeCount),
+      beats ? "YES" : "NO",
+    ];
+  });
+  return [
+    "### Validation Configuration Comparison",
+    "",
+    "Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct ∈ {50%, 65%}. ★ marks the primary config (most selected windows; tie-breaks: lower purity threshold, then smaller window). Regime column order: TU/TD/HV/LV/NS/CH. Router verdict is YES only if the router simultaneously beats best-static-by-avg-return, best-static-by-ret/DD, equal-weight, and regime-weight.",
+    "",
+    table(
+      ["config", "total windows", "windows TU/TD/HV/LV/NS/CH", "min purity%", "med purity%", "avg purity%", "best static (ret)", "best static (rtDD)", "router avg ret%", "router gPF", "router gExpect", "delta vs best ret%", "noTrade", "trades", "verdict"],
+      rows,
+    ),
+    "",
+  ];
+}
+
 function featureAlignedBars(bars: Bar[], features: FeatureSnapshot[]): Bar[] {
   if (features.length === 0) return [];
   const featureTs = new Set(features.map((feature) => feature.ts));
   return bars.filter((bar) => featureTs.has(bar.ts));
-}
-
-function configuredWindowBarsFor(regimeSource: RegimeValidationSource): number {
-  if (process.env.WINDOW_BARS) return Number(process.env.WINDOW_BARS);
-  return regimeSource === "ohlcv_proxy" ? DEFAULT_PROXY_WINDOW_BARS : 24 * 14;
-}
-
-function effectiveWindowBarsFor(regimeSource: RegimeValidationSource, configuredWindowBars: number): number {
-  if (regimeSource !== "ohlcv_proxy") return configuredWindowBars;
-  return Math.max(MIN_PROXY_WINDOW_BARS, configuredWindowBars);
 }
 
 function coverageCounts(windows: RegimeCandidateWindow[]): Record<RegimeLabel, number> {
@@ -848,10 +962,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     ...validationBaseConfig
   } = config;
   const requestedWindowsPerRegime = Number(process.env.WINDOWS_PER_REGIME ?? 10);
-  const configuredWindowBars = configuredWindowBarsFor(regimeSource);
-  const effectiveWindowBars = effectiveWindowBarsFor(regimeSource, configuredWindowBars);
-  const minPurityPct = regimeSourceDisplay === "gpt_a6_detector_snapshots" ? 65 : 50;
-  const validationOptions: RegimeValidationOptions = {
+  const validationBaseOptions: Omit<RegimeValidationOptions, "windowBars" | "minDominantRegimePct"> = {
     instrument,
     baseConfig: validationBaseConfig,
     bars: executableBars,
@@ -860,26 +971,35 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     regimes,
     regimeSource,
     windowsPerRegime: requestedWindowsPerRegime,
-    windowBars: effectiveWindowBars,
-    minDominantRegimePct: minPurityPct,
   };
-  const validation = runRegimeValidation(validationOptions);
+
+  const configResults = RUN_CONFIGS.map((config) => runConfigSummary(baseInput, validationBaseOptions, config));
+  const primaryResult = configResults.reduce((best, current) => {
+    if (current.totalWindows !== best.totalWindows) return current.totalWindows > best.totalWindows ? current : best;
+    if (current.config.minDominantRegimePct !== best.config.minDominantRegimePct)
+      return current.config.minDominantRegimePct < best.config.minDominantRegimePct ? current : best;
+    return current.config.windowBars < best.config.windowBars ? current : best;
+  });
+
+  const { validation } = primaryResult;
+  const minPurityPct = primaryResult.config.minDominantRegimePct;
+  const effectiveWindowBars = primaryResult.config.windowBars;
 
   const routing = routingSummaries(baseInput, validation.selectedWindows);
-  const routerAudit = routerMetricAudit(baseInput, validation.selectedWindows);
+  const routerAudit = primaryResult.routerAudit;
   const portfolios = portfolioSummaries(baseInput, validation.selectedWindows);
-  const staticFull = staticStrategyFullStats(baseInput, validation.selectedWindows);
+  const staticFull = primaryResult.staticFull;
   const routerEntry = routing.find((r) => r.label === DEFAULT_A6_REGIME_ROUTER_CONFIG.id) ?? routing[routing.length - 1];
   const routerFull = routerFullStatsFromAudit(routerAudit, routerEntry);
-  const portfolioFull = portfolioComparisonStats(baseInput, validation.selectedWindows);
+  const portfolioFull = primaryResult.portfolioFull;
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
-    configuredWindowBars,
+    configuredWindowBars: effectiveWindowBars,
     effectiveWindowBars,
     selectedWindows: validation.selectedWindows,
     aggregates: validation.aggregates,
     regimeSource,
-    clampedWindowBars: effectiveWindowBars !== configuredWindowBars,
+    clampedWindowBars: false,
   });
   const coverage = REQUIRED_REGIMES
     .map((regime) => `${regime}: ${validation.selectedWindows.filter((window) => window.regime === regime).length}`)
@@ -892,7 +1012,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     `Range: ${bounds.startTs} to ${bounds.endTs}`,
     `Rows: bars=${bars.length}, executableBars=${executableBars.length}, features=${features.length}, dailyFeatures=${dailyFeatures.length}, persistedRegimes=${persistedRegimes.length}, researchRegimes=${regimes.length}`,
     `Regime source: ${sourceDisplayLabel(regimeSourceDisplay)}`,
-    `Window bars: ${validation.selectedWindows[0]?.barCount ?? validationOptions.windowBars}`,
+    `Window bars: ${validation.selectedWindows[0]?.barCount ?? effectiveWindowBars} (primary config: ${primaryResult.config.label})`,
     `Requested windows per regime: ${requestedWindowsPerRegime}`,
     `Selected windows: ${validation.selectedWindows.length} (${coverage})`,
     sourceCaution(regimeSourceDisplay) ?? "",
@@ -919,6 +1039,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<string> {
     "",
     ...routerVsStaticSection(staticFull, routerFull, portfolioFull),
     ...regimePuritySection(validation.selectedWindows, minPurityPct),
+    ...validationConfigComparisonSection(configResults, primaryResult.config.label),
     "### Stability Rankings",
     table(
       ["regime", "strategy", "samples", "score", "returnStd", "drawdownStd", "profitFactorStd", "expectancyStd"],
@@ -962,8 +1083,9 @@ async function main(): Promise<void> {
     "- Added a Best Strategy By Regime leaderboard using multi-metric ordinal ranks.",
     "- Proxy validation uses meaningful windows by default: 144 bars preferred and 72 bars minimum. Coverage is reported honestly when fewer than the requested windows are available.",
     "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
-    "- Added Router vs Best Static Strategy comparison with median return, max drawdown, global profit factor, global expectancy, trade count, and no-trade windows.",
+    "- Added Router vs Best Static Strategy comparison with median return, max drawdown, global profit factor, global expectancy, trade count, and no-trade windows. Router verdict is VALIDATED only if it beats best-static-by-avg-return, best-static-by-ret/DD, equal-weight, and regime-weight simultaneously.",
     "- Added regime-window purity diagnostics reporting min, median, and avg dominantRegimePct overall and per regime.",
+    "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
     "",
     "## Strategy Analytics",
     "",
