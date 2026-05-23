@@ -169,18 +169,87 @@ const RUN_CONFIGS: RunConfig[] = [
   { label: "336b/65%", windowBars: 336, minDominantRegimePct: 65 },
 ];
 
-function parseInstruments(): InstrumentArg[] {
-  const symbols = (process.env.SYMBOLS ?? "BTC-USD")
+const ETF_SYMBOLS = new Set(["DIA", "IWM", "QQQ", "SPY", "VOO", "VTI"]);
+
+function parseSymbolList(raw: string): string[] {
+  return raw
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
-  const exchange = (process.env.EXCHANGE ?? "COINBASE") as Exchange;
-  return symbols.map((symbol) => ({
+}
+
+function inferAssetType(symbol: string): BacktestAssetType {
+  if (symbol.includes("-USD")) return "CRYPTO";
+  if (ETF_SYMBOLS.has(symbol.toUpperCase())) return "ETF";
+  return "EQUITY";
+}
+
+function instrumentFor(symbol: string, exchange: Exchange): InstrumentArg {
+  return {
     symbol,
     exchange,
-    assetType: (process.env.ASSET_TYPE ?? (symbol.includes("-USD") ? "CRYPTO" : "EQUITY")) as BacktestAssetType,
+    assetType: (process.env.ASSET_TYPE ?? inferAssetType(symbol)) as BacktestAssetType,
     dataSource: process.env.DATA_SOURCE ?? "postgres",
-  }));
+  };
+}
+
+function explicitSymbols(): string[] | null {
+  return process.env.SYMBOLS ? parseSymbolList(process.env.SYMBOLS) : null;
+}
+
+function isMultiAssetRun(): boolean {
+  const lifecycle = process.env.npm_lifecycle_event;
+  return lifecycle === "research:p5:multiasset" ||
+    process.env.P5_MULTI_ASSET === "1" ||
+    process.env.P5_MULTI_ASSET === "true" ||
+    process.env.MULTI_ASSET === "1" ||
+    process.env.MULTI_ASSET === "true";
+}
+
+async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
+  const pool = getPgPool();
+  const exchangeFilter = process.env.EXCHANGE?.trim();
+  const maxAssetsRaw = process.env.MAX_ASSETS;
+  const maxAssets = maxAssetsRaw ? Number(maxAssetsRaw) : null;
+  if (maxAssets !== null && (!Number.isFinite(maxAssets) || maxAssets <= 0)) {
+    throw new Error("MAX_ASSETS must be a positive number when set");
+  }
+
+  const params: unknown[] = ["1h"];
+  const exchangeClause = exchangeFilter ? "and exchange = $2" : "";
+  if (exchangeFilter) params.push(exchangeFilter);
+
+  const { rows } = await pool.query<{ symbol: string; exchange: Exchange; bar_count: string }>(
+    `select symbol, exchange, count(*)::text as bar_count
+     from market_bars
+     where timeframe = $1
+       ${exchangeClause}
+     group by symbol, exchange
+     order by count(*) desc, symbol asc, exchange asc`,
+    params,
+  );
+
+  const selectedRows = maxAssets === null ? rows : rows.slice(0, maxAssets);
+  return selectedRows.map((row) => instrumentFor(row.symbol, row.exchange));
+}
+
+async function resolveInstruments(): Promise<InstrumentArg[]> {
+  const symbols = explicitSymbols();
+  if (symbols) {
+    const exchange = (process.env.EXCHANGE ?? "COINBASE") as Exchange;
+    return symbols.map((symbol) => instrumentFor(symbol, exchange));
+  }
+
+  if (isMultiAssetRun()) {
+    const discovered = await discoverStoredInstruments();
+    console.log(
+      `[research:p5] discovered ${discovered.length} stored 1h instrument(s): ` +
+      `${discovered.map((instrument) => `${instrument.symbol}@${instrument.exchange}`).join(", ") || "none"}`,
+    );
+    return discovered;
+  }
+
+  return [instrumentFor("BTC-USD", (process.env.EXCHANGE ?? "COINBASE") as Exchange)];
 }
 
 function avg(values: number[]): number | null {
@@ -1674,7 +1743,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
 async function main(): Promise<void> {
   const sections: string[] = [];
   const summaries: AssetSummary[] = [];
-  const instruments = parseInstruments();
+  const instruments = await resolveInstruments();
   for (const instrument of instruments) {
     const result = await runInstrument(instrument);
     sections.push(result.markdown);
@@ -1715,6 +1784,7 @@ async function main(): Promise<void> {
     "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
     "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
     "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
+    "- Multi-asset research runs dynamically discover stored 1h instruments unless `SYMBOLS` is provided explicitly; single-asset research still defaults to BTC-USD.",
     "",
     "## Strategy Analytics",
     "",
