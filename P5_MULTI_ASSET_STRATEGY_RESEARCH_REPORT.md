@@ -23,7 +23,7 @@ The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_RO
 - Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.
 - Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.
 - Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.
-- Multi-asset research runs dynamically discover stored 1h instruments unless `SYMBOLS` is provided explicitly; single-asset research still defaults to BTC-USD.
+- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.
 
 ## Strategy Analytics
 

@@ -171,6 +171,16 @@ const RUN_CONFIGS: RunConfig[] = [
 
 const ETF_SYMBOLS = new Set(["DIA", "IWM", "QQQ", "SPY", "VOO", "VTI"]);
 
+interface DiscoveryRow {
+  symbol: string;
+  exchange: Exchange;
+  barCount: number;
+  featureCount: number;
+  featureCoveragePct: number;
+  regimeCount: number;
+  regimeCoveragePct: number;
+}
+
 function parseSymbolList(raw: string): string[] {
   return raw
     .split(",")
@@ -179,22 +189,30 @@ function parseSymbolList(raw: string): string[] {
 }
 
 function inferAssetType(symbol: string): BacktestAssetType {
-  if (symbol.includes("-USD")) return "CRYPTO";
-  if (ETF_SYMBOLS.has(symbol.toUpperCase())) return "ETF";
+  const normalized = symbol.trim().toUpperCase();
+  if (normalized.includes("-USD")) return "CRYPTO";
+  if (ETF_SYMBOLS.has(normalized)) return "ETF";
   return "EQUITY";
 }
 
-function instrumentFor(symbol: string, exchange: Exchange): InstrumentArg {
+function instrumentFor(symbol: string, exchange: Exchange, allowAssetTypeOverride = false): InstrumentArg {
   return {
     symbol,
     exchange,
-    assetType: (process.env.ASSET_TYPE ?? inferAssetType(symbol)) as BacktestAssetType,
+    assetType: (allowAssetTypeOverride && process.env.ASSET_TYPE
+      ? process.env.ASSET_TYPE
+      : inferAssetType(symbol)) as BacktestAssetType,
     dataSource: process.env.DATA_SOURCE ?? "postgres",
   };
 }
 
 function explicitSymbols(): string[] | null {
-  return process.env.SYMBOLS ? parseSymbolList(process.env.SYMBOLS) : null;
+  if (process.env.SYMBOLS === undefined) return null;
+  const symbols = parseSymbolList(process.env.SYMBOLS);
+  if (symbols.length === 0) {
+    throw new Error("SYMBOLS was provided but no valid symbols were parsed. Use a comma-separated list such as SYMBOLS=BTC-USD,ETH-USD.");
+  }
+  return symbols;
 }
 
 function isMultiAssetRun(): boolean {
@@ -206,30 +224,129 @@ function isMultiAssetRun(): boolean {
     process.env.MULTI_ASSET === "true";
 }
 
+function envPositiveNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`${name} must be a positive number`);
+  return parsed;
+}
+
+function envBoolean(name: string, fallback: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "y"].includes(normalized)) return true;
+  if (["0", "false", "no", "n"].includes(normalized)) return false;
+  throw new Error(`${name} must be true/false or 1/0`);
+}
+
 async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
   const pool = getPgPool();
   const exchangeFilter = process.env.EXCHANGE?.trim();
   const maxAssetsRaw = process.env.MAX_ASSETS;
+  const minAssetBars = envPositiveNumber("MIN_ASSET_BARS", 1000);
+  const minFeatureCoveragePct = envPositiveNumber("MIN_FEATURE_COVERAGE_PCT", 95);
+  const requireRegimeSnapshots = envBoolean("REQUIRE_REGIME_SNAPSHOTS", false);
   const maxAssets = maxAssetsRaw ? Number(maxAssetsRaw) : null;
   if (maxAssets !== null && (!Number.isFinite(maxAssets) || maxAssets <= 0)) {
     throw new Error("MAX_ASSETS must be a positive number when set");
   }
 
-  const params: unknown[] = ["1h"];
-  const exchangeClause = exchangeFilter ? "and exchange = $2" : "";
+  const params: unknown[] = ["1h", FEATURE_VERSION];
+  const exchangeClause = exchangeFilter ? "and b.exchange = $3" : "";
   if (exchangeFilter) params.push(exchangeFilter);
 
-  const { rows } = await pool.query<{ symbol: string; exchange: Exchange; bar_count: string }>(
-    `select symbol, exchange, count(*)::text as bar_count
-     from market_bars
-     where timeframe = $1
-       ${exchangeClause}
-     group by symbol, exchange
-     order by count(*) desc, symbol asc, exchange asc`,
+  const { rows } = await pool.query<{
+    symbol: string;
+    exchange: Exchange;
+    bar_count: string;
+    feature_count: string;
+    regime_count: string;
+  }>(
+    `with bar_counts as (
+       select b.symbol, b.exchange, count(*)::text as bar_count
+       from market_bars b
+       where b.timeframe = $1
+         ${exchangeClause}
+       group by b.symbol, b.exchange
+     ),
+     feature_counts as (
+       select b.symbol, b.exchange, count(distinct b.ts)::text as feature_count
+       from market_bars b
+       join feature_snapshots f
+         on f.symbol = b.symbol
+        and f.exchange = b.exchange
+        and f.timeframe = b.timeframe
+        and f.ts = b.ts
+        and f.feature_version = $2
+       where b.timeframe = $1
+         ${exchangeClause}
+       group by b.symbol, b.exchange
+     ),
+     regime_counts as (
+       select b.symbol, b.exchange, count(distinct b.ts)::text as regime_count
+       from market_bars b
+       join regime_snapshots r
+         on r.symbol = b.symbol
+        and r.exchange = b.exchange
+        and r.ts = b.ts
+        and (r.feature_version is null or r.feature_version = $2)
+       where b.timeframe = $1
+         ${exchangeClause}
+       group by b.symbol, b.exchange
+     )
+     select
+       b.symbol,
+       b.exchange,
+       b.bar_count,
+       coalesce(f.feature_count, '0') as feature_count,
+       coalesce(r.regime_count, '0') as regime_count
+     from bar_counts b
+     left join feature_counts f on f.symbol = b.symbol and f.exchange = b.exchange
+     left join regime_counts r on r.symbol = b.symbol and r.exchange = b.exchange
+     order by b.bar_count::int desc, b.symbol asc, b.exchange asc`,
     params,
   );
 
-  const selectedRows = maxAssets === null ? rows : rows.slice(0, maxAssets);
+  const diagnostics: DiscoveryRow[] = rows.map((row) => {
+    const barCount = Number(row.bar_count);
+    const featureCount = Number(row.feature_count);
+    const regimeCount = Number(row.regime_count);
+    return {
+      symbol: row.symbol,
+      exchange: row.exchange,
+      barCount,
+      featureCount,
+      featureCoveragePct: barCount === 0 ? 0 : featureCount / barCount * 100,
+      regimeCount,
+      regimeCoveragePct: barCount === 0 ? 0 : regimeCount / barCount * 100,
+    };
+  });
+  const readyRows = diagnostics.filter((row) =>
+    row.barCount >= minAssetBars &&
+    row.featureCoveragePct >= minFeatureCoveragePct &&
+    (!requireRegimeSnapshots || row.regimeCoveragePct >= minFeatureCoveragePct),
+  );
+  const selectedRows = maxAssets === null ? readyRows : readyRows.slice(0, maxAssets);
+
+  console.log(
+    `[research:p5] discovery filters: MIN_ASSET_BARS=${minAssetBars}, ` +
+    `MIN_FEATURE_COVERAGE_PCT=${minFeatureCoveragePct}, REQUIRE_REGIME_SNAPSHOTS=${requireRegimeSnapshots}`,
+  );
+  console.log(
+    `[research:p5] discovery candidates: ${diagnostics.map((row) =>
+      `${row.symbol}@${row.exchange} bars=${row.barCount} features=${row.featureCount} ` +
+      `featureCoverage=${row.featureCoveragePct.toFixed(2)}% regimes=${row.regimeCount}`,
+    ).join("; ") || "none"}`,
+  );
+  console.log(
+    `[research:p5] discovery selected: ${selectedRows.map((row) =>
+      `${row.symbol}@${row.exchange} bars=${row.barCount} features=${row.featureCount} ` +
+      `featureCoverage=${row.featureCoveragePct.toFixed(2)}% regimes=${row.regimeCount}`,
+    ).join("; ") || "none"}`,
+  );
+
   return selectedRows.map((row) => instrumentFor(row.symbol, row.exchange));
 }
 
@@ -237,10 +354,16 @@ async function resolveInstruments(): Promise<InstrumentArg[]> {
   const symbols = explicitSymbols();
   if (symbols) {
     const exchange = (process.env.EXCHANGE ?? "COINBASE") as Exchange;
-    return symbols.map((symbol) => instrumentFor(symbol, exchange));
+    if (process.env.ASSET_TYPE && symbols.length > 1) {
+      console.log("[research:p5] ignoring ASSET_TYPE override because SYMBOLS contains multiple symbols; asset types will be inferred per symbol.");
+    }
+    return symbols.map((symbol) => instrumentFor(symbol, exchange, symbols.length === 1));
   }
 
   if (isMultiAssetRun()) {
+    if (process.env.ASSET_TYPE) {
+      console.log("[research:p5] ignoring ASSET_TYPE override during dynamic multi-asset discovery; asset types will be inferred per symbol.");
+    }
     const discovered = await discoverStoredInstruments();
     console.log(
       `[research:p5] discovered ${discovered.length} stored 1h instrument(s): ` +
@@ -1784,7 +1907,7 @@ async function main(): Promise<void> {
     "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
     "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
     "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
-    "- Multi-asset research runs dynamically discover stored 1h instruments unless `SYMBOLS` is provided explicitly; single-asset research still defaults to BTC-USD.",
+    "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "",
     "## Strategy Analytics",
     "",
