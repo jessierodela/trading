@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { Pulse } from "@/components/ui/Pulse";
-import { RefreshButton } from "@/components/dashboard/RefreshButton";
 
 const ASSETS = [
   { label: "S&P 500", symbol: "^GSPC",  type: "stock"  },
@@ -10,8 +9,6 @@ const ASSETS = [
   { label: "BTC",     symbol: "BTC",    type: "crypto" },
   { label: "VIX",     symbol: "^VIX",   type: "stock"  },
 ] as const;
-
-
 
 interface TickerState {
   label: string;
@@ -28,10 +25,9 @@ const EMPTY: TickerState[] = ASSETS.map((a) => ({
 }));
 
 export function Header() {
-  const [time, setTime] = useState("");
+  const [time, setTime]       = useState("");
   const [tickers, setTickers] = useState<TickerState[]>(EMPTY);
 
-  // Clock — Central Time
   useEffect(() => {
     const tick = () => {
       setTime(
@@ -46,7 +42,6 @@ export function Header() {
     return () => clearInterval(id);
   }, []);
 
-  // Market data — hits /api/quotes (server-side, safe to use yahoo-finance2)
   useEffect(() => {
     let cancelled = false;
 
@@ -66,7 +61,7 @@ export function Header() {
           })
         );
       } catch {
-        // leave previous values intact on error
+        // keep previous values on error
       }
     };
 
@@ -85,15 +80,18 @@ export function Header() {
       <div className="flex items-center gap-3">
         <Pulse />
         <span className="text-[13px] font-semibold tracking-[.18em] text-[var(--color-text-primary)]">
-          TRADING
+          MARKET INTELLIGENCE
         </span>
         <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.15em] border-l border-[var(--color-border-default)] pl-3">
-          AGENT DASHBOARD
+          RESEARCH CONSOLE
         </span>
       </div>
 
-      {/* Market tickers */}
-      <div className="flex gap-6 items-center">
+      {/* Data context tickers */}
+      <div className="hidden md:flex items-center gap-5">
+        <span className="text-[8px] text-[var(--color-text-dim)] tracking-[.14em] border-r border-[var(--color-border-default)] pr-5">
+          DATA CONTEXT
+        </span>
         {tickers.map((t) => (
           <div key={t.label} className="flex gap-2 items-baseline">
             <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">{t.label}</span>
@@ -104,13 +102,26 @@ export function Header() {
           </div>
         ))}
       </div>
-        
-      <RefreshButton />
 
-      {/* Clock */}
-      <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">
-        {time}
-      </span>
+      {/* Mode indicators + clock */}
+      <div className="flex items-center gap-4">
+        <div className="hidden sm:flex items-center gap-3">
+          <span className="flex items-center gap-[5px]">
+            <span className="w-[5px] h-[5px] rounded-full bg-[var(--color-accent-blue)] opacity-80" />
+            <span className="text-[8px] text-[var(--color-text-dim)] tracking-[.12em]">RESEARCH MODE</span>
+          </span>
+          <span className="text-[var(--color-border-default)]">·</span>
+          <span className="flex items-center gap-[5px]">
+            <span className="w-[5px] h-[5px] rounded-full bg-[var(--color-accent-red)] animate-pulse-amber" />
+            <span className="text-[8px] text-[var(--color-text-dim)] tracking-[.12em]">EXECUTION DISABLED</span>
+          </span>
+        </div>
+
+        <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em] border-l border-[var(--color-border-default)] pl-4">
+          {time}
+        </span>
+      </div>
+
     </header>
   );
 }
