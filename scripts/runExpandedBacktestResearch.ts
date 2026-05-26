@@ -179,6 +179,28 @@ interface DiscoveryRow {
   featureCoveragePct: number;
   regimeCount: number;
   regimeCoveragePct: number;
+  exclusionReasons: string[];
+}
+
+interface DiscoveryFilters {
+  minAssetBars: number;
+  minFeatureCoveragePct: number;
+  requireRegimeSnapshots: boolean;
+  maxAssets: number | null;
+  exchange: string | null;
+}
+
+interface DiscoveryResult {
+  filters: DiscoveryFilters;
+  candidates: DiscoveryRow[];
+  selected: DiscoveryRow[];
+  excluded: DiscoveryRow[];
+}
+
+interface InstrumentResolution {
+  source: "explicit_symbols" | "dynamic_discovery" | "single_asset_default";
+  instruments: InstrumentArg[];
+  discovery: DiscoveryResult | null;
 }
 
 function parseSymbolList(raw: string): string[] {
@@ -232,6 +254,18 @@ function envPositiveNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+function envPositiveInteger(name: string, fallback: number): number {
+  const parsed = envPositiveNumber(name, fallback);
+  if (!Number.isInteger(parsed)) throw new Error(`${name} must be a positive integer`);
+  return parsed;
+}
+
+function envPercentage(name: string, fallback: number): number {
+  const parsed = envPositiveNumber(name, fallback);
+  if (parsed > 100) throw new Error(`${name} must be greater than 0 and less than or equal to 100`);
+  return parsed;
+}
+
 function envBoolean(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -241,17 +275,14 @@ function envBoolean(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be true/false or 1/0`);
 }
 
-async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
+async function discoverStoredInstruments(): Promise<DiscoveryResult> {
   const pool = getPgPool();
   const exchangeFilter = process.env.EXCHANGE?.trim();
   const maxAssetsRaw = process.env.MAX_ASSETS;
-  const minAssetBars = envPositiveNumber("MIN_ASSET_BARS", 1000);
-  const minFeatureCoveragePct = envPositiveNumber("MIN_FEATURE_COVERAGE_PCT", 95);
+  const minAssetBars = envPositiveInteger("MIN_ASSET_BARS", 1000);
+  const minFeatureCoveragePct = envPercentage("MIN_FEATURE_COVERAGE_PCT", 95);
   const requireRegimeSnapshots = envBoolean("REQUIRE_REGIME_SNAPSHOTS", false);
-  const maxAssets = maxAssetsRaw ? Number(maxAssetsRaw) : null;
-  if (maxAssets !== null && (!Number.isFinite(maxAssets) || maxAssets <= 0)) {
-    throw new Error("MAX_ASSETS must be a positive number when set");
-  }
+  const maxAssets = maxAssetsRaw ? envPositiveInteger("MAX_ASSETS", 1) : null;
 
   const params: unknown[] = ["1h", FEATURE_VERSION];
   const exchangeClause = exchangeFilter ? "and b.exchange = $3" : "";
@@ -309,26 +340,46 @@ async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
     params,
   );
 
+  const filters: DiscoveryFilters = {
+    minAssetBars,
+    minFeatureCoveragePct,
+    requireRegimeSnapshots,
+    maxAssets,
+    exchange: exchangeFilter || null,
+  };
   const diagnostics: DiscoveryRow[] = rows.map((row) => {
     const barCount = Number(row.bar_count);
     const featureCount = Number(row.feature_count);
     const regimeCount = Number(row.regime_count);
+    const featureCoveragePct = barCount === 0 ? 0 : featureCount / barCount * 100;
+    const regimeCoveragePct = barCount === 0 ? 0 : regimeCount / barCount * 100;
+    const exclusionReasons: string[] = [];
+    if (barCount < minAssetBars) exclusionReasons.push(`bars ${barCount} < ${minAssetBars}`);
+    if (featureCoveragePct < minFeatureCoveragePct) {
+      exclusionReasons.push(`feature coverage ${featureCoveragePct.toFixed(2)}% < ${minFeatureCoveragePct}%`);
+    }
+    if (requireRegimeSnapshots && regimeCoveragePct < minFeatureCoveragePct) {
+      exclusionReasons.push(`regime coverage ${regimeCoveragePct.toFixed(2)}% < ${minFeatureCoveragePct}%`);
+    }
     return {
       symbol: row.symbol,
       exchange: row.exchange,
       barCount,
       featureCount,
-      featureCoveragePct: barCount === 0 ? 0 : featureCount / barCount * 100,
+      featureCoveragePct,
       regimeCount,
-      regimeCoveragePct: barCount === 0 ? 0 : regimeCount / barCount * 100,
+      regimeCoveragePct,
+      exclusionReasons,
     };
   });
-  const readyRows = diagnostics.filter((row) =>
-    row.barCount >= minAssetBars &&
-    row.featureCoveragePct >= minFeatureCoveragePct &&
-    (!requireRegimeSnapshots || row.regimeCoveragePct >= minFeatureCoveragePct),
-  );
+  const readyRows = diagnostics.filter((row) => row.exclusionReasons.length === 0);
   const selectedRows = maxAssets === null ? readyRows : readyRows.slice(0, maxAssets);
+  const selectedKeys = new Set(selectedRows.map((row) => `${row.symbol}:${row.exchange}`));
+  const excludedRows = diagnostics
+    .filter((row) => row.exclusionReasons.length > 0)
+    .concat(readyRows
+      .filter((row) => !selectedKeys.has(`${row.symbol}:${row.exchange}`))
+      .map((row) => ({ ...row, exclusionReasons: [`MAX_ASSETS cap (${maxAssets})`] })));
 
   console.log(
     `[research:p5] discovery filters: MIN_ASSET_BARS=${minAssetBars}, ` +
@@ -347,32 +398,41 @@ async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
     ).join("; ") || "none"}`,
   );
 
-  return selectedRows.map((row) => instrumentFor(row.symbol, row.exchange));
+  return { filters, candidates: diagnostics, selected: selectedRows, excluded: excludedRows };
 }
 
-async function resolveInstruments(): Promise<InstrumentArg[]> {
+async function resolveInstruments(): Promise<InstrumentResolution> {
   const symbols = explicitSymbols();
   if (symbols) {
     const exchange = (process.env.EXCHANGE ?? "COINBASE") as Exchange;
     if (process.env.ASSET_TYPE && symbols.length > 1) {
       console.log("[research:p5] ignoring ASSET_TYPE override because SYMBOLS contains multiple symbols; asset types will be inferred per symbol.");
     }
-    return symbols.map((symbol) => instrumentFor(symbol, exchange, symbols.length === 1));
+    return {
+      source: "explicit_symbols",
+      instruments: symbols.map((symbol) => instrumentFor(symbol, exchange, symbols.length === 1)),
+      discovery: null,
+    };
   }
 
   if (isMultiAssetRun()) {
     if (process.env.ASSET_TYPE) {
       console.log("[research:p5] ignoring ASSET_TYPE override during dynamic multi-asset discovery; asset types will be inferred per symbol.");
     }
-    const discovered = await discoverStoredInstruments();
+    const discovery = await discoverStoredInstruments();
+    const discovered = discovery.selected.map((row) => instrumentFor(row.symbol, row.exchange));
     console.log(
       `[research:p5] discovered ${discovered.length} stored 1h instrument(s): ` +
       `${discovered.map((instrument) => `${instrument.symbol}@${instrument.exchange}`).join(", ") || "none"}`,
     );
-    return discovered;
+    return { source: "dynamic_discovery", instruments: discovered, discovery };
   }
 
-  return [instrumentFor("BTC-USD", (process.env.EXCHANGE ?? "COINBASE") as Exchange)];
+  return {
+    source: "single_asset_default",
+    instruments: [instrumentFor("BTC-USD", (process.env.EXCHANGE ?? "COINBASE") as Exchange)],
+    discovery: null,
+  };
 }
 
 function avg(values: number[]): number | null {
@@ -802,6 +862,74 @@ function table(headers: string[], rows: string[][]): string {
     `| ${headers.map(() => "---").join(" |")} |`,
     ...rows.map((row) => `| ${row.join(" |")} |`),
   ].join("\n");
+}
+
+function resolvedAssetLine(resolution: InstrumentResolution, summaries: AssetSummary[]): string {
+  const analyzed = summaries.map((summary) => summary.symbol).join(", ") || "none";
+  if (resolution.source === "explicit_symbols") {
+    return `Assets analyzed: ${summaries.length} of ${resolution.instruments.length} requested assets (${analyzed}).`;
+  }
+  if (resolution.source === "dynamic_discovery") {
+    return `Assets analyzed: ${summaries.length} of ${resolution.instruments.length} selected/discovered assets (${analyzed}).`;
+  }
+  return `Assets analyzed: ${summaries.length} of ${resolution.instruments.length} resolved default assets (${analyzed}).`;
+}
+
+function discoveryReadinessSection(discovery: DiscoveryResult | null): string[] {
+  if (!discovery) return [];
+  const { filters, selected, excluded } = discovery;
+  return [
+    "## Discovery Readiness Diagnostics",
+    "",
+    "Dynamic discovery includes only stored 1h instruments that pass the readiness filters below. Persisted regime snapshots are counted for visibility but are optional unless `REQUIRE_REGIME_SNAPSHOTS=true`, because OHLCV fallback labels can still support research runs.",
+    "",
+    table(
+      ["filter", "value"],
+      [
+        ["MIN_ASSET_BARS", String(filters.minAssetBars)],
+        ["MIN_FEATURE_COVERAGE_PCT", fmt(filters.minFeatureCoveragePct)],
+        ["REQUIRE_REGIME_SNAPSHOTS", String(filters.requireRegimeSnapshots)],
+        ["MAX_ASSETS", filters.maxAssets === null ? "none" : String(filters.maxAssets)],
+        ["EXCHANGE", filters.exchange ?? "any"],
+      ],
+    ),
+    "",
+    "Selected assets:",
+    "",
+    table(
+      ["asset", "exchange", "bars", "features", "featureCoverage", "regimes", "regimeCoverage"],
+      selected.length > 0
+        ? selected.map((row) => [
+            row.symbol,
+            row.exchange,
+            String(row.barCount),
+            String(row.featureCount),
+            `${fmt(row.featureCoveragePct)}%`,
+            String(row.regimeCount),
+            `${fmt(row.regimeCoveragePct)}%`,
+          ])
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"]],
+    ),
+    "",
+    "Excluded assets:",
+    "",
+    table(
+      ["asset", "exchange", "bars", "features", "featureCoverage", "regimes", "regimeCoverage", "reason"],
+      excluded.length > 0
+        ? excluded.map((row) => [
+            row.symbol,
+            row.exchange,
+            String(row.barCount),
+            String(row.featureCount),
+            `${fmt(row.featureCoveragePct)}%`,
+            String(row.regimeCount),
+            `${fmt(row.regimeCoveragePct)}%`,
+            row.exclusionReasons.join("; "),
+          ])
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "none"]],
+    ),
+    "",
+  ];
 }
 
 function aggregateTable(aggregates: AggregatedRegimeMetrics[]): string {
@@ -1866,7 +1994,8 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
 async function main(): Promise<void> {
   const sections: string[] = [];
   const summaries: AssetSummary[] = [];
-  const instruments = await resolveInstruments();
+  const resolution = await resolveInstruments();
+  const { instruments } = resolution;
   for (const instrument of instruments) {
     const result = await runInstrument(instrument);
     sections.push(result.markdown);
@@ -1886,7 +2015,7 @@ async function main(): Promise<void> {
     "",
     "Generated by `scripts/runExpandedBacktestResearch.ts` (`npm run research:p5:multiasset`).",
     "",
-    `Assets analyzed: ${summaries.length} of ${instruments.length} requested (${summaries.map((s) => s.symbol).join(", ") || "none"}).`,
+    resolvedAssetLine(resolution, summaries),
     "The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_ROUTING_REPORT.md`.",
     "",
     "## Implementation Summary",
@@ -1908,6 +2037,7 @@ async function main(): Promise<void> {
     "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
     "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
+    "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
     "",
     "## Strategy Analytics",
     "",
@@ -1941,6 +2071,7 @@ async function main(): Promise<void> {
     "- Statistical confidence depends on available persisted bars, features, and A6 regime snapshots. Proxy mode improves coverage but is not a substitute for persisted A6 labels.",
     "- staticStrategyFullStats and portfolioComparisonStats re-run backtests independently of routingSummaries and portfolioSummaries; this is intentional to keep the comparison section isolated but doubles computation.",
     "",
+    ...discoveryReadinessSection(resolution.discovery),
     ...crossAssetSections,
     "## Per-Asset Detail",
     "",
