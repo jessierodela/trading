@@ -23,7 +23,7 @@ export function DataHealthPanel() {
             Data Health
           </p>
           <p className="text-[11px] text-[var(--color-text-muted)]">
-            Infrastructure reliability and data readiness. Values marked "—" are pending live wiring.
+            Infrastructure reliability and data readiness. Values marked &ldquo;—&rdquo; are pending live wiring.
           </p>
         </div>
       </div>
