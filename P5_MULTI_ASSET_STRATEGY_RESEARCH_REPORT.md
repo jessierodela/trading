@@ -23,6 +23,7 @@ The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_RO
 - Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.
 - Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.
 - Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.
+- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.
 - Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.
 - TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.
 
@@ -86,6 +87,18 @@ Excluded assets:
 | --- |--- |--- |--- |--- |--- |--- |--- |
 | none |n/a |n/a |n/a |n/a |n/a |n/a |none |
 
+## Skipped Assets
+
+Equity/ETF watchlist assets are listed here when they are not part of the research-ready universe because stored 1h bars are missing.
+
+| asset |reason |
+| --- |--- |
+| SPY |No stored equity bars available |
+| QQQ |No stored equity bars available |
+| AAPL |No stored equity bars available |
+| MSFT |No stored equity bars available |
+| NVDA |No stored equity bars available |
+
 ## Multi-Asset Data Coverage
 
 Per-asset data depth and window selection at the primary config. Assets with no stored bars are reported as skipped elsewhere and omitted here.
@@ -100,7 +113,7 @@ Per-asset data depth and window selection at the primary config. Assets with no 
 
 ## Cross-Asset Opportunity Ranking
 
-Every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.
+IN-SAMPLE HYPOTHESIS DISCOVERY ONLY: every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe, but it is not validated edge. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.
 
 | # |asset |regime |strategy |samples |med purity% |avg ret% |global PF |global expectancy ($) |max DD% |ret/DD |trades |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
@@ -134,6 +147,82 @@ Every asset/regime/strategy combination with at least one trade, ranked by globa
 | 28 |ETH-USD |NEWS_SHOCK |breakout_expansion |10 |57.99 |0.07 |1.09 |2.8103 |1.18 |0.25 |25 |
 | 29 |LINK-USD |TREND_UP |trend_pullback |10 |68.06 |0.08 |1.09 |2.7875 |2.05 |0.51 |28 |
 | 30 |AVAX-USD |NEWS_SHOCK |mean_reversion_bounce |10 |66.32 |0.02 |1.03 |0.9467 |1.77 |1.80 |16 |
+
+## Cross-Asset Opportunity Walk-Forward Validation
+
+OUT-OF-SAMPLE: candidates are ranked using train windows only, then the same asset/regime/strategy candidate is scored on held-out test windows. Each asset uses a chronological 70/30 split by selected window start time. Candidate validation requires test avg return > 0, test global PF > 1, test global expectancy > 0, at least 5 held-out trades, and validation in every rolling fold where the cross-asset top 30 is re-derived from the train prefix. Rows below are the top 30 train-ranked candidates.
+
+Primary split example from ETH-USD: train = 42 windows, test = 18 windows. Rolling folds available: 3.
+
+| # |asset |regime |strategy |train ret% |test ret% |train gPF |test gPF |train gExpect |test gExpect |test max DD% |train trades |test trades |folds ok |final verdict |
+| --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
+| 1 |ETH-USD |TREND_UP |mean_reversion_bounce |0.54 |0.27 |6.86 |1.86 |47.3684 |16.4479 |0.59 |8 |5 |0/3 |NEEDS MORE DATA |
+| 2 |SOL-USD |NEWS_SHOCK |mean_reversion_bounce |0.38 |-0.04 |3.64 |0.91 |37.5944 |-2.6357 |1.71 |4 |10 |1/3 |NEEDS MORE DATA |
+| 3 |SOL-USD |TREND_UP |momentum_continuation |0.97 |n/a |3.69 |n/a |37.4478 |n/a |n/a |26 |0 |2/3 |NEEDS MORE DATA |
+| 4 |LINK-USD |TREND_UP |momentum_continuation |0.72 |0.38 |2.66 |1.70 |30.9641 |18.8763 |0.88 |21 |2 |1/3 |NEEDS MORE DATA |
+| 5 |ETH-USD |TREND_UP |momentum_continuation |0.90 |0.77 |2.72 |2.59 |29.9674 |28.8735 |0.90 |21 |8 |2/3 |NEEDS MORE DATA |
+| 6 |AVAX-USD |TREND_UP |momentum_continuation |0.65 |0.35 |2.48 |2.31 |28.7783 |23.5291 |0.96 |18 |3 |0/3 |NEEDS MORE DATA |
+| 7 |LINK-USD |TREND_UP |breakout_expansion |0.80 |-2.01 |1.96 |0.31 |22.5988 |-33.5512 |2.91 |32 |6 |1/3 |NEEDS MORE DATA |
+| 8 |BTC-USD |NEWS_SHOCK |momentum_continuation |0.32 |-0.02 |2.57 |0.95 |19.9537 |-1.4965 |1.48 |8 |7 |0/3 |NOT VALIDATED |
+| 9 |AVAX-USD |HIGH_VOL |momentum_continuation |0.42 |-0.52 |1.71 |0.00 |16.6005 |-51.6257 |0.99 |23 |1 |0/3 |NEEDS MORE DATA |
+| 10 |ETH-USD |TREND_UP |trend_pullback |0.62 |0.53 |1.53 |1.84 |15.0266 |22.6447 |1.18 |29 |7 |3/3 |VALIDATED |
+| 11 |AVAX-USD |LOW_VOL |mean_reversion_bounce |0.45 |-0.99 |1.50 |0.42 |14.9485 |-26.4528 |3.07 |6 |30 |0/3 |NOT VALIDATED |
+| 12 |AVAX-USD |NEWS_SHOCK |mean_reversion_bounce |0.21 |-1.77 |1.52 |0.00 |14.7801 |-58.9977 |1.77 |13 |3 |1/3 |NEEDS MORE DATA |
+| 13 |BTC-USD |TREND_UP |momentum_continuation |0.33 |0.93 |1.72 |3.31 |14.4734 |31.1471 |1.27 |18 |6 |2/3 |NEEDS MORE DATA |
+| 14 |SOL-USD |TREND_UP |trend_pullback |0.45 |n/a |1.52 |n/a |14.0070 |n/a |n/a |32 |0 |2/3 |NEEDS MORE DATA |
+| 15 |ETH-USD |NEWS_SHOCK |trend_pullback |0.23 |-0.56 |1.52 |0.34 |13.2317 |-28.0775 |1.35 |12 |6 |1/3 |NEEDS MORE DATA |
+| 16 |AVAX-USD |TREND_UP |mean_reversion_bounce |0.20 |-0.41 |1.46 |0.53 |13.1448 |-20.4192 |2.13 |12 |4 |0/3 |NEEDS MORE DATA |
+| 17 |AVAX-USD |LOW_VOL |momentum_continuation |0.32 |-0.45 |1.53 |0.61 |12.9037 |-14.5068 |2.23 |5 |25 |0/3 |NOT VALIDATED |
+| 18 |BTC-USD |LOW_VOL |momentum_continuation |0.27 |1.53 |1.47 |14.06 |12.1316 |50.8534 |0.87 |20 |3 |0/3 |NEEDS MORE DATA |
+| 19 |LINK-USD |LOW_VOL |trend_pullback |0.39 |-0.61 |1.37 |0.61 |11.7170 |-16.4614 |2.58 |10 |26 |0/3 |NOT VALIDATED |
+| 20 |ETH-USD |HIGH_VOL |momentum_continuation |0.25 |-1.12 |1.41 |0.16 |10.5964 |-37.4702 |1.87 |19 |6 |1/3 |NEEDS MORE DATA |
+| 21 |ETH-USD |NEWS_SHOCK |breakout_expansion |0.26 |-0.36 |1.39 |0.63 |10.5291 |-13.5921 |0.91 |17 |8 |1/3 |NEEDS MORE DATA |
+| 22 |AVAX-USD |LOW_VOL |breakout_expansion |0.56 |-0.94 |1.36 |0.47 |10.2277 |-22.0634 |3.10 |11 |34 |0/3 |NOT VALIDATED |
+| 23 |LINK-USD |NEWS_SHOCK |mean_reversion_bounce |0.12 |0.63 |1.39 |n/a |9.3922 |93.9003 |0.33 |9 |2 |0/3 |NEEDS MORE DATA |
+| 24 |SOL-USD |HIGH_VOL |momentum_continuation |0.19 |-0.16 |1.34 |0.69 |8.5143 |-8.1931 |0.75 |20 |2 |0/3 |NEEDS MORE DATA |
+| 25 |AVAX-USD |HIGH_VOL |breakout_expansion |0.26 |-1.13 |1.28 |0.00 |7.8292 |-56.5268 |1.84 |30 |2 |0/3 |NEEDS MORE DATA |
+| 26 |LINK-USD |LOW_VOL |momentum_continuation |0.29 |-0.57 |1.26 |0.57 |7.2981 |-15.9833 |2.42 |12 |25 |0/3 |NOT VALIDATED |
+| 27 |BTC-USD |TREND_UP |mean_reversion_bounce |0.04 |0.07 |1.22 |1.22 |5.9257 |7.2198 |1.02 |5 |2 |0/3 |NEEDS MORE DATA |
+| 28 |BTC-USD |TREND_UP |breakout_expansion |0.13 |0.21 |1.20 |1.27 |5.3151 |7.0153 |1.68 |19 |6 |1/3 |NEEDS MORE DATA |
+| 29 |AVAX-USD |HIGH_VOL |mean_reversion_bounce |0.20 |-0.10 |1.15 |0.00 |5.0290 |-10.2315 |0.94 |35 |1 |0/3 |NEEDS MORE DATA |
+| 30 |LINK-USD |HIGH_VOL |mean_reversion_bounce |0.10 |-0.16 |1.17 |0.00 |4.8310 |-16.1630 |1.13 |19 |1 |0/3 |NEEDS MORE DATA |
+
+## Cross-Asset Validated Candidate Summary
+
+This summary is intentionally conservative. VALIDATED means the candidate passed the held-out 70/30 test and every rolling expanding-window fold. NEEDS MORE DATA means some out-of-sample evidence exists but the full strict standard was not met.
+
+| asset |regime |strategy |test return |test global PF |test expectancy |test max drawdown |test trades |folds validated |final verdict |
+| --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
+| ETH-USD |TREND_UP |trend_pullback |0.53 |1.84 |22.6447 |1.18 |7 |3/3 |VALIDATED |
+| BTC-USD |LOW_VOL |momentum_continuation |1.53 |14.06 |50.8534 |0.87 |3 |0/3 |NEEDS MORE DATA |
+| BTC-USD |TREND_UP |momentum_continuation |0.93 |3.31 |31.1471 |1.27 |6 |2/3 |NEEDS MORE DATA |
+| ETH-USD |TREND_UP |momentum_continuation |0.77 |2.59 |28.8735 |0.90 |8 |2/3 |NEEDS MORE DATA |
+| LINK-USD |NEWS_SHOCK |mean_reversion_bounce |0.63 |n/a |93.9003 |0.33 |2 |0/3 |NEEDS MORE DATA |
+| LINK-USD |TREND_UP |momentum_continuation |0.38 |1.70 |18.8763 |0.88 |2 |1/3 |NEEDS MORE DATA |
+| AVAX-USD |TREND_UP |momentum_continuation |0.35 |2.31 |23.5291 |0.96 |3 |0/3 |NEEDS MORE DATA |
+| ETH-USD |TREND_UP |mean_reversion_bounce |0.27 |1.86 |16.4479 |0.59 |5 |0/3 |NEEDS MORE DATA |
+| BTC-USD |TREND_UP |breakout_expansion |0.21 |1.27 |7.0153 |1.68 |6 |1/3 |NEEDS MORE DATA |
+| BTC-USD |TREND_UP |mean_reversion_bounce |0.07 |1.22 |7.2198 |1.02 |2 |0/3 |NEEDS MORE DATA |
+| SOL-USD |NEWS_SHOCK |mean_reversion_bounce |-0.04 |0.91 |-2.6357 |1.71 |10 |1/3 |NEEDS MORE DATA |
+| AVAX-USD |HIGH_VOL |mean_reversion_bounce |-0.10 |0.00 |-10.2315 |0.94 |1 |0/3 |NEEDS MORE DATA |
+| LINK-USD |HIGH_VOL |mean_reversion_bounce |-0.16 |0.00 |-16.1630 |1.13 |1 |0/3 |NEEDS MORE DATA |
+| SOL-USD |HIGH_VOL |momentum_continuation |-0.16 |0.69 |-8.1931 |0.75 |2 |0/3 |NEEDS MORE DATA |
+| ETH-USD |NEWS_SHOCK |breakout_expansion |-0.36 |0.63 |-13.5921 |0.91 |8 |1/3 |NEEDS MORE DATA |
+| AVAX-USD |TREND_UP |mean_reversion_bounce |-0.41 |0.53 |-20.4192 |2.13 |4 |0/3 |NEEDS MORE DATA |
+| AVAX-USD |HIGH_VOL |momentum_continuation |-0.52 |0.00 |-51.6257 |0.99 |1 |0/3 |NEEDS MORE DATA |
+| ETH-USD |NEWS_SHOCK |trend_pullback |-0.56 |0.34 |-28.0775 |1.35 |6 |1/3 |NEEDS MORE DATA |
+| ETH-USD |HIGH_VOL |momentum_continuation |-1.12 |0.16 |-37.4702 |1.87 |6 |1/3 |NEEDS MORE DATA |
+| AVAX-USD |HIGH_VOL |breakout_expansion |-1.13 |0.00 |-56.5268 |1.84 |2 |0/3 |NEEDS MORE DATA |
+| AVAX-USD |NEWS_SHOCK |mean_reversion_bounce |-1.77 |0.00 |-58.9977 |1.77 |3 |1/3 |NEEDS MORE DATA |
+| LINK-USD |TREND_UP |breakout_expansion |-2.01 |0.31 |-33.5512 |2.91 |6 |1/3 |NEEDS MORE DATA |
+| SOL-USD |TREND_UP |momentum_continuation |n/a |n/a |n/a |n/a |0 |2/3 |NEEDS MORE DATA |
+| SOL-USD |TREND_UP |trend_pullback |n/a |n/a |n/a |n/a |0 |2/3 |NEEDS MORE DATA |
+| BTC-USD |NEWS_SHOCK |momentum_continuation |-0.02 |0.95 |-1.4965 |1.48 |7 |0/3 |NOT VALIDATED |
+| AVAX-USD |LOW_VOL |momentum_continuation |-0.45 |0.61 |-14.5068 |2.23 |25 |0/3 |NOT VALIDATED |
+| LINK-USD |LOW_VOL |momentum_continuation |-0.57 |0.57 |-15.9833 |2.42 |25 |0/3 |NOT VALIDATED |
+| LINK-USD |LOW_VOL |trend_pullback |-0.61 |0.61 |-16.4614 |2.58 |26 |0/3 |NOT VALIDATED |
+| AVAX-USD |LOW_VOL |breakout_expansion |-0.94 |0.47 |-22.0634 |3.10 |34 |0/3 |NOT VALIDATED |
+| AVAX-USD |LOW_VOL |mean_reversion_bounce |-0.99 |0.42 |-26.4528 |3.07 |30 |0/3 |NOT VALIDATED |
 
 ## Cross-Asset Router Validation Summary
 

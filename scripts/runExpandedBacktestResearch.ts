@@ -134,6 +134,9 @@ const MIN_PROXY_WINDOW_BARS = 72;
 const DEFAULT_PROXY_WINDOW_BARS = 144;
 const NEAR_ZERO_TRADES_PER_WINDOW = 0.25;
 const TINY_GROSS_LOSS_USD = 1;
+const CROSS_ASSET_OPPORTUNITY_TOP_N = 30;
+const MIN_OPPORTUNITY_TEST_TRADES = 5;
+const EQUITY_WATCHLIST = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"];
 
 const PORTFOLIO_REGIME_WEIGHTS: NonNullable<PortfolioBacktestConfig["regimeWeights"]> = {
   TREND_UP: { breakout_expansion: 0.6, momentum_continuation: 0.4 },
@@ -201,6 +204,37 @@ interface InstrumentResolution {
   source: "explicit_symbols" | "dynamic_discovery" | "single_asset_default";
   instruments: InstrumentArg[];
   discovery: DiscoveryResult | null;
+}
+
+interface OpportunityCandidatePeriodStats {
+  samples: number;
+  avgReturn: number | null;
+  globalProfitFactor: number | null;
+  globalExpectancy: number | null;
+  maxDrawdown: number | null;
+  tradeCount: number;
+}
+
+interface OpportunityCandidateValidation {
+  symbol: string;
+  regime: RegimeLabel;
+  strategyId: string;
+  train: OpportunityCandidatePeriodStats;
+  test: OpportunityCandidatePeriodStats;
+  testPass: boolean;
+}
+
+interface OpportunityRollingFold {
+  trainEnd: number;
+  testEnd: number;
+  candidates: OpportunityCandidateValidation[];
+}
+
+interface OpportunityWalkForwardData {
+  trainWindows: RegimeCandidateWindow[];
+  testWindows: RegimeCandidateWindow[];
+  candidates: OpportunityCandidateValidation[];
+  rollingFolds: OpportunityRollingFold[];
 }
 
 function parseSymbolList(raw: string): string[] {
@@ -465,6 +499,39 @@ async function fetchBounds(symbol: string, exchange: Exchange, timeframe: Timefr
     startTs: row.min_ts.toISOString(),
     endTs: new Date(row.max_ts.getTime() + 60 * 60 * 1000).toISOString(),
   };
+}
+
+async function skippedEquityAssetsSection(): Promise<string[]> {
+  const pool = getPgPool();
+  const { rows } = await pool.query<{ symbol: string; bar_count: string }>(
+    `select symbol, count(*)::text as bar_count
+     from market_bars
+     where timeframe = '1h' and symbol = any($1)
+     group by symbol`,
+    [EQUITY_WATCHLIST],
+  );
+  const counts = new Map(rows.map((row) => [row.symbol.toUpperCase(), Number(row.bar_count)]));
+  const skipped = EQUITY_WATCHLIST
+    .filter((symbol) => (counts.get(symbol) ?? 0) === 0)
+    .map((symbol) => [symbol, "No stored equity bars available"]);
+
+  if (skipped.length === 0) {
+    return [
+      "## Skipped Assets",
+      "",
+      "No equity watchlist assets were skipped for missing stored 1h bars.",
+      "",
+    ];
+  }
+
+  return [
+    "## Skipped Assets",
+    "",
+    "Equity/ETF watchlist assets are listed here when they are not part of the research-ready universe because stored 1h bars are missing.",
+    "",
+    table(["asset", "reason"], skipped),
+    "",
+  ];
 }
 
 async function fetchRegimes(symbol: string, exchange: Exchange, startTs: string, endTs: string): Promise<PersistedRegimeContext[]> {
@@ -1329,6 +1396,108 @@ function crossAssetRegimeStrategyStats(
   return out;
 }
 
+function opportunityCandidateKey(candidate: Pick<OpportunityCandidateValidation, "symbol" | "regime" | "strategyId">): string {
+  return `${candidate.symbol}|${candidate.regime}|${candidate.strategyId}`;
+}
+
+function opportunityPeriodStats(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+  regime: RegimeLabel,
+  strategyId: string,
+): OpportunityCandidatePeriodStats {
+  const regimeWindows = windows.filter((window) => window.regime === regime);
+  const results = regimeWindows.map((window) => runBacktest(sliceInput(base, window, strategyId)));
+  const allTrades = results.flatMap((result) => result.trades);
+  const returns = results.map((result) => result.metrics.totalReturnPct);
+  const drawdowns = results.map((result) => result.metrics.maxDrawdownPct);
+  const lossAbs = grossLossAbs(allTrades);
+  return {
+    samples: regimeWindows.length,
+    avgReturn: avg(returns),
+    globalProfitFactor: lossAbs === 0 ? null : grossProfit(allTrades) / lossAbs,
+    globalExpectancy: allTrades.length === 0 ? null : allTrades.reduce((sum, trade) => sum + trade.pnl, 0) / allTrades.length,
+    maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+    tradeCount: allTrades.length,
+  };
+}
+
+function opportunityCandidatePass(stats: OpportunityCandidatePeriodStats): boolean {
+  return (
+    stats.avgReturn !== null &&
+    stats.avgReturn > 0 &&
+    stats.globalProfitFactor !== null &&
+    stats.globalProfitFactor > 1 &&
+    stats.globalExpectancy !== null &&
+    stats.globalExpectancy > 0 &&
+    stats.tradeCount >= MIN_OPPORTUNITY_TEST_TRADES
+  );
+}
+
+function opportunityFinalVerdict(candidate: OpportunityCandidateValidation, foldsValidated: number, totalFolds: number): string {
+  if (candidate.test.samples === 0 || candidate.test.tradeCount < MIN_OPPORTUNITY_TEST_TRADES) return "NEEDS MORE DATA";
+  if (candidate.testPass && totalFolds > 0 && foldsValidated === totalFolds) return "VALIDATED";
+  if (candidate.testPass || foldsValidated > 0) return "NEEDS MORE DATA";
+  return "NOT VALIDATED";
+}
+
+function opportunityCandidatesForWindows(
+  symbol: string,
+  base: BacktestInput,
+  trainWindows: RegimeCandidateWindow[],
+  testWindows: RegimeCandidateWindow[],
+): OpportunityCandidateValidation[] {
+  const strategyIds = STRATEGY_REGISTRY.map((strategy) => strategy.id);
+  const candidates: OpportunityCandidateValidation[] = [];
+  for (const regime of REQUIRED_REGIMES) {
+    for (const strategyId of strategyIds) {
+      const train = opportunityPeriodStats(base, trainWindows, regime, strategyId);
+      const test = opportunityPeriodStats(base, testWindows, regime, strategyId);
+      candidates.push({
+        symbol,
+        regime,
+        strategyId,
+        train,
+        test,
+        testPass: opportunityCandidatePass(test),
+      });
+    }
+  }
+  return candidates;
+}
+
+function computeOpportunityWalkForward(
+  symbol: string,
+  base: BacktestInput,
+  selectedWindows: RegimeCandidateWindow[],
+): OpportunityWalkForwardData | null {
+  const sorted = [...selectedWindows].sort((a, b) => a.startTs.localeCompare(b.startTs));
+  if (sorted.length < 10) return null;
+
+  const splitIndex = Math.floor(sorted.length * 0.7);
+  const trainWindows = sorted.slice(0, splitIndex);
+  const testWindows = sorted.slice(splitIndex);
+  const candidates = opportunityCandidatesForWindows(symbol, base, trainWindows, testWindows);
+  const rollingBoundaries: Array<{ trainEnd: number; testEnd: number }> = [
+    { trainEnd: Math.floor(sorted.length * 0.4), testEnd: Math.floor(sorted.length * 0.6) },
+    { trainEnd: Math.floor(sorted.length * 0.6), testEnd: Math.floor(sorted.length * 0.8) },
+    { trainEnd: Math.floor(sorted.length * 0.8), testEnd: sorted.length },
+  ].filter((boundary) => boundary.trainEnd > 0 && boundary.testEnd > boundary.trainEnd);
+
+  const rollingFolds = rollingBoundaries.map((boundary) => ({
+    trainEnd: boundary.trainEnd,
+    testEnd: boundary.testEnd,
+    candidates: opportunityCandidatesForWindows(
+      symbol,
+      base,
+      sorted.slice(0, boundary.trainEnd),
+      sorted.slice(boundary.trainEnd, boundary.testEnd),
+    ),
+  }));
+
+  return { trainWindows, testWindows, candidates, rollingFolds };
+}
+
 function routerConfigComparisonSection(
   allRouterStats: FullStats[],
   staticFull: FullStats[],
@@ -1633,6 +1802,7 @@ interface AssetSummary {
   bestStaticByRtDD: { label: string; value: number | null };
   regimeStrategyStats: RegimeStrategyStat[];
   walkForward: WalkForwardSummary | null;
+  opportunityWalkForward: OpportunityWalkForwardData | null;
 }
 
 // Conservative final verdict combining the 70/30 test result with rolling-fold robustness.
@@ -1714,7 +1884,7 @@ function crossAssetOpportunitySection(summaries: AssetSummary[]): string[] {
   return [
     "## Cross-Asset Opportunity Ranking",
     "",
-    "Every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.",
+    "IN-SAMPLE HYPOTHESIS DISCOVERY ONLY: every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe, but it is not validated edge. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.",
     "",
     table(
       ["#", "asset", "regime", "strategy", "samples", "med purity%", "avg ret%", "global PF", "global expectancy ($)", "max DD%", "ret/DD", "trades"],
@@ -1731,6 +1901,143 @@ function crossAssetOpportunitySection(summaries: AssetSummary[]): string[] {
         fmt(r.maxDrawdown),
         fmt(r.avgReturnToDrawdown),
         String(r.tradeCount),
+      ]),
+    ),
+    "",
+  ];
+}
+
+function trainRankedOpportunityCandidates(summaries: AssetSummary[]): OpportunityCandidateValidation[] {
+  return summaries
+    .flatMap((summary) => summary.opportunityWalkForward?.candidates ?? [])
+    .filter((candidate) => candidate.train.tradeCount > 0 && candidate.train.globalExpectancy !== null)
+    .sort((a, b) => {
+      const expectancyDelta = (b.train.globalExpectancy ?? Number.NEGATIVE_INFINITY) -
+        (a.train.globalExpectancy ?? Number.NEGATIVE_INFINITY);
+      if (expectancyDelta !== 0) return expectancyDelta;
+      return (b.train.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.train.avgReturn ?? Number.NEGATIVE_INFINITY);
+    });
+}
+
+function opportunityFoldValidationCounts(summaries: AssetSummary[]): { totalFolds: number; counts: Map<string, number> } {
+  const totalFolds = Math.max(...summaries.map((summary) => summary.opportunityWalkForward?.rollingFolds.length ?? 0), 0);
+  const counts = new Map<string, number>();
+  for (let foldIndex = 0; foldIndex < totalFolds; foldIndex += 1) {
+    const foldCandidates = summaries.flatMap((summary) =>
+      summary.opportunityWalkForward?.rollingFolds[foldIndex]?.candidates ?? [],
+    );
+    const selected = foldCandidates
+      .filter((candidate) => candidate.train.tradeCount > 0 && candidate.train.globalExpectancy !== null)
+      .sort((a, b) =>
+        (b.train.globalExpectancy ?? Number.NEGATIVE_INFINITY) -
+        (a.train.globalExpectancy ?? Number.NEGATIVE_INFINITY),
+      )
+      .slice(0, CROSS_ASSET_OPPORTUNITY_TOP_N);
+    for (const candidate of selected) {
+      if (!candidate.testPass) continue;
+      const key = opportunityCandidateKey(candidate);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return { totalFolds, counts };
+}
+
+function crossAssetOpportunityWalkForwardSection(summaries: AssetSummary[]): string[] {
+  const ranked = trainRankedOpportunityCandidates(summaries).slice(0, CROSS_ASSET_OPPORTUNITY_TOP_N);
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const firstWalkForward = summaries.find((summary) => summary.opportunityWalkForward !== null)?.opportunityWalkForward;
+
+  if (ranked.length === 0 || !firstWalkForward) {
+    return [
+      "## Cross-Asset Opportunity Walk-Forward Validation",
+      "",
+      "No train-ranked asset/regime/strategy candidates produced trades, so opportunity walk-forward validation was skipped.",
+      "",
+    ];
+  }
+
+  return [
+    "## Cross-Asset Opportunity Walk-Forward Validation",
+    "",
+    `OUT-OF-SAMPLE: candidates are ranked using train windows only, then the same asset/regime/strategy candidate is scored on held-out test windows. Each asset uses a chronological 70/30 split by selected window start time. Candidate validation requires test avg return > 0, test global PF > 1, test global expectancy > 0, at least ${MIN_OPPORTUNITY_TEST_TRADES} held-out trades, and validation in every rolling fold where the cross-asset top ${CROSS_ASSET_OPPORTUNITY_TOP_N} is re-derived from the train prefix. Rows below are the top ${CROSS_ASSET_OPPORTUNITY_TOP_N} train-ranked candidates.`,
+    "",
+    `Primary split example from ${ranked[0].symbol}: train = ${firstWalkForward.trainWindows.length} windows, test = ${firstWalkForward.testWindows.length} windows. Rolling folds available: ${totalFolds}.`,
+    "",
+    table(
+      ["#", "asset", "regime", "strategy", "train ret%", "test ret%", "train gPF", "test gPF", "train gExpect", "test gExpect", "test max DD%", "train trades", "test trades", "folds ok", "final verdict"],
+      ranked.map((candidate, index) => {
+        const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+        return [
+          String(index + 1),
+          candidate.symbol,
+          candidate.regime,
+          candidate.strategyId,
+          fmt(candidate.train.avgReturn),
+          fmt(candidate.test.avgReturn),
+          fmt(candidate.train.globalProfitFactor),
+          fmt(candidate.test.globalProfitFactor),
+          fmt(candidate.train.globalExpectancy, 4),
+          fmt(candidate.test.globalExpectancy, 4),
+          fmt(candidate.test.maxDrawdown),
+          String(candidate.train.tradeCount),
+          String(candidate.test.tradeCount),
+          `${foldsValidated}/${totalFolds}`,
+          opportunityFinalVerdict(candidate, foldsValidated, totalFolds),
+        ];
+      }),
+    ),
+    "",
+  ];
+}
+
+function crossAssetValidatedCandidateSummarySection(summaries: AssetSummary[]): string[] {
+  const ranked = trainRankedOpportunityCandidates(summaries).slice(0, CROSS_ASSET_OPPORTUNITY_TOP_N);
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+
+  if (ranked.length === 0) {
+    return [
+      "## Cross-Asset Validated Candidate Summary",
+      "",
+      "No candidates had enough train-period signal to summarize.",
+      "",
+    ];
+  }
+
+  const rows = ranked
+    .map((candidate) => {
+      const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+      return {
+        candidate,
+        foldsValidated,
+        verdict: opportunityFinalVerdict(candidate, foldsValidated, totalFolds),
+      };
+    })
+    .sort((a, b) => {
+      const order = (verdict: string) => verdict === "VALIDATED" ? 0 : verdict === "NEEDS MORE DATA" ? 1 : 2;
+      const verdictDelta = order(a.verdict) - order(b.verdict);
+      if (verdictDelta !== 0) return verdictDelta;
+      return (b.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY) -
+        (a.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY);
+    });
+
+  return [
+    "## Cross-Asset Validated Candidate Summary",
+    "",
+    "This summary is intentionally conservative. VALIDATED means the candidate passed the held-out 70/30 test and every rolling expanding-window fold. NEEDS MORE DATA means some out-of-sample evidence exists but the full strict standard was not met.",
+    "",
+    table(
+      ["asset", "regime", "strategy", "test return", "test global PF", "test expectancy", "test max drawdown", "test trades", "folds validated", "final verdict"],
+      rows.map(({ candidate, foldsValidated, verdict }) => [
+        candidate.symbol,
+        candidate.regime,
+        candidate.strategyId,
+        fmt(candidate.test.avgReturn),
+        fmt(candidate.test.globalProfitFactor),
+        fmt(candidate.test.globalExpectancy, 4),
+        fmt(candidate.test.maxDrawdown),
+        String(candidate.test.tradeCount),
+        `${foldsValidated}/${totalFolds}`,
+        verdict,
       ]),
     ),
     "",
@@ -1904,6 +2211,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
   const allRouterStats = [routerFull, ...expStats];
   const walkForwardData = computeWalkForward(baseInput, validation.selectedWindows);
   const regimeStrategyStats = crossAssetRegimeStrategyStats(instrument.symbol, baseInput, validation.selectedWindows);
+  const opportunityWalkForward = computeOpportunityWalkForward(instrument.symbol, baseInput, validation.selectedWindows);
   const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
   const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
   const summary: AssetSummary = {
@@ -1919,6 +2227,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     bestStaticByRtDD: { label: bestByRtDD?.label ?? "n/a", value: bestByRtDD?.avgReturnToDrawdown ?? null },
     regimeStrategyStats,
     walkForward: summarizeWalkForward(walkForwardData),
+    opportunityWalkForward,
   };
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
@@ -1995,6 +2304,7 @@ async function main(): Promise<void> {
   const sections: string[] = [];
   const summaries: AssetSummary[] = [];
   const resolution = await resolveInstruments();
+  const skippedEquitySections = await skippedEquityAssetsSection();
   const { instruments } = resolution;
   for (const instrument of instruments) {
     const result = await runInstrument(instrument);
@@ -2006,6 +2316,8 @@ async function main(): Promise<void> {
     ? [
         ...multiAssetCoverageSection(summaries),
         ...crossAssetOpportunitySection(summaries),
+        ...crossAssetOpportunityWalkForwardSection(summaries),
+        ...crossAssetValidatedCandidateSummarySection(summaries),
         ...crossAssetRouterValidationSection(summaries),
       ]
     : ["## Multi-Asset Data Coverage", "", "No assets had sufficient stored data to analyze.", ""];
@@ -2036,6 +2348,7 @@ async function main(): Promise<void> {
     "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
     "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
     "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
+    "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
     "",
@@ -2072,6 +2385,7 @@ async function main(): Promise<void> {
     "- staticStrategyFullStats and portfolioComparisonStats re-run backtests independently of routingSummaries and portfolioSummaries; this is intentional to keep the comparison section isolated but doubles computation.",
     "",
     ...discoveryReadinessSection(resolution.discovery),
+    ...skippedEquitySections,
     ...crossAssetSections,
     "## Per-Asset Detail",
     "",
