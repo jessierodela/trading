@@ -4,6 +4,7 @@ import { getPgPool, PgBarStore, PgFeatureStore } from "@/lib/storage";
 import { closePgPool } from "@/lib/storage/clients";
 import { FEATURE_VERSION } from "@/lib/versions";
 import type { Bar, Exchange, FeatureSnapshot, RegimeContext, RegimeLabel, Timeframe } from "@/lib/quant/types";
+import { REFINED_STRATEGY_PAIRS } from "@/lib/strategies/refinement/strategyVariants";
 import { STRATEGY_REGISTRY } from "@/lib/strategies/strategyRegistry";
 import { runBacktest } from "@/lib/backtest/backtestEngine";
 import { runPortfolioBacktest, type PortfolioBacktestConfig } from "@/lib/backtest/portfolioBacktest";
@@ -740,11 +741,12 @@ function routingSummaries(base: BacktestInput, windows: RegimeCandidateWindow[])
 
 function portfolioSummaries(base: BacktestInput, windows: RegimeCandidateWindow[]): RoutingSummary[] {
   const strategyIds = STRATEGY_REGISTRY.map((strategy) => strategy.id);
+  const customWeight = strategyIds.length === 0 ? 0 : 1 / strategyIds.length;
   const equal: PortfolioBacktestConfig = { mode: "equal_weight", strategyIds };
   const custom: PortfolioBacktestConfig = {
     mode: "custom_weight",
     strategyIds,
-    weights: Object.fromEntries(strategyIds.map((strategyId) => [strategyId, 0.25])),
+    weights: Object.fromEntries(strategyIds.map((strategyId) => [strategyId, customWeight])),
   };
   const regime: PortfolioBacktestConfig = {
     mode: "regime_weight",
@@ -1800,6 +1802,7 @@ interface AssetSummary {
   avgPurity: number | null;
   bestStaticByReturn: { label: string; value: number | null };
   bestStaticByRtDD: { label: string; value: number | null };
+  strategyFullStats: FullStats[];
   regimeStrategyStats: RegimeStrategyStat[];
   walkForward: WalkForwardSummary | null;
   opportunityWalkForward: OpportunityWalkForwardData | null;
@@ -2044,6 +2047,111 @@ function crossAssetValidatedCandidateSummarySection(summaries: AssetSummary[]): 
   ];
 }
 
+function aggregateStrategyStats(summaries: AssetSummary[], strategyId: string): FullStats | null {
+  const rows = summaries
+    .map((summary) => summary.strategyFullStats.find((stats) => stats.label === strategyId))
+    .filter((stats): stats is FullStats => stats !== undefined);
+  if (rows.length === 0) return null;
+  return {
+    label: strategyId,
+    samples: rows.reduce((sum, row) => sum + row.samples, 0),
+    avgReturn: avg(rows.map((row) => row.avgReturn).filter((value): value is number => value !== null)),
+    medianReturn: avg(rows.map((row) => row.medianReturn).filter((value): value is number => value !== null)),
+    maxDrawdown: rows
+      .map((row) => row.maxDrawdown)
+      .filter((value): value is number => value !== null)
+      .reduce((max, value) => Math.max(max, value), 0),
+    avgDrawdown: avg(rows.map((row) => row.avgDrawdown).filter((value): value is number => value !== null)),
+    globalProfitFactor: avg(rows.map((row) => row.globalProfitFactor).filter((value): value is number => value !== null)),
+    avgProfitFactor: avg(rows.map((row) => row.avgProfitFactor).filter((value): value is number => value !== null)),
+    globalExpectancy: avg(rows.map((row) => row.globalExpectancy).filter((value): value is number => value !== null)),
+    avgExpectancy: avg(rows.map((row) => row.avgExpectancy).filter((value): value is number => value !== null)),
+    avgExposure: avg(rows.map((row) => row.avgExposure).filter((value): value is number => value !== null)),
+    tradeCount: rows.reduce((sum, row) => sum + row.tradeCount, 0),
+    noTradeWindows: rows.reduce((sum, row) => sum + row.noTradeWindows, 0),
+    avgReturnToDrawdown: avg(rows.map((row) => row.avgReturnToDrawdown).filter((value): value is number => value !== null)),
+  };
+}
+
+function strategyCandidateSurvival(
+  summaries: AssetSummary[],
+  strategyId: string,
+): { eligible: number; testPass: number; validated: number; needsMoreData: number; notValidated: number } {
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const candidates = summaries
+    .flatMap((summary) => summary.opportunityWalkForward?.candidates ?? [])
+    .filter((candidate) =>
+      candidate.strategyId === strategyId &&
+      candidate.train.tradeCount > 0 &&
+      candidate.train.globalExpectancy !== null,
+    );
+  const verdicts = candidates.map((candidate) => {
+    const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+    return {
+      testPass: candidate.testPass,
+      verdict: opportunityFinalVerdict(candidate, foldsValidated, totalFolds),
+    };
+  });
+  return {
+    eligible: candidates.length,
+    testPass: verdicts.filter((entry) => entry.testPass).length,
+    validated: verdicts.filter((entry) => entry.verdict === "VALIDATED").length,
+    needsMoreData: verdicts.filter((entry) => entry.verdict === "NEEDS MORE DATA").length,
+    notValidated: verdicts.filter((entry) => entry.verdict === "NOT VALIDATED").length,
+  };
+}
+
+function deltaFmt(refined: number | null | undefined, base: number | null | undefined, digits = 2): string {
+  if (typeof refined !== "number" || typeof base !== "number") return "n/a";
+  const delta = refined - base;
+  return `${delta >= 0 ? "+" : ""}${delta.toFixed(digits)}`;
+}
+
+function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[] {
+  if (summaries.length === 0) return [];
+
+  const rows = REFINED_STRATEGY_PAIRS.map((pair) => {
+    const base = aggregateStrategyStats(summaries, pair.baseStrategyId);
+    const refined = aggregateStrategyStats(summaries, pair.refinedStrategyId);
+    const baseSurvival = strategyCandidateSurvival(summaries, pair.baseStrategyId);
+    const refinedSurvival = strategyCandidateSurvival(summaries, pair.refinedStrategyId);
+    return [
+      pair.baseStrategyId,
+      pair.refinedStrategyId,
+      fmt(base?.avgReturn),
+      fmt(refined?.avgReturn),
+      deltaFmt(refined?.avgReturn, base?.avgReturn),
+      fmt(base?.globalProfitFactor),
+      fmt(refined?.globalProfitFactor),
+      deltaFmt(refined?.globalProfitFactor, base?.globalProfitFactor),
+      fmt(base?.globalExpectancy, 4),
+      fmt(refined?.globalExpectancy, 4),
+      deltaFmt(refined?.globalExpectancy, base?.globalExpectancy, 4),
+      fmt(base?.maxDrawdown),
+      fmt(refined?.maxDrawdown),
+      deltaFmt(refined?.maxDrawdown, base?.maxDrawdown),
+      String(base?.tradeCount ?? 0),
+      String(refined?.tradeCount ?? 0),
+      `${baseSurvival.validated}/${baseSurvival.eligible}`,
+      `${refinedSurvival.validated}/${refinedSurvival.eligible}`,
+      `${baseSurvival.testPass}/${baseSurvival.eligible}`,
+      `${refinedSurvival.testPass}/${refinedSurvival.eligible}`,
+    ];
+  });
+
+  return [
+    "## Strategy Refinement Candidate Comparison",
+    "",
+    "Research-only refined variants are registered beside their base strategies and evaluated as separate benchmark candidates. Aggregated metrics below average per-asset full-window strategy stats across the selected crypto universe; walk-forward survival counts use the cross-asset opportunity candidate validation rules.",
+    "",
+    table(
+      ["base", "refined", "base ret%", "refined ret%", "ret delta", "base gPF", "refined gPF", "gPF delta", "base gExpect", "refined gExpect", "expect delta", "base maxDD", "refined maxDD", "DD delta", "base trades", "refined trades", "base validated", "refined validated", "base test pass", "refined test pass"],
+      rows,
+    ),
+    "",
+  ];
+}
+
 function crossAssetRouterValidationSection(summaries: AssetSummary[]): string[] {
   return [
     "## Cross-Asset Router Validation Summary",
@@ -2225,6 +2333,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     avgPurity: primaryResult.purity.avgDominantRegimePct,
     bestStaticByReturn: { label: bestByReturn?.label ?? "n/a", value: bestByReturn?.avgReturn ?? null },
     bestStaticByRtDD: { label: bestByRtDD?.label ?? "n/a", value: bestByRtDD?.avgReturnToDrawdown ?? null },
+    strategyFullStats: staticFull,
     regimeStrategyStats,
     walkForward: summarizeWalkForward(walkForwardData),
     opportunityWalkForward,
@@ -2318,6 +2427,7 @@ async function main(): Promise<void> {
         ...crossAssetOpportunitySection(summaries),
         ...crossAssetOpportunityWalkForwardSection(summaries),
         ...crossAssetValidatedCandidateSummarySection(summaries),
+        ...strategyRefinementComparisonSection(summaries),
         ...crossAssetRouterValidationSection(summaries),
       ]
     : ["## Multi-Asset Data Coverage", "", "No assets had sufficient stored data to analyze.", ""];
@@ -2349,6 +2459,7 @@ async function main(): Promise<void> {
     "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
     "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
     "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
+    "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
     "",

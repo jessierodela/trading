@@ -3,6 +3,7 @@ import { InMemorySignalStore } from "../lib/storage";
 import { breakoutExpansion } from "../lib/strategies/breakoutExpansion";
 import { meanReversionBounce } from "../lib/strategies/meanReversionBounce";
 import { momentumContinuation } from "../lib/strategies/momentumContinuation";
+import { REFINED_STRATEGY_VARIANTS } from "../lib/strategies/refinement/strategyVariants";
 import { runStrategyWindow } from "../lib/strategies/runStrategyWindow";
 import { runStrategies, STRATEGY_REGISTRY, getStrategyById } from "../lib/strategies/strategyRegistry";
 import { trendPullback } from "../lib/strategies/trendPullback";
@@ -116,8 +117,10 @@ function assertSignalShape(prefix: string, signal: StrategySignal): void {
 
 async function testStrategies(): Promise<void> {
   console.log("\n=== strategy definitions ===");
-  assert("registry has four strategies", STRATEGY_REGISTRY.length === 4);
+  assert("registry includes base and refined strategies", STRATEGY_REGISTRY.length >= 8);
   assert("registry lookup momentum works", getStrategyById("momentum_continuation") === momentumContinuation);
+  assert("registry lookup refined momentum works", getStrategyById("momentum_continuation_refined_v1") === REFINED_STRATEGY_VARIANTS[0]);
+  assert("registry includes all refined variants", REFINED_STRATEGY_VARIANTS.every((strategy) => getStrategyById(strategy.id) === strategy));
   assert("registry lookup missing returns null", getStrategyById("missing") === null);
   assert("momentum version matches STRATEGY_VERSIONS", momentumContinuation.version === STRATEGY_VERSIONS.momentumContinuation);
   assert("trend version matches STRATEGY_VERSIONS", trendPullback.version === STRATEGY_VERSIONS.trendPullback);
