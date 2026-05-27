@@ -77,12 +77,16 @@ export const FEATURE_VERSION = "features.2026-05-20.v3";
 //                            - P5 research-only gated variants. They wrap
 //                              base strategies with regime/feature gates for
 //                              controlled out-of-sample refinement tests.
+//   strategy.momentum_continuation_refined_v1.2026-05-27.v2
+//                            - P5 8B: add short-term momentum, medium trend,
+//                              macro-not-bearish, volume-not-dead, and
+//                              TREND_DOWN survival-experiment gating.
 export const STRATEGY_VERSIONS = {
   momentumContinuation: "strategy.momentum_continuation.2026-05-21.v1",
   trendPullback: "strategy.trend_pullback.2026-05-21.v1",
   breakoutExpansion: "strategy.breakout_expansion.2026-05-21.v1",
   meanReversionBounce: "strategy.mean_reversion_bounce.2026-05-21.v1",
-  momentumContinuationRefinedV1: "strategy.momentum_continuation_refined_v1.2026-05-26.v1",
+  momentumContinuationRefinedV1: "strategy.momentum_continuation_refined_v1.2026-05-27.v2",
   breakoutExpansionRefinedV1: "strategy.breakout_expansion_refined_v1.2026-05-26.v1",
   trendPullbackRefinedV1: "strategy.trend_pullback_refined_v1.2026-05-26.v1",
   meanReversionRefinedV1: "strategy.mean_reversion_refined_v1.2026-05-26.v1",

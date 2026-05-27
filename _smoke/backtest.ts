@@ -454,7 +454,7 @@ function testResearchRoutingAndPortfolio(): void {
     }),
     previous: prevFeature(0),
     recent: [prevFeature(0), signalFeature(1)],
-    regime: regime("TREND_DOWN", 1),
+    regime: regime("NEWS_SHOCK", 1),
   });
   assert("refined momentum respects regime gates", blockedRefinedSignal === null);
 

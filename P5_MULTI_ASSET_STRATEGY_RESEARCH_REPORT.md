@@ -25,6 +25,7 @@ The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_RO
 - Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.
 - Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.
 - Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.
+- Refined momentum_continuation_refined_v1 for Priority 8B with short-term momentum confirmation, medium-trend filtering, macro-not-strongly-bearish gating, volume-not-dead filtering, overextension avoidance, and a tightly gated TREND_DOWN survival experiment.
 - Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.
 - TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.
 
@@ -118,36 +119,36 @@ IN-SAMPLE HYPOTHESIS DISCOVERY ONLY: every asset/regime/strategy combination wit
 
 | # |asset |regime |strategy |samples |med purity% |avg ret% |global PF |global expectancy ($) |max DD% |ret/DD |trades |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| 1 |SOL-USD |HIGH_VOL |momentum_continuation_refined_v1 |10 |77.08 |0.10 |n/a |96.9255 |0.24 |4.08 |1 |
-| 2 |SOL-USD |HIGH_VOL |trend_pullback_refined_v1 |10 |77.08 |0.10 |n/a |96.9000 |0.24 |4.09 |1 |
-| 3 |BTC-USD |HIGH_VOL |momentum_continuation_refined_v1 |10 |63.89 |0.10 |n/a |95.8247 |1.02 |0.94 |1 |
-| 4 |BTC-USD |HIGH_VOL |trend_pullback_refined_v1 |10 |63.89 |0.10 |n/a |95.5367 |1.10 |0.87 |1 |
-| 5 |LINK-USD |TREND_DOWN |trend_pullback_refined_v1 |10 |74.65 |0.09 |n/a |92.8150 |0.09 |10.19 |1 |
-| 6 |ETH-USD |TREND_DOWN |momentum_continuation_refined_v1 |10 |67.36 |0.09 |n/a |90.2471 |0.08 |11.06 |1 |
-| 7 |ETH-USD |TREND_DOWN |trend_pullback_refined_v1 |10 |67.36 |0.09 |n/a |86.7500 |0.04 |24.16 |1 |
-| 8 |LINK-USD |TREND_DOWN |momentum_continuation_refined_v1 |10 |74.65 |0.08 |n/a |84.0610 |0.08 |10.18 |1 |
-| 9 |SOL-USD |TREND_DOWN |trend_pullback_refined_v1 |10 |75.69 |0.07 |n/a |71.5526 |0.00 |n/a |1 |
-| 10 |ETH-USD |TREND_UP |trend_pullback_refined_v1 |10 |77.08 |0.35 |4.12 |50.1547 |1.52 |1.36 |7 |
-| 11 |ETH-USD |TREND_UP |momentum_continuation_refined_v1 |10 |77.08 |0.35 |4.15 |49.3951 |0.88 |1.59 |7 |
-| 12 |AVAX-USD |CHOP |breakout_expansion_refined_v1 |10 |58.33 |0.13 |3.33 |44.1607 |1.17 |0.89 |3 |
-| 13 |AVAX-USD |TREND_UP |momentum_continuation_refined_v1 |10 |80.56 |0.15 |3.80 |38.2194 |1.06 |0.74 |4 |
-| 14 |SOL-USD |TREND_UP |momentum_continuation |10 |78.13 |0.97 |3.69 |37.4478 |1.48 |1.40 |26 |
-| 15 |LINK-USD |TREND_UP |trend_pullback_refined_v1 |10 |68.06 |0.29 |3.18 |36.3005 |1.09 |1.25 |8 |
-| 16 |ETH-USD |TREND_UP |mean_reversion_bounce |10 |77.08 |0.46 |3.88 |35.4759 |1.02 |1.84 |13 |
-| 17 |SOL-USD |TREND_UP |trend_pullback_refined_v1 |10 |78.13 |0.42 |2.75 |35.1069 |1.22 |1.06 |12 |
-| 18 |BTC-USD |TREND_UP |mean_reversion_refined_v1 |10 |84.72 |0.07 |6.27 |33.9081 |0.75 |0.41 |2 |
-| 19 |BTC-USD |TREND_UP |trend_pullback_refined_v1 |10 |84.72 |0.34 |3.39 |33.7257 |1.26 |1.51 |10 |
-| 20 |LINK-USD |TREND_UP |momentum_continuation_refined_v1 |10 |68.06 |0.22 |3.07 |31.2532 |1.00 |1.38 |7 |
-| 21 |LINK-USD |TREND_UP |momentum_continuation |10 |68.06 |0.69 |2.54 |29.9130 |1.14 |1.41 |23 |
-| 22 |ETH-USD |TREND_UP |momentum_continuation |10 |77.08 |0.86 |2.68 |29.6656 |1.51 |2.04 |29 |
-| 23 |AVAX-USD |TREND_UP |momentum_continuation |10 |80.56 |0.59 |2.46 |28.0285 |1.54 |0.94 |21 |
-| 24 |LINK-USD |NEWS_SHOCK |mean_reversion_bounce |10 |57.64 |0.27 |2.26 |24.7573 |1.82 |2.16 |11 |
-| 25 |SOL-USD |NEWS_SHOCK |mean_reversion_refined_v1 |10 |60.07 |0.24 |2.07 |24.4487 |1.71 |4.48 |10 |
-| 26 |BTC-USD |TREND_UP |momentum_continuation_refined_v1 |10 |84.72 |0.24 |2.06 |22.0023 |1.17 |0.65 |11 |
-| 27 |AVAX-USD |NEWS_SHOCK |mean_reversion_refined_v1 |10 |66.32 |0.13 |1.83 |21.5004 |0.74 |2.51 |6 |
-| 28 |AVAX-USD |HIGH_VOL |trend_pullback_refined_v1 |10 |80.21 |0.06 |2.19 |21.2202 |0.78 |1.22 |3 |
-| 29 |ETH-USD |CHOP |trend_pullback_refined_v1 |10 |65.63 |0.04 |1.68 |18.6449 |0.65 |0.57 |2 |
-| 30 |BTC-USD |TREND_UP |momentum_continuation |10 |84.72 |0.45 |2.01 |18.6418 |1.27 |0.54 |24 |
+| 1 |SOL-USD |HIGH_VOL |trend_pullback_refined_v1 |10 |77.08 |0.10 |n/a |96.9000 |0.24 |4.09 |1 |
+| 2 |BTC-USD |HIGH_VOL |trend_pullback_refined_v1 |10 |63.89 |0.10 |n/a |95.5367 |1.10 |0.87 |1 |
+| 3 |LINK-USD |TREND_DOWN |trend_pullback_refined_v1 |10 |74.65 |0.09 |n/a |92.8150 |0.09 |10.19 |1 |
+| 4 |ETH-USD |TREND_DOWN |trend_pullback_refined_v1 |10 |67.36 |0.09 |n/a |86.7500 |0.04 |24.16 |1 |
+| 5 |SOL-USD |TREND_DOWN |trend_pullback_refined_v1 |10 |75.69 |0.07 |n/a |71.5526 |0.00 |n/a |1 |
+| 6 |ETH-USD |TREND_UP |trend_pullback_refined_v1 |10 |77.08 |0.35 |4.12 |50.1547 |1.52 |1.36 |7 |
+| 7 |AVAX-USD |CHOP |breakout_expansion_refined_v1 |10 |58.33 |0.13 |3.33 |44.1607 |1.17 |0.89 |3 |
+| 8 |SOL-USD |TREND_UP |momentum_continuation |10 |78.13 |0.97 |3.69 |37.4478 |1.48 |1.40 |26 |
+| 9 |LINK-USD |TREND_UP |trend_pullback_refined_v1 |10 |68.06 |0.29 |3.18 |36.3005 |1.09 |1.25 |8 |
+| 10 |ETH-USD |TREND_UP |mean_reversion_bounce |10 |77.08 |0.46 |3.88 |35.4759 |1.02 |1.84 |13 |
+| 11 |SOL-USD |TREND_UP |trend_pullback_refined_v1 |10 |78.13 |0.42 |2.75 |35.1069 |1.22 |1.06 |12 |
+| 12 |BTC-USD |TREND_UP |mean_reversion_refined_v1 |10 |84.72 |0.07 |6.27 |33.9081 |0.75 |0.41 |2 |
+| 13 |BTC-USD |TREND_UP |trend_pullback_refined_v1 |10 |84.72 |0.34 |3.39 |33.7257 |1.26 |1.51 |10 |
+| 14 |LINK-USD |TREND_UP |momentum_continuation |10 |68.06 |0.69 |2.54 |29.9130 |1.14 |1.41 |23 |
+| 15 |ETH-USD |TREND_UP |momentum_continuation |10 |77.08 |0.86 |2.68 |29.6656 |1.51 |2.04 |29 |
+| 16 |AVAX-USD |TREND_UP |momentum_continuation |10 |80.56 |0.59 |2.46 |28.0285 |1.54 |0.94 |21 |
+| 17 |LINK-USD |NEWS_SHOCK |mean_reversion_bounce |10 |57.64 |0.27 |2.26 |24.7573 |1.82 |2.16 |11 |
+| 18 |SOL-USD |NEWS_SHOCK |mean_reversion_refined_v1 |10 |60.07 |0.24 |2.07 |24.4487 |1.71 |4.48 |10 |
+| 19 |LINK-USD |TREND_UP |momentum_continuation_refined_v1 |10 |68.06 |0.41 |2.09 |23.0549 |1.24 |0.88 |18 |
+| 20 |SOL-USD |TREND_UP |momentum_continuation_refined_v1 |10 |78.13 |0.47 |1.99 |21.5765 |1.48 |0.84 |22 |
+| 21 |AVAX-USD |NEWS_SHOCK |mean_reversion_refined_v1 |10 |66.32 |0.13 |1.83 |21.5004 |0.74 |2.51 |6 |
+| 22 |AVAX-USD |HIGH_VOL |trend_pullback_refined_v1 |10 |80.21 |0.06 |2.19 |21.2202 |0.78 |1.22 |3 |
+| 23 |ETH-USD |HIGH_VOL |momentum_continuation_refined_v1 |10 |80.21 |0.04 |1.74 |20.6086 |0.56 |0.68 |2 |
+| 24 |ETH-USD |TREND_UP |momentum_continuation_refined_v1 |10 |77.08 |0.46 |1.73 |18.9953 |1.47 |0.84 |24 |
+| 25 |ETH-USD |CHOP |trend_pullback_refined_v1 |10 |65.63 |0.04 |1.68 |18.6449 |0.65 |0.57 |2 |
+| 26 |BTC-USD |TREND_UP |momentum_continuation |10 |84.72 |0.45 |2.01 |18.6418 |1.27 |0.54 |24 |
+| 27 |SOL-USD |HIGH_VOL |momentum_continuation_refined_v1 |10 |77.08 |0.09 |1.80 |17.7609 |1.11 |1.29 |5 |
+| 28 |BTC-USD |LOW_VOL |momentum_continuation |10 |70.49 |0.40 |1.75 |17.1822 |1.53 |0.63 |23 |
+| 29 |ETH-USD |TREND_UP |mean_reversion_refined_v1 |10 |77.08 |0.08 |1.85 |16.9061 |0.73 |0.78 |5 |
+| 30 |ETH-USD |TREND_UP |trend_pullback |10 |77.08 |0.59 |1.59 |16.5079 |1.61 |0.72 |36 |
 
 ## Cross-Asset Opportunity Walk-Forward Validation
 
@@ -157,36 +158,36 @@ Primary split example from SOL-USD: train = 42 windows, test = 18 windows. Rolli
 
 | # |asset |regime |strategy |train ret% |test ret% |train gPF |test gPF |train gExpect |test gExpect |test max DD% |train trades |test trades |folds ok |final verdict |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| 1 |SOL-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.11 |0.00 |n/a |n/a |96.9255 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
-| 2 |SOL-USD |HIGH_VOL |trend_pullback_refined_v1 |0.11 |0.00 |n/a |n/a |96.9000 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
-| 3 |BTC-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.16 |0.00 |n/a |n/a |95.8247 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
-| 4 |BTC-USD |HIGH_VOL |trend_pullback_refined_v1 |0.16 |0.00 |n/a |n/a |95.5367 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
-| 5 |LINK-USD |TREND_DOWN |trend_pullback_refined_v1 |0.13 |0.00 |n/a |n/a |92.8150 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
-| 6 |LINK-USD |TREND_DOWN |momentum_continuation_refined_v1 |0.12 |0.00 |n/a |n/a |84.0610 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
-| 7 |SOL-USD |TREND_DOWN |trend_pullback_refined_v1 |0.09 |0.00 |n/a |n/a |71.5526 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
-| 8 |ETH-USD |TREND_UP |momentum_continuation_refined_v1 |0.44 |0.13 |6.59 |1.73 |61.0631 |20.2250 |0.75 |5 |2 |0/3 |NEEDS MORE DATA |
-| 9 |ETH-USD |TREND_UP |mean_reversion_bounce |0.54 |0.27 |6.86 |1.86 |47.3684 |16.4479 |0.59 |8 |5 |0/3 |NEEDS MORE DATA |
-| 10 |AVAX-USD |TREND_UP |momentum_continuation_refined_v1 |0.17 |0.09 |3.48 |n/a |45.1331 |17.4786 |0.87 |3 |1 |0/3 |NEEDS MORE DATA |
-| 11 |SOL-USD |NEWS_SHOCK |mean_reversion_refined_v1 |0.33 |0.19 |3.31 |1.66 |43.8076 |16.1520 |1.71 |3 |7 |0/3 |NEEDS MORE DATA |
-| 12 |ETH-USD |TREND_UP |trend_pullback_refined_v1 |0.37 |0.32 |3.27 |n/a |42.6294 |95.3068 |0.49 |6 |1 |0/3 |NEEDS MORE DATA |
-| 13 |AVAX-USD |NEWS_SHOCK |mean_reversion_refined_v1 |0.21 |-0.60 |2.96 |0.00 |37.7139 |-59.5675 |0.60 |5 |1 |0/3 |NEEDS MORE DATA |
-| 14 |SOL-USD |NEWS_SHOCK |mean_reversion_bounce |0.38 |-0.04 |3.64 |0.91 |37.5944 |-2.6357 |1.71 |4 |10 |1/3 |NEEDS MORE DATA |
-| 15 |SOL-USD |TREND_UP |momentum_continuation |0.97 |n/a |3.69 |n/a |37.4478 |n/a |n/a |26 |0 |2/3 |NEEDS MORE DATA |
-| 16 |LINK-USD |TREND_UP |trend_pullback_refined_v1 |0.32 |0.00 |3.18 |n/a |36.3005 |n/a |0.00 |8 |0 |0/3 |NEEDS MORE DATA |
-| 17 |SOL-USD |TREND_UP |trend_pullback_refined_v1 |0.42 |n/a |2.75 |n/a |35.1069 |n/a |n/a |12 |0 |1/3 |NEEDS MORE DATA |
-| 18 |BTC-USD |TREND_UP |trend_pullback_refined_v1 |0.42 |0.00 |3.39 |n/a |33.7257 |n/a |0.00 |10 |0 |1/3 |NEEDS MORE DATA |
-| 19 |LINK-USD |TREND_UP |momentum_continuation_refined_v1 |0.24 |0.00 |3.07 |n/a |31.2532 |n/a |0.00 |7 |0 |0/3 |NEEDS MORE DATA |
-| 20 |LINK-USD |TREND_UP |momentum_continuation |0.72 |0.38 |2.66 |1.70 |30.9641 |18.8763 |0.88 |21 |2 |1/3 |NEEDS MORE DATA |
-| 21 |ETH-USD |TREND_UP |momentum_continuation |0.90 |0.77 |2.72 |2.59 |29.9674 |28.8735 |0.90 |21 |8 |2/3 |NEEDS MORE DATA |
-| 22 |AVAX-USD |TREND_UP |momentum_continuation |0.65 |0.35 |2.48 |2.31 |28.7783 |23.5291 |0.96 |18 |3 |0/3 |NEEDS MORE DATA |
-| 23 |ETH-USD |NEWS_SHOCK |breakout_expansion_refined_v1 |0.32 |-0.03 |1.93 |0.95 |24.7581 |-1.5260 |0.83 |9 |6 |1/3 |NEEDS MORE DATA |
-| 24 |LINK-USD |TREND_UP |breakout_expansion |0.80 |-2.01 |1.96 |0.31 |22.5988 |-33.5512 |2.91 |32 |6 |0/3 |NOT VALIDATED |
-| 25 |BTC-USD |TREND_UP |momentum_continuation_refined_v1 |0.30 |0.00 |2.06 |n/a |22.0023 |n/a |0.00 |11 |0 |1/3 |NEEDS MORE DATA |
-| 26 |AVAX-USD |HIGH_VOL |trend_pullback_refined_v1 |0.07 |0.00 |2.19 |n/a |21.2202 |n/a |0.00 |3 |0 |0/3 |NEEDS MORE DATA |
-| 27 |BTC-USD |NEWS_SHOCK |momentum_continuation |0.32 |-0.02 |2.57 |0.95 |19.9537 |-1.4965 |1.48 |8 |7 |0/3 |NOT VALIDATED |
-| 28 |AVAX-USD |CHOP |breakout_expansion_refined_v1 |0.05 |0.47 |1.67 |n/a |18.9869 |94.5083 |0.93 |2 |1 |0/3 |NEEDS MORE DATA |
-| 29 |AVAX-USD |TREND_UP |trend_pullback_refined_v1 |0.05 |0.29 |1.70 |1.44 |18.8739 |11.6025 |1.37 |2 |5 |1/3 |NEEDS MORE DATA |
-| 30 |ETH-USD |CHOP |trend_pullback_refined_v1 |0.05 |0.00 |1.68 |n/a |18.6449 |n/a |0.00 |2 |0 |0/3 |NEEDS MORE DATA |
+| 1 |SOL-USD |HIGH_VOL |trend_pullback_refined_v1 |0.11 |0.00 |n/a |n/a |96.9000 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
+| 2 |BTC-USD |HIGH_VOL |trend_pullback_refined_v1 |0.16 |0.00 |n/a |n/a |95.5367 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
+| 3 |LINK-USD |TREND_DOWN |trend_pullback_refined_v1 |0.13 |0.00 |n/a |n/a |92.8150 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
+| 4 |SOL-USD |TREND_DOWN |trend_pullback_refined_v1 |0.09 |0.00 |n/a |n/a |71.5526 |n/a |0.00 |1 |0 |0/3 |NEEDS MORE DATA |
+| 5 |ETH-USD |TREND_UP |mean_reversion_bounce |0.54 |0.27 |6.86 |1.86 |47.3684 |16.4479 |0.59 |8 |5 |0/3 |NEEDS MORE DATA |
+| 6 |SOL-USD |NEWS_SHOCK |mean_reversion_refined_v1 |0.33 |0.19 |3.31 |1.66 |43.8076 |16.1520 |1.71 |3 |7 |0/3 |NEEDS MORE DATA |
+| 7 |ETH-USD |TREND_UP |trend_pullback_refined_v1 |0.37 |0.32 |3.27 |n/a |42.6294 |95.3068 |0.49 |6 |1 |0/3 |NEEDS MORE DATA |
+| 8 |AVAX-USD |NEWS_SHOCK |mean_reversion_refined_v1 |0.21 |-0.60 |2.96 |0.00 |37.7139 |-59.5675 |0.60 |5 |1 |0/3 |NEEDS MORE DATA |
+| 9 |SOL-USD |NEWS_SHOCK |mean_reversion_bounce |0.38 |-0.04 |3.64 |0.91 |37.5944 |-2.6357 |1.71 |4 |10 |1/3 |NEEDS MORE DATA |
+| 10 |SOL-USD |TREND_UP |momentum_continuation |0.97 |n/a |3.69 |n/a |37.4478 |n/a |n/a |26 |0 |2/3 |NEEDS MORE DATA |
+| 11 |LINK-USD |TREND_UP |trend_pullback_refined_v1 |0.32 |0.00 |3.18 |n/a |36.3005 |n/a |0.00 |8 |0 |0/3 |NEEDS MORE DATA |
+| 12 |SOL-USD |TREND_UP |trend_pullback_refined_v1 |0.42 |n/a |2.75 |n/a |35.1069 |n/a |n/a |12 |0 |1/3 |NEEDS MORE DATA |
+| 13 |BTC-USD |TREND_UP |trend_pullback_refined_v1 |0.42 |0.00 |3.39 |n/a |33.7257 |n/a |0.00 |10 |0 |1/3 |NEEDS MORE DATA |
+| 14 |LINK-USD |TREND_UP |momentum_continuation |0.72 |0.38 |2.66 |1.70 |30.9641 |18.8763 |0.88 |21 |2 |1/3 |NEEDS MORE DATA |
+| 15 |ETH-USD |TREND_UP |momentum_continuation |0.90 |0.77 |2.72 |2.59 |29.9674 |28.8735 |0.90 |21 |8 |2/3 |NEEDS MORE DATA |
+| 16 |AVAX-USD |TREND_UP |momentum_continuation |0.65 |0.35 |2.48 |2.31 |28.7783 |23.5291 |0.96 |18 |3 |0/3 |NEEDS MORE DATA |
+| 17 |ETH-USD |NEWS_SHOCK |breakout_expansion_refined_v1 |0.32 |-0.03 |1.93 |0.95 |24.7581 |-1.5260 |0.83 |9 |6 |1/3 |NEEDS MORE DATA |
+| 18 |LINK-USD |TREND_UP |momentum_continuation_refined_v1 |0.42 |0.40 |2.14 |1.75 |23.4163 |20.1638 |0.60 |16 |2 |0/3 |NEEDS MORE DATA |
+| 19 |LINK-USD |TREND_UP |breakout_expansion |0.80 |-2.01 |1.96 |0.31 |22.5988 |-33.5512 |2.91 |32 |6 |0/3 |NOT VALIDATED |
+| 20 |SOL-USD |TREND_UP |momentum_continuation_refined_v1 |0.47 |n/a |1.99 |n/a |21.5765 |n/a |n/a |22 |0 |1/3 |NEEDS MORE DATA |
+| 21 |AVAX-USD |HIGH_VOL |trend_pullback_refined_v1 |0.07 |0.00 |2.19 |n/a |21.2202 |n/a |0.00 |3 |0 |0/3 |NEEDS MORE DATA |
+| 22 |ETH-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.05 |0.00 |1.74 |n/a |20.6086 |n/a |0.00 |2 |0 |0/3 |NEEDS MORE DATA |
+| 23 |BTC-USD |NEWS_SHOCK |momentum_continuation |0.32 |-0.02 |2.57 |0.95 |19.9537 |-1.4965 |1.48 |8 |7 |0/3 |NOT VALIDATED |
+| 24 |ETH-USD |TREND_UP |momentum_continuation_refined_v1 |0.38 |0.62 |1.80 |1.66 |19.1982 |18.7112 |1.47 |14 |10 |1/3 |NEEDS MORE DATA |
+| 25 |AVAX-USD |CHOP |breakout_expansion_refined_v1 |0.05 |0.47 |1.67 |n/a |18.9869 |94.5083 |0.93 |2 |1 |0/3 |NEEDS MORE DATA |
+| 26 |AVAX-USD |TREND_UP |trend_pullback_refined_v1 |0.05 |0.29 |1.70 |1.44 |18.8739 |11.6025 |1.37 |2 |5 |1/3 |NEEDS MORE DATA |
+| 27 |ETH-USD |CHOP |trend_pullback_refined_v1 |0.05 |0.00 |1.68 |n/a |18.6449 |n/a |0.00 |2 |0 |0/3 |NEEDS MORE DATA |
+| 28 |SOL-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.10 |0.00 |1.80 |n/a |17.7609 |n/a |0.00 |5 |0 |0/3 |NEEDS MORE DATA |
+| 29 |AVAX-USD |HIGH_VOL |momentum_continuation |0.42 |-0.52 |1.71 |0.00 |16.6005 |-51.6257 |0.99 |23 |1 |0/3 |NEEDS MORE DATA |
+| 30 |ETH-USD |TREND_UP |trend_pullback |0.62 |0.53 |1.53 |1.84 |15.0266 |22.6447 |1.18 |29 |7 |0/3 |NEEDS MORE DATA |
 
 ## Cross-Asset Validated Candidate Summary
 
@@ -195,33 +196,33 @@ This summary is intentionally conservative. VALIDATED means the candidate passed
 | asset |regime |strategy |test return |test global PF |test expectancy |test max drawdown |test trades |folds validated |final verdict |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
 | ETH-USD |TREND_UP |momentum_continuation |0.77 |2.59 |28.8735 |0.90 |8 |2/3 |NEEDS MORE DATA |
+| ETH-USD |TREND_UP |momentum_continuation_refined_v1 |0.62 |1.66 |18.7112 |1.47 |10 |1/3 |NEEDS MORE DATA |
+| ETH-USD |TREND_UP |trend_pullback |0.53 |1.84 |22.6447 |1.18 |7 |0/3 |NEEDS MORE DATA |
 | AVAX-USD |CHOP |breakout_expansion_refined_v1 |0.47 |n/a |94.5083 |0.93 |1 |0/3 |NEEDS MORE DATA |
+| LINK-USD |TREND_UP |momentum_continuation_refined_v1 |0.40 |1.75 |20.1638 |0.60 |2 |0/3 |NEEDS MORE DATA |
 | LINK-USD |TREND_UP |momentum_continuation |0.38 |1.70 |18.8763 |0.88 |2 |1/3 |NEEDS MORE DATA |
 | AVAX-USD |TREND_UP |momentum_continuation |0.35 |2.31 |23.5291 |0.96 |3 |0/3 |NEEDS MORE DATA |
 | ETH-USD |TREND_UP |trend_pullback_refined_v1 |0.32 |n/a |95.3068 |0.49 |1 |0/3 |NEEDS MORE DATA |
 | AVAX-USD |TREND_UP |trend_pullback_refined_v1 |0.29 |1.44 |11.6025 |1.37 |5 |1/3 |NEEDS MORE DATA |
 | ETH-USD |TREND_UP |mean_reversion_bounce |0.27 |1.86 |16.4479 |0.59 |5 |0/3 |NEEDS MORE DATA |
 | SOL-USD |NEWS_SHOCK |mean_reversion_refined_v1 |0.19 |1.66 |16.1520 |1.71 |7 |0/3 |NEEDS MORE DATA |
-| ETH-USD |TREND_UP |momentum_continuation_refined_v1 |0.13 |1.73 |20.2250 |0.75 |2 |0/3 |NEEDS MORE DATA |
-| AVAX-USD |TREND_UP |momentum_continuation_refined_v1 |0.09 |n/a |17.4786 |0.87 |1 |0/3 |NEEDS MORE DATA |
-| SOL-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | SOL-USD |HIGH_VOL |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
-| BTC-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | BTC-USD |HIGH_VOL |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | LINK-USD |TREND_DOWN |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
-| LINK-USD |TREND_DOWN |momentum_continuation_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | SOL-USD |TREND_DOWN |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | LINK-USD |TREND_UP |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | BTC-USD |TREND_UP |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |1/3 |NEEDS MORE DATA |
-| LINK-USD |TREND_UP |momentum_continuation_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
-| BTC-USD |TREND_UP |momentum_continuation_refined_v1 |0.00 |n/a |n/a |0.00 |0 |1/3 |NEEDS MORE DATA |
 | AVAX-USD |HIGH_VOL |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
+| ETH-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | ETH-USD |CHOP |trend_pullback_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
+| SOL-USD |HIGH_VOL |momentum_continuation_refined_v1 |0.00 |n/a |n/a |0.00 |0 |0/3 |NEEDS MORE DATA |
 | ETH-USD |NEWS_SHOCK |breakout_expansion_refined_v1 |-0.03 |0.95 |-1.5260 |0.83 |6 |1/3 |NEEDS MORE DATA |
 | SOL-USD |NEWS_SHOCK |mean_reversion_bounce |-0.04 |0.91 |-2.6357 |1.71 |10 |1/3 |NEEDS MORE DATA |
+| AVAX-USD |HIGH_VOL |momentum_continuation |-0.52 |0.00 |-51.6257 |0.99 |1 |0/3 |NEEDS MORE DATA |
 | AVAX-USD |NEWS_SHOCK |mean_reversion_refined_v1 |-0.60 |0.00 |-59.5675 |0.60 |1 |0/3 |NEEDS MORE DATA |
 | SOL-USD |TREND_UP |momentum_continuation |n/a |n/a |n/a |n/a |0 |2/3 |NEEDS MORE DATA |
 | SOL-USD |TREND_UP |trend_pullback_refined_v1 |n/a |n/a |n/a |n/a |0 |1/3 |NEEDS MORE DATA |
+| SOL-USD |TREND_UP |momentum_continuation_refined_v1 |n/a |n/a |n/a |n/a |0 |1/3 |NEEDS MORE DATA |
 | BTC-USD |NEWS_SHOCK |momentum_continuation |-0.02 |0.95 |-1.4965 |1.48 |7 |0/3 |NOT VALIDATED |
 | LINK-USD |TREND_UP |breakout_expansion |-2.01 |0.31 |-33.5512 |2.91 |6 |0/3 |NOT VALIDATED |
 
@@ -229,12 +230,12 @@ This summary is intentionally conservative. VALIDATED means the candidate passed
 
 Research-only refined variants are registered beside their base strategies and evaluated as separate benchmark candidates. Aggregated metrics below average per-asset full-window strategy stats across the selected crypto universe; walk-forward survival counts use the cross-asset opportunity candidate validation rules.
 
-| base |refined |base ret% |refined ret% |ret delta |base gPF |refined gPF |gPF delta |base gExpect |refined gExpect |expect delta |base maxDD |refined maxDD |DD delta |base trades |refined trades |base validated |refined validated |base test pass |refined test pass |
-| --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| momentum_continuation |momentum_continuation_refined_v1 |-0.02 |0.03 |+0.04 |0.98 |1.32 |+0.33 |-0.6712 |8.2621 |+8.9333 |3.14 |1.91 |-1.23 |620 |94 |0/30 |0/21 |4/30 |0/21 |
-| breakout_expansion |breakout_expansion_refined_v1 |-0.32 |-0.15 |+0.17 |0.72 |0.71 |-0.00 |-10.1461 |-10.7616 |-0.6155 |4.41 |3.61 |-0.79 |944 |405 |0/30 |0/26 |3/30 |2/26 |
-| trend_pullback |trend_pullback_refined_v1 |-0.49 |0.03 |+0.51 |0.69 |1.29 |+0.61 |-12.1843 |7.3439 |+19.5282 |6.06 |2.57 |-3.50 |1185 |110 |0/30 |0/23 |6/30 |1/23 |
-| mean_reversion_bounce |mean_reversion_refined_v1 |-0.31 |-0.16 |+0.15 |0.68 |0.75 |+0.07 |-12.2865 |-9.5079 |+2.7786 |4.54 |3.50 |-1.05 |740 |489 |0/30 |0/30 |2/30 |5/30 |
+| base |refined |base ret% |refined ret% |ret delta |base medRet% |refined medRet% |base gPF |refined gPF |gPF delta |base avgPF |refined avgPF |base gExpect |refined gExpect |expect delta |base avgExpect |refined avgExpect |base maxDD |refined maxDD |DD delta |base trades |refined trades |trade reduction |base exposure |refined exposure |base ret/DD |refined ret/DD |base validated |refined validated |base test pass |refined test pass |
+| --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
+| momentum_continuation |momentum_continuation_refined_v1 |-0.02 |0.00 |+0.02 |-0.09 |0.00 |0.98 |1.02 |+0.04 |1.50 |0.79 |-0.6712 |0.4861 |+1.1573 |-1.0573 |-5.4115 |3.14 |1.96 |-1.19 |620 |228 |392 (63.23%) |45.88 |14.94 |0.52 |0.24 |0/30 |0/22 |4/30 |3/22 |
+| breakout_expansion |breakout_expansion_refined_v1 |-0.32 |-0.15 |+0.17 |-0.27 |0.00 |0.72 |0.71 |-0.00 |0.89 |0.65 |-10.1461 |-10.7616 |-0.6155 |-9.4088 |-14.9815 |4.41 |3.61 |-0.79 |944 |405 |539 (57.10%) |34.01 |11.33 |0.05 |0.03 |0/30 |0/26 |3/30 |2/26 |
+| trend_pullback |trend_pullback_refined_v1 |-0.49 |0.03 |+0.51 |-0.33 |0.00 |0.69 |1.29 |+0.61 |1.35 |1.05 |-12.1843 |7.3439 |+19.5282 |-6.4903 |5.2813 |6.06 |2.57 |-3.50 |1185 |110 |1075 (90.72%) |36.87 |6.03 |0.40 |1.19 |0/30 |0/23 |6/30 |1/23 |
+| mean_reversion_bounce |mean_reversion_refined_v1 |-0.31 |-0.16 |+0.15 |-0.07 |0.00 |0.68 |0.75 |+0.07 |0.69 |1.07 |-12.2865 |-9.5079 |+2.7786 |-0.4311 |-0.2551 |4.54 |3.50 |-1.05 |740 |489 |251 (33.92%) |16.28 |10.68 |1.27 |0.70 |0/30 |0/30 |2/30 |5/30 |
 
 ## Cross-Asset Router Validation Summary
 
@@ -242,10 +243,10 @@ One row per asset. 'best router' is the highest test-period avg-return router fr
 
 | asset |windows |med purity% |best static (ret) |best static (ret/DD) |best router |router test ret% |router test gPF |router test gExpect |test verdict |folds validated |final verdict |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| BTC-USD |60 |69.44 |momentum_continuation_refined_v1 (0.04%) |mean_reversion_bounce (2.60) |top_by_regime_retdd_router |0.02 |1.19 |5.6478 |NOT VALIDATED |0/3 |NOT VALIDATED |
-| AVAX-USD |60 |70.49 |momentum_continuation (0.04%) |mean_reversion_bounce (1.06) |momentum_only_router |-0.27 |0.64 |-12.8439 |NOT VALIDATED |0/3 |NOT VALIDATED |
-| ETH-USD |60 |70.49 |momentum_continuation (0.10%) |trend_pullback_refined_v1 (3.30) |momentum_only_router |0.19 |1.26 |7.1388 |NOT VALIDATED |0/3 |NOT VALIDATED |
-| LINK-USD |60 |72.57 |momentum_continuation_refined_v1 (0.04%) |momentum_continuation_refined_v1 (1.59) |top_by_regime_retdd_router |-0.08 |0.90 |-3.5162 |NOT VALIDATED |0/3 |NOT VALIDATED |
+| BTC-USD |60 |69.44 |trend_pullback_refined_v1 (0.03%) |mean_reversion_bounce (2.60) |conservative_router |0.10 |1.50 |11.2949 |NOT VALIDATED |0/3 |NOT VALIDATED |
+| AVAX-USD |60 |70.49 |momentum_continuation (0.04%) |mean_reversion_bounce (1.06) |conservative_router |0.03 |1.36 |7.5241 |NOT VALIDATED |1/3 |NEEDS MORE DATA |
+| ETH-USD |60 |70.49 |momentum_continuation (0.10%) |trend_pullback_refined_v1 (3.30) |conservative_router |0.33 |1.69 |16.4612 |NOT VALIDATED |1/3 |NEEDS MORE DATA |
+| LINK-USD |60 |72.57 |momentum_continuation_refined_v1 (0.04%) |trend_pullback_refined_v1 (0.91) |top_by_regime_retdd_router |0.11 |1.42 |12.7475 |VALIDATED |0/3 |NEEDS MORE DATA |
 | SOL-USD |60 |72.92 |trend_pullback_refined_v1 (0.08%) |mean_reversion_bounce (1.52) |conservative_router |-0.15 |0.27 |-30.5052 |NOT VALIDATED |0/3 |NOT VALIDATED |
 
 ## Per-Asset Detail
@@ -271,7 +272,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_UP |trend_pullback |10 |-0.33 |0.03 |1.49 |-1.8677 |2.67 |43.94 |58.13 |3.70 |-0.22 |
 | TREND_UP |breakout_expansion |10 |0.14 |0.36 |1.04 |14.2413 |1.20 |55.33 |73.75 |2.50 |0.14 |
 | TREND_UP |mean_reversion_bounce |10 |0.04 |0.00 |0.35 |6.1414 |0.30 |41.67 |4.86 |0.70 |0.12 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |0.24 |0.00 |0.42 |20.1680 |1.62 |63.33 |30.42 |1.10 |0.58 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |0.36 |0.37 |0.79 |13.9223 |1.25 |50.17 |67.99 |2.30 |0.46 |
 | TREND_UP |trend_pullback_refined_v1 |10 |0.34 |0.00 |0.49 |33.7257 |1.77 |70.00 |27.36 |1.00 |0.69 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |-0.50 |-0.49 |1.50 |-10.0079 |0.74 |37.83 |34.58 |3.20 |-0.33 |
 | TREND_UP |mean_reversion_refined_v1 |10 |0.07 |0.00 |0.13 |33.9081 |0.00 |50.00 |1.94 |0.20 |0.54 |
@@ -279,7 +280,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_DOWN |trend_pullback |10 |-1.45 |-1.37 |2.52 |-27.9658 |0.42 |27.33 |48.82 |5.10 |-0.58 |
 | TREND_DOWN |breakout_expansion |10 |-0.28 |-0.44 |1.19 |-9.5552 |0.82 |39.67 |27.85 |3.40 |-0.24 |
 | TREND_DOWN |mean_reversion_bounce |10 |-0.26 |0.00 |0.86 |-10.3472 |0.72 |33.33 |13.19 |1.70 |-0.31 |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.02 |4.0680 |n/a |100.00 |1.53 |0.10 |0.18 |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |-0.06 |0.00 |0.06 |-59.0186 |0.00 |0.00 |0.69 |0.10 |-1.00 |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-0.23 |0.00 |0.30 |-50.9197 |0.01 |12.50 |5.07 |0.50 |-0.77 |
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-0.21 |0.00 |0.68 |-11.7932 |0.64 |33.33 |9.17 |1.30 |-0.32 |
@@ -287,7 +288,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | HIGH_VOL |trend_pullback |10 |-0.60 |-0.46 |2.13 |-13.1348 |0.81 |33.20 |36.60 |5.30 |-0.28 |
 | HIGH_VOL |breakout_expansion |10 |-0.40 |-0.35 |1.24 |-13.8059 |0.61 |28.89 |26.18 |3.60 |-0.32 |
 | HIGH_VOL |mean_reversion_bounce |10 |-0.43 |-0.29 |1.74 |-2.2795 |0.45 |37.25 |21.88 |4.10 |-0.24 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |0.10 |0.00 |0.10 |95.8247 |n/a |100.00 |5.28 |0.10 |0.94 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |-0.02 |0.00 |0.22 |18.7224 |0.00 |50.00 |6.46 |0.30 |-0.10 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |0.10 |0.00 |0.11 |95.5367 |n/a |100.00 |5.28 |0.10 |0.87 |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-0.13 |-0.55 |1.01 |-13.9992 |0.71 |27.86 |23.06 |2.90 |-0.13 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-0.62 |-0.31 |1.53 |2.8851 |0.45 |40.95 |17.29 |3.40 |-0.41 |
@@ -295,7 +296,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | LOW_VOL |trend_pullback |10 |-1.14 |-0.75 |2.35 |-6.6024 |2.31 |37.62 |66.94 |5.60 |-0.49 |
 | LOW_VOL |breakout_expansion |10 |-0.43 |-0.30 |1.47 |-12.2384 |0.89 |32.92 |41.53 |4.40 |-0.29 |
 | LOW_VOL |mean_reversion_bounce |10 |-0.24 |0.40 |1.14 |20.6459 |0.58 |60.12 |19.44 |2.30 |-0.21 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |0.01 |0.00 |0.72 |4.6873 |0.62 |50.00 |32.57 |1.30 |0.01 |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |0.09 |0.00 |0.47 |0.7451 |0.37 |50.00 |18.19 |0.90 |0.20 |
 | LOW_VOL |trend_pullback_refined_v1 |10 |-0.01 |0.09 |1.21 |-6.4753 |1.05 |40.56 |37.85 |2.70 |-0.01 |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |-0.17 |0.00 |0.21 |-39.6357 |0.00 |33.33 |2.36 |0.40 |-0.82 |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-0.22 |0.02 |0.93 |16.2234 |0.32 |58.33 |15.14 |1.80 |-0.24 |
@@ -303,7 +304,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | NEWS_SHOCK |trend_pullback |10 |0.15 |0.07 |0.72 |11.8812 |0.85 |41.67 |20.35 |2.00 |0.20 |
 | NEWS_SHOCK |breakout_expansion |10 |-0.06 |-0.09 |0.58 |-10.4509 |0.69 |23.75 |25.21 |1.30 |-0.10 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |0.20 |0.00 |0.53 |29.2594 |0.77 |60.00 |7.99 |1.40 |0.38 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.06 |0.00 |0.06 |-55.8323 |0.00 |0.00 |0.00 |0.10 |-1.00 |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.22 |10.0525 |0.00 |33.33 |9.17 |0.40 |0.01 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-0.06 |0.00 |0.06 |-56.4400 |0.00 |0.00 |0.00 |0.10 |-1.00 |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |0.04 |0.00 |0.40 |-4.2998 |0.52 |27.78 |15.90 |0.80 |0.10 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |0.06 |0.00 |0.38 |23.6630 |1.09 |56.25 |4.93 |0.90 |0.17 |
@@ -311,7 +312,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | CHOP |trend_pullback |10 |-0.76 |-0.52 |1.14 |-30.9321 |0.32 |25.42 |28.26 |2.50 |-0.66 |
 | CHOP |breakout_expansion |10 |-1.00 |-0.88 |1.41 |-37.1803 |0.30 |18.33 |19.31 |2.90 |-0.71 |
 | CHOP |mean_reversion_bounce |10 |-0.65 |-0.90 |1.53 |-13.7999 |0.37 |35.83 |15.14 |2.50 |-0.43 |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.08 |0.00 |0.13 |-25.4026 |0.00 |33.33 |3.82 |0.30 |-0.60 |
+| CHOP |momentum_continuation_refined_v1 |10 |-0.29 |0.00 |0.31 |-58.3213 |0.00 |0.00 |3.82 |0.50 |-0.95 |
 | CHOP |trend_pullback_refined_v1 |10 |-0.10 |0.00 |0.15 |-13.9510 |0.00 |33.33 |2.92 |0.40 |-0.64 |
 | CHOP |breakout_expansion_refined_v1 |10 |-0.36 |-0.53 |0.47 |-54.0708 |0.11 |5.56 |3.82 |0.80 |-0.76 |
 | CHOP |mean_reversion_refined_v1 |10 |0.04 |0.09 |0.84 |2.1299 |0.43 |44.44 |9.65 |1.10 |0.05 |
@@ -323,23 +324,23 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | regime |rank |strategy |score |samples |avgReturn |medReturn |maxDD |expectancy |PF |winRate |exposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
 | TREND_UP |1 |trend_pullback_refined_v1 |2.63 |10 |0.34 |0.00 |1.26 |33.7257 |1.77 |70.00 |27.36 |0.69 |
-| TREND_UP |2 |momentum_continuation_refined_v1 |3.25 |10 |0.24 |0.00 |1.17 |20.1680 |1.62 |63.33 |30.42 |0.58 |
-| TREND_UP |3 |momentum_continuation |3.75 |10 |0.45 |0.37 |1.27 |14.7635 |1.48 |49.33 |82.15 |0.60 |
-| TREND_UP |4 |mean_reversion_refined_v1 |3.88 |10 |0.07 |0.00 |0.75 |33.9081 |0.00 |50.00 |1.94 |0.54 |
-| TREND_UP |5 |breakout_expansion |4.63 |10 |0.14 |0.36 |1.82 |14.2413 |1.20 |55.33 |73.75 |0.14 |
-| TREND_UP |6 |mean_reversion_bounce |5.00 |10 |0.04 |0.00 |1.02 |6.1414 |0.30 |41.67 |4.86 |0.12 |
+| TREND_UP |2 |momentum_continuation |3.38 |10 |0.45 |0.37 |1.27 |14.7635 |1.48 |49.33 |82.15 |0.60 |
+| TREND_UP |3 |mean_reversion_refined_v1 |3.75 |10 |0.07 |0.00 |0.75 |33.9081 |0.00 |50.00 |1.94 |0.54 |
+| TREND_UP |4 |momentum_continuation_refined_v1 |3.88 |10 |0.36 |0.37 |1.49 |13.9223 |1.25 |50.17 |67.99 |0.46 |
+| TREND_UP |5 |breakout_expansion |4.50 |10 |0.14 |0.36 |1.82 |14.2413 |1.20 |55.33 |73.75 |0.14 |
+| TREND_UP |6 |mean_reversion_bounce |5.13 |10 |0.04 |0.00 |1.02 |6.1414 |0.30 |41.67 |4.86 |0.12 |
 | TREND_UP |7 |trend_pullback |5.63 |10 |-0.33 |0.03 |3.56 |-1.8677 |2.67 |43.94 |58.13 |-0.22 |
-| TREND_UP |8 |breakout_expansion_refined_v1 |7.25 |10 |-0.50 |-0.49 |2.58 |-10.0079 |0.74 |37.83 |34.58 |-0.33 |
-| TREND_DOWN |1 |mean_reversion_bounce |3.38 |10 |-0.26 |0.00 |2.45 |-10.3472 |0.72 |33.33 |13.19 |-0.31 |
-| TREND_DOWN |2 |breakout_expansion |3.75 |10 |-0.28 |-0.44 |2.18 |-9.5552 |0.82 |39.67 |27.85 |-0.24 |
-| TREND_DOWN |3 |mean_reversion_refined_v1 |4.13 |10 |-0.21 |0.00 |2.45 |-11.7932 |0.64 |33.33 |9.17 |-0.32 |
-| TREND_DOWN |4 |momentum_continuation |4.38 |10 |-0.20 |-0.55 |1.26 |-29.9551 |1.95 |18.75 |26.67 |-0.35 |
-| TREND_DOWN |5 |trend_pullback_refined_v1 |4.63 |10 |-0.06 |0.00 |0.59 |-59.0186 |0.00 |0.00 |0.69 |-1.00 |
-| TREND_DOWN |6 |breakout_expansion_refined_v1 |4.88 |10 |-0.23 |0.00 |0.89 |-50.9197 |0.01 |12.50 |5.07 |-0.77 |
-| TREND_DOWN |7 |momentum_continuation_refined_v1 |5.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| TREND_DOWN |8 |trend_pullback |6.25 |10 |-1.45 |-1.37 |4.46 |-27.9658 |0.42 |27.33 |48.82 |-0.58 |
-| HIGH_VOL |1 |momentum_continuation_refined_v1 |2.00 |10 |0.10 |0.00 |1.02 |95.8247 |n/a |100.00 |5.28 |0.94 |
-| HIGH_VOL |2 |trend_pullback_refined_v1 |2.88 |10 |0.10 |0.00 |1.10 |95.5367 |n/a |100.00 |5.28 |0.87 |
+| TREND_UP |8 |breakout_expansion_refined_v1 |7.13 |10 |-0.50 |-0.49 |2.58 |-10.0079 |0.74 |37.83 |34.58 |-0.33 |
+| TREND_DOWN |1 |momentum_continuation_refined_v1 |2.25 |10 |0.00 |0.00 |0.22 |4.0680 |n/a |100.00 |1.53 |0.18 |
+| TREND_DOWN |2 |mean_reversion_bounce |3.75 |10 |-0.26 |0.00 |2.45 |-10.3472 |0.72 |33.33 |13.19 |-0.31 |
+| TREND_DOWN |3 |breakout_expansion |4.13 |10 |-0.28 |-0.44 |2.18 |-9.5552 |0.82 |39.67 |27.85 |-0.24 |
+| TREND_DOWN |4 |mean_reversion_refined_v1 |4.50 |10 |-0.21 |0.00 |2.45 |-11.7932 |0.64 |33.33 |9.17 |-0.32 |
+| TREND_DOWN |5 |momentum_continuation |4.75 |10 |-0.20 |-0.55 |1.26 |-29.9551 |1.95 |18.75 |26.67 |-0.35 |
+| TREND_DOWN |6 |trend_pullback_refined_v1 |4.88 |10 |-0.06 |0.00 |0.59 |-59.0186 |0.00 |0.00 |0.69 |-1.00 |
+| TREND_DOWN |7 |breakout_expansion_refined_v1 |5.25 |10 |-0.23 |0.00 |0.89 |-50.9197 |0.01 |12.50 |5.07 |-0.77 |
+| TREND_DOWN |8 |trend_pullback |6.63 |10 |-1.45 |-1.37 |4.46 |-27.9658 |0.42 |27.33 |48.82 |-0.58 |
+| HIGH_VOL |1 |trend_pullback_refined_v1 |2.13 |10 |0.10 |0.00 |1.10 |95.5367 |n/a |100.00 |5.28 |0.87 |
+| HIGH_VOL |2 |momentum_continuation_refined_v1 |2.50 |10 |-0.02 |0.00 |1.17 |18.7224 |0.00 |50.00 |6.46 |-0.10 |
 | HIGH_VOL |3 |momentum_continuation |4.38 |10 |-0.32 |-0.13 |2.33 |-7.3121 |0.56 |45.00 |43.89 |-0.27 |
 | HIGH_VOL |4 |mean_reversion_bounce |5.00 |10 |-0.43 |-0.29 |3.89 |-2.2795 |0.45 |37.25 |21.88 |-0.24 |
 | HIGH_VOL |5 |breakout_expansion_refined_v1 |5.13 |10 |-0.13 |-0.55 |2.59 |-13.9992 |0.71 |27.86 |23.06 |-0.13 |
@@ -347,29 +348,29 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | HIGH_VOL |7 |breakout_expansion |5.88 |10 |-0.40 |-0.35 |3.50 |-13.8059 |0.61 |28.89 |26.18 |-0.32 |
 | HIGH_VOL |8 |trend_pullback |5.88 |10 |-0.60 |-0.46 |3.56 |-13.1348 |0.81 |33.20 |36.60 |-0.28 |
 | LOW_VOL |1 |momentum_continuation |2.50 |10 |0.40 |0.81 |1.53 |12.9280 |3.00 |51.67 |62.22 |0.46 |
-| LOW_VOL |2 |momentum_continuation_refined_v1 |3.50 |10 |0.01 |0.00 |1.51 |4.6873 |0.62 |50.00 |32.57 |0.01 |
+| LOW_VOL |2 |momentum_continuation_refined_v1 |3.50 |10 |0.09 |0.00 |1.51 |0.7451 |0.37 |50.00 |18.19 |0.20 |
 | LOW_VOL |3 |mean_reversion_bounce |3.75 |10 |-0.24 |0.40 |3.79 |20.6459 |0.58 |60.12 |19.44 |-0.21 |
 | LOW_VOL |4 |trend_pullback_refined_v1 |3.88 |10 |-0.01 |0.09 |2.57 |-6.4753 |1.05 |40.56 |37.85 |-0.01 |
 | LOW_VOL |5 |mean_reversion_refined_v1 |4.13 |10 |-0.22 |0.02 |3.50 |16.2234 |0.32 |58.33 |15.14 |-0.24 |
 | LOW_VOL |6 |breakout_expansion_refined_v1 |5.38 |10 |-0.17 |0.00 |1.19 |-39.6357 |0.00 |33.33 |2.36 |-0.82 |
 | LOW_VOL |7 |breakout_expansion |6.25 |10 |-0.43 |-0.30 |3.17 |-12.2384 |0.89 |32.92 |41.53 |-0.29 |
 | LOW_VOL |8 |trend_pullback |6.63 |10 |-1.14 |-0.75 |5.46 |-6.6024 |2.31 |37.62 |66.94 |-0.49 |
-| NEWS_SHOCK |1 |mean_reversion_bounce |2.88 |10 |0.20 |0.00 |2.10 |29.2594 |0.77 |60.00 |7.99 |0.38 |
+| NEWS_SHOCK |1 |mean_reversion_bounce |2.75 |10 |0.20 |0.00 |2.10 |29.2594 |0.77 |60.00 |7.99 |0.38 |
 | NEWS_SHOCK |2 |momentum_continuation |3.38 |10 |0.15 |0.00 |1.48 |12.3889 |1.36 |39.58 |29.58 |0.29 |
 | NEWS_SHOCK |3 |trend_pullback |3.38 |10 |0.15 |0.07 |1.39 |11.8812 |0.85 |41.67 |20.35 |0.20 |
-| NEWS_SHOCK |4 |mean_reversion_refined_v1 |3.75 |10 |0.06 |0.00 |1.66 |23.6630 |1.09 |56.25 |4.93 |0.17 |
-| NEWS_SHOCK |5 |breakout_expansion_refined_v1 |5.00 |10 |0.04 |0.00 |1.13 |-4.2998 |0.52 |27.78 |15.90 |0.10 |
-| NEWS_SHOCK |6 |momentum_continuation_refined_v1 |5.00 |10 |-0.06 |0.00 |0.56 |-55.8323 |0.00 |0.00 |0.00 |-1.00 |
-| NEWS_SHOCK |7 |trend_pullback_refined_v1 |6.00 |10 |-0.06 |0.00 |0.56 |-56.4400 |0.00 |0.00 |0.00 |-1.00 |
-| NEWS_SHOCK |8 |breakout_expansion |6.63 |10 |-0.06 |-0.09 |1.67 |-10.4509 |0.69 |23.75 |25.21 |-0.10 |
+| NEWS_SHOCK |4 |mean_reversion_refined_v1 |3.63 |10 |0.06 |0.00 |1.66 |23.6630 |1.09 |56.25 |4.93 |0.17 |
+| NEWS_SHOCK |5 |momentum_continuation_refined_v1 |4.88 |10 |0.00 |0.00 |0.91 |10.0525 |0.00 |33.33 |9.17 |0.01 |
+| NEWS_SHOCK |6 |breakout_expansion_refined_v1 |5.25 |10 |0.04 |0.00 |1.13 |-4.2998 |0.52 |27.78 |15.90 |0.10 |
+| NEWS_SHOCK |7 |trend_pullback_refined_v1 |5.75 |10 |-0.06 |0.00 |0.56 |-56.4400 |0.00 |0.00 |0.00 |-1.00 |
+| NEWS_SHOCK |8 |breakout_expansion |7.00 |10 |-0.06 |-0.09 |1.67 |-10.4509 |0.69 |23.75 |25.21 |-0.10 |
 | CHOP |1 |mean_reversion_refined_v1 |1.63 |10 |0.04 |0.09 |1.29 |2.1299 |0.43 |44.44 |9.65 |0.05 |
-| CHOP |2 |momentum_continuation_refined_v1 |3.25 |10 |-0.08 |0.00 |0.56 |-25.4026 |0.00 |33.33 |3.82 |-0.60 |
-| CHOP |3 |trend_pullback_refined_v1 |3.63 |10 |-0.10 |0.00 |1.15 |-13.9510 |0.00 |33.33 |2.92 |-0.64 |
-| CHOP |4 |mean_reversion_bounce |4.38 |10 |-0.65 |-0.90 |4.00 |-13.7999 |0.37 |35.83 |15.14 |-0.43 |
-| CHOP |5 |momentum_continuation |5.00 |10 |-0.44 |-0.39 |1.69 |-25.1328 |0.21 |22.92 |33.82 |-0.47 |
-| CHOP |6 |trend_pullback |5.63 |10 |-0.76 |-0.52 |2.32 |-30.9321 |0.32 |25.42 |28.26 |-0.66 |
-| CHOP |7 |breakout_expansion_refined_v1 |5.88 |10 |-0.36 |-0.53 |1.40 |-54.0708 |0.11 |5.56 |3.82 |-0.76 |
-| CHOP |8 |breakout_expansion |6.63 |10 |-1.00 |-0.88 |2.62 |-37.1803 |0.30 |18.33 |19.31 |-0.71 |
+| CHOP |2 |trend_pullback_refined_v1 |3.13 |10 |-0.10 |0.00 |1.15 |-13.9510 |0.00 |33.33 |2.92 |-0.64 |
+| CHOP |3 |mean_reversion_bounce |4.38 |10 |-0.65 |-0.90 |4.00 |-13.7999 |0.37 |35.83 |15.14 |-0.43 |
+| CHOP |4 |momentum_continuation |4.88 |10 |-0.44 |-0.39 |1.69 |-25.1328 |0.21 |22.92 |33.82 |-0.47 |
+| CHOP |5 |momentum_continuation_refined_v1 |5.00 |10 |-0.29 |0.00 |1.17 |-58.3213 |0.00 |0.00 |3.82 |-0.95 |
+| CHOP |6 |trend_pullback |5.25 |10 |-0.76 |-0.52 |2.32 |-30.9321 |0.32 |25.42 |28.26 |-0.66 |
+| CHOP |7 |breakout_expansion_refined_v1 |5.50 |10 |-0.36 |-0.53 |1.40 |-54.0708 |0.11 |5.56 |3.82 |-0.76 |
+| CHOP |8 |breakout_expansion |6.25 |10 |-1.00 |-0.88 |2.62 |-37.1803 |0.30 |18.33 |19.31 |-0.71 |
 
 ### A6 Routing Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
@@ -378,7 +379,7 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | trend_pullback |60 |-0.69 |1.72 |1.24 |-11.1620 |4.03 |43.18 |0.06 |
 | breakout_expansion |60 |-0.34 |1.16 |0.73 |-11.5343 |3.02 |35.64 |-0.06 |
 | mean_reversion_bounce |60 |-0.22 |1.02 |0.52 |2.3265 |2.12 |13.75 |2.60 |
-| momentum_continuation_refined_v1 |60 |0.04 |0.24 |0.80 |5.6735 |0.48 |12.01 |0.45 |
+| momentum_continuation_refined_v1 |60 |0.02 |0.34 |0.61 |-0.6362 |0.75 |17.86 |0.34 |
 | trend_pullback_refined_v1 |60 |0.03 |0.35 |0.91 |2.4288 |0.73 |12.35 |0.42 |
 | breakout_expansion_refined_v1 |60 |-0.23 |0.65 |0.47 |-23.4072 |1.43 |14.13 |-0.19 |
 | mean_reversion_refined_v1 |60 |-0.15 |0.75 |0.53 |6.6303 |1.45 |9.69 |1.16 |
@@ -458,30 +459,30 @@ Router profit factor in the summary is the arithmetic average of non-null per-wi
 ### Portfolio Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
-| equal_weight |60 |-0.19 |0.54 |1.72 |-1.1790 |15.13 |91.06 |0.77 |
-| custom_weight |60 |-0.19 |0.54 |1.72 |-1.1790 |15.13 |91.06 |0.77 |
+| equal_weight |60 |-0.19 |0.54 |1.72 |-1.1751 |15.40 |91.74 |0.77 |
+| custom_weight |60 |-0.19 |0.54 |1.72 |-1.1751 |15.40 |91.74 |0.77 |
 | regime_weight |60 |-0.25 |0.81 |2.94 |-2.6125 |4.33 |50.42 |2.03 |
 
 ### Router vs Best Static Strategy Comparison
 
 All contestants evaluated across the same non-overlapping regime windows. ret/DD is the average of per-window (totalReturnPct / maxDrawdownPct) ratios; windows with zero drawdown are excluded from that average. Global profit factor and global expectancy aggregate all trades across all windows combined.
 
-| metric |a6_regime_router |momentum_continuation_refined_v1 (best avg return) |mean_reversion_bounce (best ret/DD) |equal_weight |regime_weight |
+| metric |a6_regime_router |trend_pullback_refined_v1 (best avg return) |mean_reversion_bounce (best ret/DD) |equal_weight |regime_weight |
 | --- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.31 |0.04 |-0.22 |-0.19 |-0.25 |
-| median return (%) |-0.11 |0.00 |0.00 |-0.17 |0.00 |
-| max drawdown (%) |4.17 |1.51 |4.00 |2.10 |3.95 |
-| avg drawdown (%) |1.40 |0.24 |1.02 |0.54 |0.81 |
-| global PF |0.75 |1.25 |0.73 |0.72 |0.72 |
-| avg PF |2.56 |0.80 |0.52 |1.72 |2.94 |
-| global expectancy ($) |-9.0021 |7.3160 |-10.4669 |-1.2777 |-5.6748 |
-| avg expectancy ($) |-1.2942 |5.6735 |2.3265 |-1.1790 |-2.6125 |
-| exposure (%) |45.56 |12.01 |13.75 |91.06 |50.42 |
-| trade count |208 |29 |127 |908 |260 |
-| no-trade windows |1 |42 |14 |0 |3 |
-| ret/DD |0.45 |0.45 |2.60 |0.77 |2.03 |
+| avg return (%) |-0.31 |0.03 |-0.22 |-0.19 |-0.25 |
+| median return (%) |-0.11 |0.00 |0.00 |-0.18 |0.00 |
+| max drawdown (%) |4.17 |2.57 |4.00 |2.03 |3.95 |
+| avg drawdown (%) |1.40 |0.35 |1.02 |0.54 |0.81 |
+| global PF |0.75 |1.15 |0.73 |0.72 |0.72 |
+| avg PF |2.56 |0.91 |0.52 |1.72 |2.94 |
+| global expectancy ($) |-9.0021 |4.6549 |-10.4669 |-1.2644 |-5.6748 |
+| avg expectancy ($) |-1.2942 |2.4288 |2.3265 |-1.1751 |-2.6125 |
+| exposure (%) |45.56 |12.35 |13.75 |91.74 |50.42 |
+| trade count |208 |44 |127 |924 |260 |
+| no-trade windows |1 |40 |14 |0 |3 |
+| ret/DD |0.45 |0.42 |2.60 |0.77 |2.03 |
 
-Best static by avg return: **momentum_continuation_refined_v1** (0.04%)
+Best static by avg return: **trend_pullback_refined_v1** (0.03%)
 Best static by ret/DD: **mean_reversion_bounce** (ret/DD = 2.60)
 
 Router verdict: **NOT VALIDATED** — router does not beat all four benchmarks (best static by avg return, best static by ret/DD, equal-weight, regime-weight). Do not claim A6 routing outperforms until all four are exceeded.
@@ -490,7 +491,7 @@ Router verdict: **NOT VALIDATED** — router does not beat all four benchmarks (
 
 IN-SAMPLE: router maps are derived from the same primary-config windows they are evaluated on, so these results are hypothesis discovery, not validation. See Walk-Forward Router Validation below for out-of-sample evidence. Five experimental router configurations evaluated against the default A6 router on the same primary-config windows. conservative_router trades only if the regime's top strategy has avgReturn > 0 AND avgPF > 1. momentum_only_router uses momentum_continuation for every regime. top_by_regime_return_router picks the highest-avgReturn strategy per regime from the multi-window aggregates. top_by_regime_retdd_router picks the best ret/DD strategy per regime (no trade if no strategy has ret/DD > 0). no_trade_in_bad_regimes_router uses the default A6 map but blanks any regime where the default router had negative avg return.
 
-Verdict benchmarks: best static by avg return = **momentum_continuation_refined_v1** (0.04%), best static by ret/DD = **mean_reversion_bounce** (2.60), equal_weight avg ret = -0.19%, regime_weight avg ret = -0.25%.
+Verdict benchmarks: best static by avg return = **trend_pullback_refined_v1** (0.03%), best static by ret/DD = **mean_reversion_bounce** (2.60), equal_weight avg ret = -0.19%, regime_weight avg ret = -0.25%.
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
@@ -515,8 +516,8 @@ Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum
 | a6_regime_router |be+mc |mc |mrb+tp |mrb |mc |mc+mrb |
 | conservative_router |mc |— |— |mc |— |— |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
-| top_by_regime_return_router |mc |mc_refined_v1 |mc_refined_v1 |mc |mrb |mean_reversion_refined_v1 |
-| top_by_regime_retdd_router |tp_refined_v1 |— |mc_refined_v1 |mc |mrb |mean_reversion_refined_v1 |
+| top_by_regime_return_router |mc |mc_refined_v1 |tp_refined_v1 |mc |mrb |mean_reversion_refined_v1 |
+| top_by_regime_retdd_router |tp_refined_v1 |mc_refined_v1 |tp_refined_v1 |mc |mrb |mean_reversion_refined_v1 |
 | no_trade_in_bad_regimes_router |be+mc |— |— |— |mc |— |
 
 ### Walk-Forward Router Validation
@@ -529,27 +530,27 @@ Train period (in-sample; maps fitted here):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.45 |0.15 |0.02 |0.18 |0.16 |-0.01 |
-| median return (%) |-0.11 |0.00 |0.02 |0.08 |0.00 |0.00 |
-| max drawdown (%) |3.79 |2.01 |1.69 |2.39 |2.39 |1.46 |
-| global PF |0.66 |1.33 |1.04 |1.31 |1.39 |0.98 |
-| global expectancy ($) |-12.7329 |8.9346 |1.1614 |8.7113 |10.7840 |-0.6256 |
-| trade count |149 |72 |81 |89 |63 |41 |
-| no-trade windows |0 |10 |3 |6 |13 |21 |
-| ret/DD |0.33 |0.57 |0.36 |0.51 |0.52 |0.04 |
+| avg return (%) |-0.45 |0.02 |0.02 |0.04 |0.16 |-0.01 |
+| median return (%) |-0.11 |0.00 |0.02 |0.00 |0.00 |0.00 |
+| max drawdown (%) |3.79 |1.53 |1.69 |2.39 |2.39 |1.46 |
+| global PF |0.66 |1.05 |1.04 |1.07 |1.39 |0.98 |
+| global expectancy ($) |-12.7329 |1.4252 |1.1614 |2.0562 |10.7840 |-0.6256 |
+| trade count |149 |57 |81 |74 |63 |41 |
+| no-trade windows |0 |13 |3 |10 |13 |21 |
+| ret/DD |0.33 |0.33 |0.36 |0.25 |0.52 |0.04 |
 
 Test period (out-of-sample; maps frozen from train):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |0.01 |-0.28 |-0.03 |-0.26 |0.02 |0.01 |
-| median return (%) |-0.08 |-0.37 |-0.26 |-0.55 |0.00 |0.00 |
-| max drawdown (%) |4.17 |1.44 |2.33 |1.44 |1.16 |1.48 |
-| global PF |1.01 |0.32 |0.93 |0.40 |1.19 |1.04 |
-| global expectancy ($) |0.4197 |-26.1795 |-1.9528 |-22.4766 |5.6478 |1.1291 |
-| trade count |59 |19 |31 |21 |7 |13 |
-| no-trade windows |1 |5 |3 |4 |14 |12 |
-| ret/DD |0.76 |-0.45 |0.27 |-0.39 |0.13 |0.09 |
+| avg return (%) |0.01 |0.10 |-0.03 |0.07 |0.02 |0.01 |
+| median return (%) |-0.08 |0.00 |-0.26 |0.00 |0.00 |0.00 |
+| max drawdown (%) |4.17 |1.48 |2.33 |1.94 |1.16 |1.48 |
+| global PF |1.01 |1.50 |0.93 |1.27 |1.19 |1.04 |
+| global expectancy ($) |0.4197 |11.2949 |-1.9528 |7.0568 |5.6478 |1.1291 |
+| trade count |59 |16 |31 |19 |7 |13 |
+| no-trade windows |1 |11 |3 |11 |14 |12 |
+| ret/DD |0.76 |0.39 |0.27 |0.40 |0.13 |0.09 |
 | verdict vs benchmarks |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
 
 Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
@@ -560,7 +561,7 @@ Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=
 | conservative_router |tp_refined_v1 |— |be_refined_v1 |mc |mc |— |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
 | top_by_regime_return_router |tp_refined_v1 |mc_refined_v1 |be_refined_v1 |mc |mc |mean_reversion_refined_v1 |
-| top_by_regime_retdd_router |tp_refined_v1 |— |mc_refined_v1 |mc |mc |mean_reversion_refined_v1 |
+| top_by_regime_retdd_router |tp_refined_v1 |— |tp_refined_v1 |mc |mc |mean_reversion_refined_v1 |
 | no_trade_in_bad_regimes_router |be+mc |— |— |— |— |— |
 
 Rolling expanding-window folds (3 folds; each re-derives maps from its train prefix and scores the next chronological slice). Columns: test avg return % per fold, then test verdict per fold (Y/N), then folds validated.
@@ -568,10 +569,10 @@ Rolling expanding-window folds (3 folds; each re-derives maps from its train pre
 | router |f1 ret% |f2 ret% |f3 ret% |f1 ok |f2 ok |f3 ok |validated |
 | --- |--- |--- |--- |--- |--- |--- |--- |
 | a6_regime_router |-0.38 |-0.36 |0.12 |N |N |N |0/3 |
-| conservative_router |0.00 |-0.48 |-0.21 |N |N |N |0/3 |
+| conservative_router |0.21 |-0.17 |0.23 |N |N |N |0/3 |
 | momentum_only_router |0.12 |-0.21 |0.07 |N |N |N |0/3 |
-| top_by_regime_return_router |0.06 |-0.36 |-0.13 |N |N |N |0/3 |
-| top_by_regime_retdd_router |-0.04 |-0.17 |0.09 |N |N |N |0/3 |
+| top_by_regime_return_router |0.24 |-0.22 |0.25 |N |N |N |0/3 |
+| top_by_regime_retdd_router |0.62 |-0.17 |0.10 |N |N |N |0/3 |
 | no_trade_in_bad_regimes_router |0.03 |0.08 |0.08 |N |Y |N |1/3 |
 
 ### Regime-Window Purity Diagnostics
@@ -602,23 +603,22 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 
 | config |total windows |windows TU/TD/HV/LV/NS/CH |min purity% |med purity% |avg purity% |best static (ret) |best static (rtDD) |router avg ret% |router gPF |router gExpect |delta vs best ret% |noTrade |trades |verdict |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| 144b/50% ★ |60 |10/10/10/10/10/10 |50.00 |69.44 |71.20 |momentum_continuation_refined_v1 |mean_reversion_bounce |-0.31 |0.75 |-9.0021 |-0.35 |1 |208 |NO |
+| 144b/50% ★ |60 |10/10/10/10/10/10 |50.00 |69.44 |71.20 |trend_pullback_refined_v1 |mean_reversion_bounce |-0.31 |0.75 |-9.0021 |-0.35 |1 |208 |NO |
 | 144b/65% |36 |10/4/4/7/6/5 |65.28 |77.43 |79.17 |momentum_continuation |mean_reversion_bounce |-0.10 |0.91 |-3.1177 |-0.21 |1 |113 |NO |
-| 336b/50% |19 |3/2/3/4/5/2 |50.30 |56.55 |61.18 |momentum_continuation |momentum_continuation |-0.57 |0.81 |-7.3585 |-0.42 |0 |148 |NO |
-| 336b/65% |5 |1/0/1/2/1/0 |72.02 |74.11 |75.60 |momentum_continuation_refined_v1 |breakout_expansion |-2.53 |0.43 |-26.3649 |-2.31 |0 |48 |NO |
+| 336b/50% |19 |3/2/3/4/5/2 |50.30 |56.55 |61.18 |momentum_continuation_refined_v1 |momentum_continuation |-0.57 |0.81 |-7.3585 |-0.56 |0 |148 |NO |
+| 336b/65% |5 |1/0/1/2/1/0 |72.02 |74.11 |75.60 |momentum_continuation_refined_v1 |momentum_continuation_refined_v1 |-2.53 |0.43 |-26.3649 |-2.70 |0 |48 |NO |
 
 ### Stability Rankings
 | regime |strategy |samples |score |returnStd |drawdownStd |profitFactorStd |expectancyStd |
 | --- |--- |--- |--- |--- |--- |--- |--- |
+| CHOP |momentum_continuation_refined_v1 |10 |-1.08 |0.41 |0.43 |0.00 |2.33 |
 | CHOP |breakout_expansion_refined_v1 |10 |-5.48 |0.31 |0.46 |0.27 |19.45 |
 | CHOP |trend_pullback |10 |-6.54 |0.80 |0.78 |0.35 |21.20 |
 | CHOP |breakout_expansion |10 |-7.74 |0.72 |0.54 |0.35 |25.35 |
 | CHOP |momentum_continuation |10 |-9.24 |0.55 |0.65 |0.36 |33.62 |
 | CHOP |trend_pullback_refined_v1 |10 |-12.57 |0.40 |0.36 |0.00 |49.11 |
-| CHOP |momentum_continuation_refined_v1 |10 |-13.54 |0.28 |0.23 |0.00 |53.33 |
 | CHOP |mean_reversion_bounce |10 |-16.37 |1.53 |0.92 |0.58 |59.86 |
 | CHOP |mean_reversion_refined_v1 |10 |-18.09 |0.67 |0.36 |0.67 |70.82 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |-0.22 |0.30 |0.32 |n/a |n/a |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |-0.23 |0.30 |0.35 |n/a |n/a |
 | HIGH_VOL |trend_pullback |10 |-7.28 |0.85 |0.60 |0.64 |24.65 |
 | HIGH_VOL |momentum_continuation |10 |-11.99 |0.85 |0.52 |0.63 |44.69 |
@@ -626,15 +626,15 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-13.72 |0.89 |0.66 |0.97 |51.81 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-15.78 |1.18 |1.36 |0.38 |57.74 |
 | HIGH_VOL |mean_reversion_bounce |10 |-15.98 |1.80 |1.37 |0.48 |58.55 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |-36.69 |0.50 |0.46 |n/a |109.04 |
 | LOW_VOL |breakout_expansion |10 |-7.68 |1.07 |0.66 |0.76 |26.52 |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |-9.30 |0.37 |0.41 |0.00 |35.72 |
 | LOW_VOL |momentum_continuation |10 |-13.49 |0.93 |0.29 |4.65 |49.67 |
 | LOW_VOL |trend_pullback_refined_v1 |10 |-13.61 |1.22 |0.76 |1.27 |51.14 |
 | LOW_VOL |trend_pullback |10 |-14.28 |2.11 |1.68 |4.29 |44.48 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |-17.18 |0.76 |0.53 |1.05 |66.41 |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |-17.24 |0.69 |0.46 |0.75 |67.44 |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-18.49 |1.40 |1.15 |0.50 |70.03 |
 | LOW_VOL |mean_reversion_bounce |10 |-18.92 |1.75 |1.38 |1.02 |70.61 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.23 |0.18 |0.18 |n/a |n/a |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-0.23 |0.18 |0.18 |n/a |n/a |
 | NEWS_SHOCK |momentum_continuation |10 |-10.69 |0.59 |0.45 |2.29 |40.01 |
 | NEWS_SHOCK |breakout_expansion |10 |-11.44 |0.44 |0.50 |1.45 |43.14 |
@@ -642,7 +642,8 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |-11.94 |0.46 |0.43 |1.17 |45.86 |
 | NEWS_SHOCK |trend_pullback |10 |-13.80 |0.94 |0.52 |0.97 |53.34 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |-14.80 |0.94 |0.77 |0.46 |57.84 |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-17.90 |0.38 |0.37 |0.00 |70.87 |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |-0.04 |0.01 |0.07 |n/a |n/a |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |-0.25 |0.19 |0.19 |n/a |n/a |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-4.33 |0.30 |0.39 |0.03 |15.66 |
 | TREND_DOWN |trend_pullback |10 |-6.61 |1.26 |0.97 |0.35 |18.07 |
@@ -651,7 +652,7 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-14.47 |0.78 |0.76 |0.78 |54.70 |
 | TREND_DOWN |momentum_continuation |10 |-14.85 |0.77 |0.40 |5.16 |52.30 |
 | TREND_UP |momentum_continuation |10 |-4.26 |0.59 |0.36 |1.18 |16.68 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |-7.34 |0.51 |0.47 |1.20 |28.16 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |-7.03 |0.79 |0.29 |1.28 |27.20 |
 | TREND_UP |trend_pullback |10 |-9.54 |1.01 |0.95 |5.28 |29.61 |
 | TREND_UP |breakout_expansion |10 |-10.19 |0.96 |0.46 |0.85 |39.05 |
 | TREND_UP |trend_pullback_refined_v1 |10 |-10.84 |0.66 |0.58 |1.72 |41.76 |
@@ -680,7 +681,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_UP |trend_pullback |10 |-0.16 |-0.20 |1.35 |-5.1145 |1.26 |33.58 |32.36 |4.00 |-0.12 |
 | TREND_UP |breakout_expansion |10 |-0.07 |0.26 |1.56 |2.0921 |1.22 |41.50 |59.51 |4.10 |-0.05 |
 | TREND_UP |mean_reversion_bounce |10 |0.08 |0.23 |0.66 |25.3349 |0.54 |55.56 |6.67 |1.60 |0.11 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |0.15 |0.00 |0.19 |31.3058 |3.48 |83.33 |15.97 |0.40 |0.79 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |0.14 |0.00 |0.73 |12.4807 |1.14 |54.76 |43.06 |2.00 |0.20 |
 | TREND_UP |trend_pullback_refined_v1 |10 |0.10 |0.00 |0.25 |15.2382 |1.57 |45.00 |9.03 |0.70 |0.39 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |-0.34 |0.12 |1.50 |-4.4334 |1.19 |34.19 |22.92 |3.80 |-0.22 |
 | TREND_UP |mean_reversion_refined_v1 |10 |-0.18 |0.00 |0.30 |-28.4688 |0.54 |16.67 |1.81 |0.60 |-0.62 |
@@ -688,7 +689,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_DOWN |trend_pullback |10 |-2.03 |-2.13 |2.78 |-20.0565 |0.31 |24.46 |39.58 |6.20 |-0.73 |
 | TREND_DOWN |breakout_expansion |10 |-0.26 |-0.44 |1.05 |-8.7730 |0.37 |33.67 |20.49 |2.40 |-0.25 |
 | TREND_DOWN |mean_reversion_bounce |10 |-0.47 |-0.16 |1.18 |-19.5962 |0.74 |25.93 |18.40 |2.30 |-0.40 |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |-0.06 |0.00 |0.06 |-58.6965 |0.00 |0.00 |0.28 |0.10 |-0.96 |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-0.16 |0.00 |0.18 |-54.5149 |0.00 |0.00 |2.99 |0.30 |-0.89 |
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-0.08 |0.00 |0.77 |-4.1814 |0.89 |37.50 |15.07 |1.60 |-0.10 |
@@ -696,7 +697,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | HIGH_VOL |trend_pullback |10 |-0.24 |-0.38 |2.19 |-1.4492 |1.05 |38.04 |39.72 |6.80 |-0.11 |
 | HIGH_VOL |breakout_expansion |10 |0.12 |0.33 |1.21 |10.6592 |1.73 |44.50 |31.81 |3.20 |0.10 |
 | HIGH_VOL |mean_reversion_bounce |10 |0.17 |0.21 |1.16 |23.0199 |1.21 |48.77 |28.40 |3.60 |0.14 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |0.01 |0.00 |0.16 |-3.6147 |0.89 |50.00 |3.61 |0.40 |0.06 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |0.03 |0.00 |0.25 |-4.3804 |1.16 |33.33 |4.93 |0.50 |0.11 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |0.06 |0.00 |0.13 |21.2202 |0.00 |66.67 |2.01 |0.30 |0.50 |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-0.08 |-0.13 |0.94 |1.7714 |0.87 |40.74 |19.03 |2.60 |-0.09 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |0.22 |0.21 |0.78 |13.9774 |1.40 |46.28 |15.49 |2.60 |0.28 |
@@ -704,7 +705,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | LOW_VOL |trend_pullback |10 |-0.78 |-0.95 |2.06 |-10.4015 |5.29 |35.36 |34.44 |4.70 |-0.38 |
 | LOW_VOL |breakout_expansion |10 |-0.64 |-0.86 |1.74 |-16.0959 |0.71 |31.40 |33.54 |4.50 |-0.37 |
 | LOW_VOL |mean_reversion_bounce |10 |-0.70 |-0.69 |1.49 |-14.5788 |0.86 |33.43 |27.99 |3.60 |-0.47 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |-0.08 |0.00 |0.44 |-7.9522 |4.43 |36.67 |12.71 |0.90 |-0.18 |
 | LOW_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |-0.06 |0.00 |0.06 |-56.1164 |0.00 |0.00 |0.14 |0.10 |-1.00 |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-0.17 |0.28 |1.06 |-4.0674 |1.15 |40.00 |20.07 |2.50 |-0.16 |
@@ -712,7 +713,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | NEWS_SHOCK |trend_pullback |10 |-0.25 |-0.09 |0.95 |-13.1653 |1.10 |27.78 |16.25 |2.10 |-0.26 |
 | NEWS_SHOCK |breakout_expansion |10 |-0.12 |-0.16 |0.79 |-4.5859 |0.32 |31.48 |22.71 |1.60 |-0.15 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |0.02 |0.00 |0.55 |15.0911 |0.74 |46.19 |6.67 |1.60 |0.03 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.15 |0.00 |0.25 |-49.7642 |0.00 |0.00 |5.56 |0.30 |-0.61 |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.17 |0.00 |0.29 |-42.5796 |0.00 |0.00 |10.56 |0.40 |-0.59 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-0.15 |0.00 |0.26 |-51.1371 |0.00 |0.00 |5.49 |0.30 |-0.59 |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |-0.23 |0.00 |0.67 |-13.4399 |0.35 |29.17 |7.43 |1.20 |-0.35 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |0.13 |0.00 |0.24 |21.9447 |0.57 |50.00 |3.40 |0.60 |0.53 |
@@ -720,7 +721,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | CHOP |trend_pullback |10 |-0.75 |-0.47 |1.27 |-31.7176 |0.56 |19.79 |17.22 |2.20 |-0.59 |
 | CHOP |breakout_expansion |10 |-0.35 |-0.14 |1.15 |-10.4862 |0.84 |30.29 |27.78 |3.00 |-0.31 |
 | CHOP |mean_reversion_bounce |10 |-0.56 |-0.41 |1.26 |-15.8048 |0.51 |30.56 |15.83 |2.40 |-0.44 |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.05 |0.00 |0.05 |-54.8612 |0.00 |0.00 |0.97 |0.10 |-1.00 |
+| CHOP |momentum_continuation_refined_v1 |10 |-0.08 |0.00 |0.20 |-21.0633 |0.00 |25.00 |9.17 |0.40 |-0.43 |
 | CHOP |trend_pullback_refined_v1 |10 |-0.06 |0.00 |0.11 |-58.7779 |0.00 |0.00 |1.60 |0.10 |-0.52 |
 | CHOP |breakout_expansion_refined_v1 |10 |0.13 |0.00 |0.25 |44.1607 |0.00 |66.67 |9.03 |0.30 |0.52 |
 | CHOP |mean_reversion_refined_v1 |10 |-0.38 |-0.27 |0.70 |-24.9747 |0.25 |21.43 |7.29 |1.20 |-0.55 |
@@ -731,54 +732,54 @@ Composite score is the average ordinal rank across avg return, median return, ma
 
 | regime |rank |strategy |score |samples |avgReturn |medReturn |maxDD |expectancy |PF |winRate |exposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| TREND_UP |1 |momentum_continuation_refined_v1 |2.00 |10 |0.15 |0.00 |1.06 |31.3058 |3.48 |83.33 |15.97 |0.79 |
-| TREND_UP |2 |momentum_continuation |2.75 |10 |0.59 |0.44 |1.54 |30.1332 |1.32 |62.33 |80.56 |0.71 |
-| TREND_UP |3 |trend_pullback_refined_v1 |3.38 |10 |0.10 |0.00 |1.37 |15.2382 |1.57 |45.00 |9.03 |0.39 |
-| TREND_UP |4 |mean_reversion_bounce |4.00 |10 |0.08 |0.23 |2.13 |25.3349 |0.54 |55.56 |6.67 |0.11 |
-| TREND_UP |5 |breakout_expansion |5.25 |10 |-0.07 |0.26 |4.14 |2.0921 |1.22 |41.50 |59.51 |-0.05 |
-| TREND_UP |6 |breakout_expansion_refined_v1 |6.13 |10 |-0.34 |0.12 |3.61 |-4.4334 |1.19 |34.19 |22.92 |-0.22 |
-| TREND_UP |7 |trend_pullback |6.25 |10 |-0.16 |-0.20 |2.67 |-5.1145 |1.26 |33.58 |32.36 |-0.12 |
-| TREND_UP |8 |mean_reversion_refined_v1 |6.25 |10 |-0.18 |0.00 |1.91 |-28.4688 |0.54 |16.67 |1.81 |-0.62 |
+| TREND_UP |1 |momentum_continuation |2.13 |10 |0.59 |0.44 |1.54 |30.1332 |1.32 |62.33 |80.56 |0.71 |
+| TREND_UP |2 |trend_pullback_refined_v1 |2.88 |10 |0.10 |0.00 |1.37 |15.2382 |1.57 |45.00 |9.03 |0.39 |
+| TREND_UP |3 |mean_reversion_bounce |3.75 |10 |0.08 |0.23 |2.13 |25.3349 |0.54 |55.56 |6.67 |0.11 |
+| TREND_UP |4 |momentum_continuation_refined_v1 |4.13 |10 |0.14 |0.00 |1.96 |12.4807 |1.14 |54.76 |43.06 |0.20 |
+| TREND_UP |5 |breakout_expansion |5.13 |10 |-0.07 |0.26 |4.14 |2.0921 |1.22 |41.50 |59.51 |-0.05 |
+| TREND_UP |6 |breakout_expansion_refined_v1 |5.88 |10 |-0.34 |0.12 |3.61 |-4.4334 |1.19 |34.19 |22.92 |-0.22 |
+| TREND_UP |7 |trend_pullback |6.00 |10 |-0.16 |-0.20 |2.67 |-5.1145 |1.26 |33.58 |32.36 |-0.12 |
+| TREND_UP |8 |mean_reversion_refined_v1 |6.13 |10 |-0.18 |0.00 |1.91 |-28.4688 |0.54 |16.67 |1.81 |-0.62 |
 | TREND_DOWN |1 |mean_reversion_refined_v1 |2.75 |10 |-0.08 |0.00 |1.78 |-4.1814 |0.89 |37.50 |15.07 |-0.10 |
 | TREND_DOWN |2 |momentum_continuation |4.13 |10 |-0.25 |0.00 |1.34 |-28.8404 |0.00 |20.00 |14.38 |-0.57 |
-| TREND_DOWN |3 |breakout_expansion |4.38 |10 |-0.26 |-0.44 |2.10 |-8.7730 |0.37 |33.67 |20.49 |-0.25 |
-| TREND_DOWN |4 |mean_reversion_bounce |4.63 |10 |-0.47 |-0.16 |3.11 |-19.5962 |0.74 |25.93 |18.40 |-0.40 |
-| TREND_DOWN |5 |breakout_expansion_refined_v1 |4.75 |10 |-0.16 |0.00 |0.77 |-54.5149 |0.00 |0.00 |2.99 |-0.89 |
-| TREND_DOWN |6 |momentum_continuation_refined_v1 |5.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| TREND_DOWN |7 |trend_pullback_refined_v1 |5.63 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| TREND_DOWN |3 |momentum_continuation_refined_v1 |4.25 |10 |-0.06 |0.00 |0.61 |-58.6965 |0.00 |0.00 |0.28 |-0.96 |
+| TREND_DOWN |4 |breakout_expansion |4.38 |10 |-0.26 |-0.44 |2.10 |-8.7730 |0.37 |33.67 |20.49 |-0.25 |
+| TREND_DOWN |5 |mean_reversion_bounce |4.63 |10 |-0.47 |-0.16 |3.11 |-19.5962 |0.74 |25.93 |18.40 |-0.40 |
+| TREND_DOWN |6 |breakout_expansion_refined_v1 |5.00 |10 |-0.16 |0.00 |0.77 |-54.5149 |0.00 |0.00 |2.99 |-0.89 |
+| TREND_DOWN |7 |trend_pullback_refined_v1 |5.25 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
 | TREND_DOWN |8 |trend_pullback |6.13 |10 |-2.03 |-2.13 |6.06 |-20.0565 |0.31 |24.46 |39.58 |-0.73 |
-| HIGH_VOL |1 |mean_reversion_refined_v1 |3.25 |10 |0.22 |0.21 |2.08 |13.9774 |1.40 |46.28 |15.49 |0.28 |
-| HIGH_VOL |2 |trend_pullback_refined_v1 |3.38 |10 |0.06 |0.00 |0.78 |21.2202 |0.00 |66.67 |2.01 |0.50 |
+| HIGH_VOL |1 |mean_reversion_refined_v1 |3.13 |10 |0.22 |0.21 |2.08 |13.9774 |1.40 |46.28 |15.49 |0.28 |
+| HIGH_VOL |2 |trend_pullback_refined_v1 |3.25 |10 |0.06 |0.00 |0.78 |21.2202 |0.00 |66.67 |2.01 |0.50 |
 | HIGH_VOL |3 |momentum_continuation |3.50 |10 |0.33 |0.43 |2.20 |24.3223 |0.62 |60.83 |52.64 |0.33 |
-| HIGH_VOL |4 |mean_reversion_bounce |3.88 |10 |0.17 |0.21 |3.16 |23.0199 |1.21 |48.77 |28.40 |0.14 |
+| HIGH_VOL |4 |mean_reversion_bounce |3.75 |10 |0.17 |0.21 |3.16 |23.0199 |1.21 |48.77 |28.40 |0.14 |
 | HIGH_VOL |5 |breakout_expansion |4.13 |10 |0.12 |0.33 |2.13 |10.6592 |1.73 |44.50 |31.81 |0.10 |
-| HIGH_VOL |6 |momentum_continuation_refined_v1 |4.50 |10 |0.01 |0.00 |0.75 |-3.6147 |0.89 |50.00 |3.61 |0.06 |
-| HIGH_VOL |7 |breakout_expansion_refined_v1 |6.13 |10 |-0.08 |-0.13 |2.13 |1.7714 |0.87 |40.74 |19.03 |-0.09 |
+| HIGH_VOL |6 |momentum_continuation_refined_v1 |5.00 |10 |0.03 |0.00 |0.96 |-4.3804 |1.16 |33.33 |4.93 |0.11 |
+| HIGH_VOL |7 |breakout_expansion_refined_v1 |6.00 |10 |-0.08 |-0.13 |2.13 |1.7714 |0.87 |40.74 |19.03 |-0.09 |
 | HIGH_VOL |8 |trend_pullback |7.25 |10 |-0.24 |-0.38 |3.35 |-1.4492 |1.05 |38.04 |39.72 |-0.11 |
-| LOW_VOL |1 |mean_reversion_refined_v1 |2.50 |10 |-0.17 |0.28 |3.07 |-4.0674 |1.15 |40.00 |20.07 |-0.16 |
-| LOW_VOL |2 |momentum_continuation |4.50 |10 |-0.30 |-0.67 |2.23 |-11.9547 |0.69 |31.67 |52.64 |-0.23 |
-| LOW_VOL |3 |breakout_expansion_refined_v1 |4.63 |10 |-0.06 |0.00 |0.56 |-56.1164 |0.00 |0.00 |0.14 |-1.00 |
-| LOW_VOL |4 |mean_reversion_bounce |4.75 |10 |-0.70 |-0.69 |3.07 |-14.5788 |0.86 |33.43 |27.99 |-0.47 |
-| LOW_VOL |5 |trend_pullback |5.00 |10 |-0.78 |-0.95 |3.70 |-10.4015 |5.29 |35.36 |34.44 |-0.38 |
-| LOW_VOL |6 |momentum_continuation_refined_v1 |5.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| LOW_VOL |7 |breakout_expansion |5.38 |10 |-0.64 |-0.86 |3.10 |-16.0959 |0.71 |31.40 |33.54 |-0.37 |
-| LOW_VOL |8 |trend_pullback_refined_v1 |5.63 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| LOW_VOL |1 |momentum_continuation_refined_v1 |2.38 |10 |-0.08 |0.00 |1.57 |-7.9522 |4.43 |36.67 |12.71 |-0.18 |
+| LOW_VOL |2 |mean_reversion_refined_v1 |2.63 |10 |-0.17 |0.28 |3.07 |-4.0674 |1.15 |40.00 |20.07 |-0.16 |
+| LOW_VOL |3 |breakout_expansion_refined_v1 |4.75 |10 |-0.06 |0.00 |0.56 |-56.1164 |0.00 |0.00 |0.14 |-1.00 |
+| LOW_VOL |4 |momentum_continuation |5.00 |10 |-0.30 |-0.67 |2.23 |-11.9547 |0.69 |31.67 |52.64 |-0.23 |
+| LOW_VOL |5 |trend_pullback_refined_v1 |5.25 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| LOW_VOL |6 |mean_reversion_bounce |5.25 |10 |-0.70 |-0.69 |3.07 |-14.5788 |0.86 |33.43 |27.99 |-0.47 |
+| LOW_VOL |7 |trend_pullback |5.38 |10 |-0.78 |-0.95 |3.70 |-10.4015 |5.29 |35.36 |34.44 |-0.38 |
+| LOW_VOL |8 |breakout_expansion |5.88 |10 |-0.64 |-0.86 |3.10 |-16.0959 |0.71 |31.40 |33.54 |-0.37 |
 | NEWS_SHOCK |1 |mean_reversion_refined_v1 |1.75 |10 |0.13 |0.00 |0.74 |21.9447 |0.57 |50.00 |3.40 |0.53 |
-| NEWS_SHOCK |2 |mean_reversion_bounce |2.38 |10 |0.02 |0.00 |1.77 |15.0911 |0.74 |46.19 |6.67 |0.03 |
+| NEWS_SHOCK |2 |mean_reversion_bounce |2.25 |10 |0.02 |0.00 |1.77 |15.0911 |0.74 |46.19 |6.67 |0.03 |
 | NEWS_SHOCK |3 |breakout_expansion |4.75 |10 |-0.12 |-0.16 |1.83 |-4.5859 |0.32 |31.48 |22.71 |-0.15 |
-| NEWS_SHOCK |4 |momentum_continuation_refined_v1 |5.00 |10 |-0.15 |0.00 |1.06 |-49.7642 |0.00 |0.00 |5.56 |-0.61 |
-| NEWS_SHOCK |5 |breakout_expansion_refined_v1 |5.38 |10 |-0.23 |0.00 |1.83 |-13.4399 |0.35 |29.17 |7.43 |-0.35 |
+| NEWS_SHOCK |4 |momentum_continuation_refined_v1 |5.25 |10 |-0.17 |0.00 |1.06 |-42.5796 |0.00 |0.00 |10.56 |-0.59 |
+| NEWS_SHOCK |5 |breakout_expansion_refined_v1 |5.25 |10 |-0.23 |0.00 |1.83 |-13.4399 |0.35 |29.17 |7.43 |-0.35 |
 | NEWS_SHOCK |6 |trend_pullback_refined_v1 |5.50 |10 |-0.15 |0.00 |1.13 |-51.1371 |0.00 |0.00 |5.49 |-0.59 |
 | NEWS_SHOCK |7 |trend_pullback |5.50 |10 |-0.25 |-0.09 |2.25 |-13.1653 |1.10 |27.78 |16.25 |-0.26 |
 | NEWS_SHOCK |8 |momentum_continuation |5.75 |10 |-0.23 |-0.28 |2.22 |-2.5096 |0.31 |33.33 |26.04 |-0.30 |
-| CHOP |1 |momentum_continuation |2.75 |10 |0.09 |0.29 |1.77 |9.0233 |1.37 |41.67 |32.15 |0.13 |
-| CHOP |2 |breakout_expansion_refined_v1 |2.88 |10 |0.13 |0.00 |1.17 |44.1607 |0.00 |66.67 |9.03 |0.52 |
-| CHOP |3 |momentum_continuation_refined_v1 |4.38 |10 |-0.05 |0.00 |0.55 |-54.8612 |0.00 |0.00 |0.97 |-1.00 |
+| CHOP |1 |breakout_expansion_refined_v1 |2.75 |10 |0.13 |0.00 |1.17 |44.1607 |0.00 |66.67 |9.03 |0.52 |
+| CHOP |2 |momentum_continuation |2.75 |10 |0.09 |0.29 |1.77 |9.0233 |1.37 |41.67 |32.15 |0.13 |
+| CHOP |3 |momentum_continuation_refined_v1 |3.88 |10 |-0.08 |0.00 |0.66 |-21.0633 |0.00 |25.00 |9.17 |-0.43 |
 | CHOP |4 |breakout_expansion |4.50 |10 |-0.35 |-0.14 |2.82 |-10.4862 |0.84 |30.29 |27.78 |-0.31 |
-| CHOP |5 |trend_pullback_refined_v1 |4.88 |10 |-0.06 |0.00 |1.12 |-58.7779 |0.00 |0.00 |1.60 |-0.52 |
-| CHOP |6 |mean_reversion_bounce |5.00 |10 |-0.56 |-0.41 |2.77 |-15.8048 |0.51 |30.56 |15.83 |-0.44 |
-| CHOP |7 |mean_reversion_refined_v1 |5.13 |10 |-0.38 |-0.27 |2.23 |-24.9747 |0.25 |21.43 |7.29 |-0.55 |
-| CHOP |8 |trend_pullback |6.50 |10 |-0.75 |-0.47 |3.48 |-31.7176 |0.56 |19.79 |17.22 |-0.59 |
+| CHOP |5 |trend_pullback_refined_v1 |4.75 |10 |-0.06 |0.00 |1.12 |-58.7779 |0.00 |0.00 |1.60 |-0.52 |
+| CHOP |6 |mean_reversion_bounce |5.13 |10 |-0.56 |-0.41 |2.77 |-15.8048 |0.51 |30.56 |15.83 |-0.44 |
+| CHOP |7 |mean_reversion_refined_v1 |5.38 |10 |-0.38 |-0.27 |2.23 |-24.9747 |0.25 |21.43 |7.29 |-0.55 |
+| CHOP |8 |trend_pullback |6.88 |10 |-0.75 |-0.47 |3.48 |-31.7176 |0.56 |19.79 |17.22 |-0.59 |
 
 ### A6 Routing Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
@@ -787,7 +788,7 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | trend_pullback |60 |-0.70 |1.77 |1.66 |-13.0253 |4.33 |29.93 |-0.16 |
 | breakout_expansion |60 |-0.22 |1.25 |0.89 |-4.4280 |3.13 |32.64 |0.09 |
 | mean_reversion_bounce |60 |-0.25 |1.05 |0.78 |1.4422 |2.52 |17.33 |1.06 |
-| momentum_continuation_refined_v1 |60 |-0.01 |0.11 |0.75 |-16.9318 |0.20 |4.35 |0.01 |
+| momentum_continuation_refined_v1 |60 |-0.04 |0.33 |1.35 |-11.6169 |0.72 |13.45 |0.04 |
 | trend_pullback_refined_v1 |60 |-0.01 |0.12 |0.45 |-13.1169 |0.23 |3.02 |0.23 |
 | breakout_expansion_refined_v1 |60 |-0.12 |0.60 |0.73 |-6.1315 |1.38 |10.25 |0.03 |
 | mean_reversion_refined_v1 |60 |-0.08 |0.64 |0.89 |-2.7515 |1.52 |10.52 |0.51 |
@@ -867,8 +868,8 @@ Router profit factor in the summary is the arithmetic average of non-null per-wi
 ### Portfolio Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
-| equal_weight |60 |-0.17 |0.52 |0.93 |-1.1187 |15.23 |89.28 |-0.01 |
-| custom_weight |60 |-0.17 |0.52 |0.93 |-1.1187 |15.23 |89.28 |-0.01 |
+| equal_weight |60 |-0.17 |0.53 |0.94 |-1.1055 |15.75 |89.31 |0.01 |
+| custom_weight |60 |-0.17 |0.53 |0.94 |-1.1055 |15.75 |89.31 |0.01 |
 | regime_weight |60 |-0.18 |0.86 |1.00 |-3.2779 |5.10 |51.33 |0.08 |
 
 ### Router vs Best Static Strategy Comparison
@@ -878,17 +879,17 @@ All contestants evaluated across the same non-overlapping regime windows. ret/DD
 | metric |a6_regime_router |momentum_continuation (best avg return) |mean_reversion_bounce (best ret/DD) |equal_weight |regime_weight |
 | --- |--- |--- |--- |--- |--- |
 | avg return (%) |-0.23 |0.04 |-0.25 |-0.17 |-0.18 |
-| median return (%) |-0.09 |0.00 |0.00 |-0.19 |-0.08 |
+| median return (%) |-0.09 |0.00 |0.00 |-0.21 |-0.08 |
 | max drawdown (%) |3.78 |2.23 |3.16 |1.26 |3.05 |
-| avg drawdown (%) |1.45 |0.84 |1.05 |0.52 |0.86 |
+| avg drawdown (%) |1.45 |0.84 |1.05 |0.53 |0.86 |
 | global PF |0.83 |1.07 |0.74 |0.76 |0.83 |
-| avg PF |0.97 |0.76 |0.78 |0.93 |1.00 |
-| global expectancy ($) |-6.0650 |1.9940 |-9.7678 |-1.1065 |-3.5505 |
-| avg expectancy ($) |-5.7752 |6.3540 |1.4422 |-1.1187 |-3.2779 |
-| exposure (%) |44.48 |43.07 |17.33 |89.28 |51.33 |
-| trade count |232 |115 |151 |914 |306 |
+| avg PF |0.97 |0.76 |0.78 |0.94 |1.00 |
+| global expectancy ($) |-6.0650 |1.9940 |-9.7678 |-1.0940 |-3.5505 |
+| avg expectancy ($) |-5.7752 |6.3540 |1.4422 |-1.1055 |-3.2779 |
+| exposure (%) |44.48 |43.07 |17.33 |89.31 |51.33 |
+| trade count |232 |115 |151 |945 |306 |
 | no-trade windows |2 |8 |7 |0 |3 |
-| ret/DD |0.03 |0.53 |1.06 |-0.01 |0.08 |
+| ret/DD |0.03 |0.53 |1.06 |0.01 |0.08 |
 
 Best static by avg return: **momentum_continuation** (0.04%)
 Best static by ret/DD: **mean_reversion_bounce** (ret/DD = 1.06)
@@ -903,18 +904,18 @@ Verdict benchmarks: best static by avg return = **momentum_continuation** (0.04%
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.23 |0.07 |0.04 |0.12 |0.00 |0.03 |
+| avg return (%) |-0.23 |0.07 |0.04 |0.12 |0.07 |0.03 |
 | median return (%) |-0.09 |0.00 |0.00 |0.00 |0.00 |0.00 |
-| max drawdown (%) |3.78 |1.54 |2.23 |2.22 |1.06 |3.78 |
-| avg drawdown (%) |1.45 |0.30 |0.84 |0.55 |0.10 |0.99 |
-| global PF |0.83 |1.45 |1.07 |1.40 |1.04 |1.03 |
-| avg PF |0.97 |0.74 |0.76 |0.68 |0.88 |1.05 |
-| global expectancy ($) |-6.0650 |11.2787 |1.9940 |10.2426 |1.2229 |0.9671 |
-| avg expectancy ($) |-5.7752 |3.2980 |6.3540 |13.4217 |-12.1906 |3.7518 |
-| exposure (%) |44.48 |19.39 |43.07 |32.45 |4.19 |36.45 |
-| trade count |232 |38 |115 |72 |11 |165 |
-| no-trade windows |2 |36 |8 |21 |52 |14 |
-| ret/DD |0.03 |0.35 |0.53 |0.70 |0.14 |0.34 |
+| max drawdown (%) |3.78 |1.54 |2.23 |2.22 |1.54 |3.78 |
+| avg drawdown (%) |1.45 |0.30 |0.84 |0.56 |0.30 |0.99 |
+| global PF |0.83 |1.45 |1.07 |1.40 |1.45 |1.03 |
+| avg PF |0.97 |0.74 |0.76 |0.68 |0.74 |1.05 |
+| global expectancy ($) |-6.0650 |11.2787 |1.9940 |10.1882 |11.2787 |0.9671 |
+| avg expectancy ($) |-5.7752 |3.2980 |6.3540 |13.3213 |3.2980 |3.7518 |
+| exposure (%) |44.48 |19.39 |43.07 |32.56 |19.39 |36.45 |
+| trade count |232 |38 |115 |72 |38 |165 |
+| no-trade windows |2 |36 |8 |21 |36 |14 |
+| ret/DD |0.03 |0.35 |0.53 |0.72 |0.35 |0.34 |
 | verdict |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
 
 Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
@@ -924,8 +925,8 @@ Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum
 | a6_regime_router |be+mc |mc |mrb+tp |mrb |mc |mc+mrb |
 | conservative_router |mc |— |— |— |— |— |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
-| top_by_regime_return_router |mc |mc_refined_v1 |mc |mc_refined_v1 |mean_reversion_refined_v1 |be_refined_v1 |
-| top_by_regime_retdd_router |mc_refined_v1 |— |tp_refined_v1 |— |mean_reversion_refined_v1 |be_refined_v1 |
+| top_by_regime_return_router |mc |tp_refined_v1 |mc |tp_refined_v1 |mean_reversion_refined_v1 |be_refined_v1 |
+| top_by_regime_retdd_router |mc |— |tp_refined_v1 |— |mean_reversion_refined_v1 |be_refined_v1 |
 | no_trade_in_bad_regimes_router |be+mc |— |mrb+tp |— |— |— |
 
 ### Walk-Forward Router Validation
@@ -938,27 +939,27 @@ Train period (in-sample; maps fitted here):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.03 |0.17 |0.17 |0.29 |-0.07 |0.01 |
-| median return (%) |-0.01 |0.00 |0.16 |0.40 |0.00 |-0.01 |
-| max drawdown (%) |3.78 |1.55 |2.22 |2.22 |1.99 |3.78 |
-| global PF |0.98 |1.56 |1.35 |1.52 |0.80 |1.01 |
-| global expectancy ($) |-0.6539 |14.4902 |9.3166 |13.5403 |-7.2928 |0.2192 |
-| trade count |170 |48 |77 |91 |43 |157 |
-| no-trade windows |2 |20 |7 |3 |18 |3 |
-| ret/DD |0.13 |0.66 |0.87 |0.93 |0.22 |0.39 |
+| avg return (%) |-0.03 |0.09 |0.17 |0.18 |0.09 |0.07 |
+| median return (%) |-0.01 |0.00 |0.16 |0.00 |0.00 |0.00 |
+| max drawdown (%) |3.78 |1.54 |2.22 |2.22 |1.54 |3.78 |
+| global PF |0.98 |1.47 |1.35 |1.49 |1.47 |1.06 |
+| global expectancy ($) |-0.6539 |11.9827 |9.3166 |12.4408 |11.9827 |2.0915 |
+| trade count |170 |32 |77 |62 |32 |144 |
+| no-trade windows |2 |23 |7 |11 |23 |6 |
+| ret/DD |0.13 |0.39 |0.87 |0.89 |0.39 |0.45 |
 
 Test period (out-of-sample; maps frozen from train):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.72 |-0.40 |-0.27 |-0.59 |-0.68 |-0.63 |
-| median return (%) |-0.45 |-0.09 |-0.43 |-0.86 |-0.63 |-0.45 |
-| max drawdown (%) |3.07 |3.10 |2.23 |3.10 |3.07 |3.07 |
-| global PF |0.48 |0.57 |0.64 |0.51 |0.44 |0.52 |
-| global expectancy ($) |-20.9019 |-16.5052 |-12.8439 |-19.3888 |-24.6599 |-19.1673 |
-| trade count |62 |44 |38 |55 |50 |59 |
-| no-trade windows |0 |5 |1 |0 |2 |0 |
-| ret/DD |-0.19 |0.06 |-0.17 |-0.06 |-0.34 |-0.15 |
+| avg return (%) |-0.72 |0.03 |-0.27 |-0.02 |0.03 |-0.08 |
+| median return (%) |-0.45 |0.00 |-0.43 |0.00 |0.00 |0.00 |
+| max drawdown (%) |3.07 |0.96 |2.23 |1.34 |0.96 |2.31 |
+| global PF |0.48 |1.36 |0.64 |0.87 |1.36 |0.78 |
+| global expectancy ($) |-20.9019 |7.5241 |-12.8439 |-3.7778 |7.5241 |-6.7431 |
+| trade count |62 |6 |38 |10 |6 |21 |
+| no-trade windows |0 |13 |1 |10 |13 |8 |
+| ret/DD |-0.19 |0.16 |-0.17 |0.06 |0.16 |-0.08 |
 | verdict vs benchmarks |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
 
 Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
@@ -969,7 +970,7 @@ Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=
 | conservative_router |mc |— |— |be |— |mc |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
 | top_by_regime_return_router |mc |be |mc |be |mrb |mc |
-| top_by_regime_retdd_router |mc_refined_v1 |be |tp_refined_v1 |mrb |mean_reversion_refined_v1 |be_refined_v1 |
+| top_by_regime_retdd_router |mc |be |tp_refined_v1 |mrb |mean_reversion_refined_v1 |be_refined_v1 |
 | no_trade_in_bad_regimes_router |be+mc |— |mrb+tp |mrb |— |— |
 
 Rolling expanding-window folds (3 folds; each re-derives maps from its train prefix and scores the next chronological slice). Columns: test avg return % per fold, then test verdict per fold (Y/N), then folds validated.
@@ -977,11 +978,11 @@ Rolling expanding-window folds (3 folds; each re-derives maps from its train pre
 | router |f1 ret% |f2 ret% |f3 ret% |f1 ok |f2 ok |f3 ok |validated |
 | --- |--- |--- |--- |--- |--- |--- |--- |
 | a6_regime_router |-0.11 |0.29 |-1.13 |N |N |N |0/3 |
-| conservative_router |-0.20 |-0.07 |-0.49 |N |N |N |0/3 |
+| conservative_router |0.01 |0.14 |0.01 |N |N |Y |1/3 |
 | momentum_only_router |0.34 |0.38 |-0.57 |N |N |N |0/3 |
-| top_by_regime_return_router |-0.18 |-0.07 |-0.57 |N |N |N |0/3 |
-| top_by_regime_retdd_router |0.11 |-0.33 |-0.44 |N |N |N |0/3 |
-| no_trade_in_bad_regimes_router |0.08 |0.19 |-1.04 |N |N |N |0/3 |
+| top_by_regime_return_router |0.26 |0.19 |-0.08 |N |N |N |0/3 |
+| top_by_regime_retdd_router |0.01 |0.14 |0.01 |N |N |Y |1/3 |
+| no_trade_in_bad_regimes_router |0.08 |0.19 |-0.18 |N |N |N |0/3 |
 
 ### Regime-Window Purity Diagnostics
 
@@ -1019,23 +1020,22 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 ### Stability Rankings
 | regime |strategy |samples |score |returnStd |drawdownStd |profitFactorStd |expectancyStd |
 | --- |--- |--- |--- |--- |--- |--- |--- |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.23 |0.17 |0.17 |n/a |n/a |
 | CHOP |trend_pullback_refined_v1 |10 |-0.33 |0.19 |0.36 |n/a |n/a |
 | CHOP |breakout_expansion |10 |-6.57 |0.84 |0.75 |0.52 |22.78 |
 | CHOP |trend_pullback |10 |-10.73 |1.10 |1.15 |0.69 |36.96 |
+| CHOP |momentum_continuation_refined_v1 |10 |-12.49 |0.30 |0.28 |0.00 |49.02 |
 | CHOP |momentum_continuation |10 |-12.96 |0.78 |0.53 |1.02 |49.85 |
 | CHOP |mean_reversion_bounce |10 |-14.00 |1.13 |0.88 |0.65 |51.13 |
 | CHOP |mean_reversion_refined_v1 |10 |-15.70 |0.87 |0.72 |0.62 |59.04 |
 | CHOP |breakout_expansion_refined_v1 |10 |-29.31 |0.46 |0.45 |n/a |87.43 |
 | HIGH_VOL |trend_pullback |10 |-5.63 |1.22 |0.86 |0.57 |18.89 |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-10.74 |0.67 |0.62 |0.65 |40.67 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |-11.18 |0.24 |0.31 |1.26 |42.97 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |-10.97 |0.26 |0.40 |1.01 |42.31 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-11.53 |0.73 |0.67 |1.07 |44.50 |
 | HIGH_VOL |breakout_expansion |10 |-11.59 |0.96 |0.56 |1.92 |43.39 |
 | HIGH_VOL |mean_reversion_bounce |10 |-12.41 |1.26 |1.10 |1.12 |46.81 |
 | HIGH_VOL |momentum_continuation |10 |-14.34 |1.26 |0.61 |0.75 |56.05 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |-24.66 |0.36 |0.25 |n/a |73.57 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | LOW_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |-0.23 |0.18 |0.18 |n/a |n/a |
 | LOW_VOL |breakout_expansion |10 |-6.81 |0.91 |0.60 |0.50 |22.68 |
@@ -1043,16 +1043,17 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | LOW_VOL |mean_reversion_refined_v1 |10 |-11.55 |1.09 |0.80 |1.16 |42.47 |
 | LOW_VOL |mean_reversion_bounce |10 |-12.02 |1.34 |0.85 |1.17 |41.92 |
 | LOW_VOL |trend_pullback |10 |-14.05 |1.65 |0.99 |13.59 |36.87 |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |-14.94 |0.55 |0.61 |8.38 |49.89 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-1.59 |0.25 |0.43 |0.00 |5.08 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-1.98 |0.24 |0.41 |0.00 |6.68 |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-4.17 |0.24 |0.40 |0.00 |15.37 |
 | NEWS_SHOCK |trend_pullback |10 |-11.61 |1.06 |0.66 |1.27 |42.45 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |-15.37 |0.76 |0.66 |0.74 |59.38 |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |-15.73 |0.68 |0.69 |0.53 |60.09 |
 | NEWS_SHOCK |momentum_continuation |10 |-16.13 |0.93 |0.61 |0.69 |61.37 |
 | NEWS_SHOCK |breakout_expansion |10 |-16.21 |0.78 |0.52 |0.57 |62.48 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |-18.59 |0.51 |0.30 |0.98 |73.09 |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |-0.25 |0.19 |0.19 |n/a |n/a |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-0.74 |0.26 |0.30 |0.00 |1.73 |
 | TREND_DOWN |mean_reversion_bounce |10 |-9.39 |1.01 |0.85 |0.79 |33.02 |
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-12.64 |0.66 |0.62 |0.90 |48.07 |
@@ -1060,7 +1061,7 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | TREND_DOWN |momentum_continuation |10 |-15.05 |0.56 |0.51 |0.00 |58.12 |
 | TREND_DOWN |breakout_expansion |10 |-15.27 |1.02 |0.52 |0.44 |58.06 |
 | TREND_UP |trend_pullback_refined_v1 |10 |-1.42 |0.21 |0.52 |0.18 |5.14 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |-6.64 |0.43 |0.41 |n/a |19.55 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |-6.59 |0.53 |0.63 |0.56 |25.21 |
 | TREND_UP |momentum_continuation |10 |-8.80 |0.68 |0.36 |0.75 |35.75 |
 | TREND_UP |trend_pullback |10 |-9.49 |1.08 |0.76 |1.15 |34.31 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |-9.50 |1.39 |0.92 |0.98 |33.39 |
@@ -1089,7 +1090,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_UP |trend_pullback |10 |0.59 |0.62 |1.05 |22.0869 |2.33 |60.12 |44.79 |3.60 |0.57 |
 | TREND_UP |breakout_expansion |10 |0.42 |0.58 |1.19 |19.0815 |2.15 |55.17 |60.49 |3.60 |0.36 |
 | TREND_UP |mean_reversion_bounce |10 |0.46 |0.33 |0.44 |39.8715 |0.71 |64.81 |7.50 |1.30 |1.05 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |0.35 |0.00 |0.23 |50.0860 |2.61 |72.22 |21.46 |0.70 |1.53 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |0.46 |0.19 |0.90 |23.7418 |1.79 |59.26 |57.71 |2.40 |0.50 |
 | TREND_UP |trend_pullback_refined_v1 |10 |0.35 |0.00 |0.30 |60.1885 |3.27 |77.78 |13.82 |0.70 |1.16 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |0.03 |0.05 |1.08 |-0.3187 |1.39 |40.17 |24.86 |3.10 |0.03 |
 | TREND_UP |mean_reversion_refined_v1 |10 |0.08 |0.00 |0.19 |18.2420 |0.68 |62.50 |1.81 |0.50 |0.45 |
@@ -1097,7 +1098,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_DOWN |trend_pullback |10 |-0.43 |-0.69 |1.90 |5.5182 |0.87 |48.58 |39.31 |5.00 |-0.22 |
 | TREND_DOWN |breakout_expansion |10 |-0.79 |-1.06 |1.43 |-21.0206 |0.63 |33.67 |25.97 |3.30 |-0.55 |
 | TREND_DOWN |mean_reversion_bounce |10 |-0.22 |0.00 |0.83 |-14.7602 |0.58 |30.95 |14.93 |1.60 |-0.26 |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.09 |0.00 |0.01 |90.2471 |n/a |100.00 |0.49 |0.10 |11.06 |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |-0.06 |0.00 |0.06 |-62.7806 |0.00 |0.00 |0.76 |0.10 |-1.00 |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |0.09 |0.00 |0.00 |86.7500 |n/a |100.00 |0.56 |0.10 |24.16 |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-0.18 |0.00 |0.20 |-45.1996 |0.00 |0.00 |2.22 |0.40 |-0.91 |
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-0.07 |0.00 |0.55 |-13.5505 |0.72 |31.94 |8.61 |1.10 |-0.12 |
@@ -1105,7 +1106,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | HIGH_VOL |trend_pullback |10 |-0.35 |0.00 |1.84 |-5.1680 |1.17 |33.10 |50.07 |4.80 |-0.19 |
 | HIGH_VOL |breakout_expansion |10 |-0.11 |-0.05 |1.04 |-3.3971 |0.92 |40.83 |36.94 |2.90 |-0.10 |
 | HIGH_VOL |mean_reversion_bounce |10 |-0.40 |0.12 |1.75 |-0.2241 |1.25 |37.29 |24.86 |4.70 |-0.23 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |-0.06 |0.00 |0.06 |-55.5888 |0.00 |0.00 |0.42 |0.10 |-1.00 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |0.04 |0.00 |0.10 |20.6086 |0.00 |50.00 |4.37 |0.20 |0.43 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |0.04 |0.07 |0.79 |13.5075 |0.86 |50.93 |18.33 |2.10 |0.06 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-0.08 |0.12 |1.37 |-2.1206 |1.27 |36.32 |21.74 |3.80 |-0.06 |
@@ -1113,7 +1114,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | LOW_VOL |trend_pullback |10 |-0.94 |-0.02 |2.02 |-7.5739 |1.48 |40.01 |28.26 |5.40 |-0.47 |
 | LOW_VOL |breakout_expansion |10 |-0.87 |-0.77 |1.90 |-16.0528 |1.05 |33.77 |31.60 |4.90 |-0.46 |
 | LOW_VOL |mean_reversion_bounce |10 |-0.75 |0.00 |1.27 |-11.3419 |0.65 |32.74 |19.93 |2.40 |-0.59 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |-0.04 |0.00 |0.25 |10.7509 |0.00 |50.00 |5.83 |0.30 |-0.18 |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |0.13 |0.10 |0.64 |8.6597 |0.64 |44.44 |14.44 |1.30 |0.21 |
 | LOW_VOL |trend_pullback_refined_v1 |10 |-0.25 |0.00 |0.35 |-39.9427 |0.30 |12.50 |6.25 |0.70 |-0.73 |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |-0.06 |0.00 |0.06 |-58.1384 |0.00 |0.00 |0.21 |0.10 |-1.00 |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-0.43 |0.00 |0.94 |-2.8156 |0.53 |40.48 |15.90 |1.80 |-0.45 |
@@ -1121,7 +1122,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | NEWS_SHOCK |trend_pullback |10 |-0.01 |-0.11 |0.84 |3.9023 |1.57 |33.33 |24.31 |1.80 |-0.01 |
 | NEWS_SHOCK |breakout_expansion |10 |0.07 |0.13 |0.70 |1.3169 |1.29 |37.96 |20.97 |2.50 |0.10 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |-0.23 |0.00 |0.54 |-0.0023 |0.36 |36.25 |5.00 |1.30 |-0.43 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.05 |0.00 |0.08 |-53.8830 |0.00 |0.00 |0.63 |0.10 |-0.68 |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.27 |0.00 |0.45 |-34.4807 |0.22 |8.00 |7.36 |1.10 |-0.60 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-0.06 |0.00 |0.06 |-58.4424 |0.00 |0.00 |0.00 |0.10 |-1.00 |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |0.21 |0.00 |0.41 |12.1158 |0.60 |42.86 |10.21 |1.50 |0.52 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |-0.09 |0.00 |0.33 |-8.6901 |20.95 |25.00 |4.44 |0.80 |-0.27 |
@@ -1129,7 +1130,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | CHOP |trend_pullback |10 |-0.84 |-1.15 |1.31 |-30.5388 |0.36 |21.00 |20.90 |2.50 |-0.64 |
 | CHOP |breakout_expansion |10 |-0.87 |-0.58 |1.24 |-37.3709 |0.34 |13.67 |30.07 |2.50 |-0.70 |
 | CHOP |mean_reversion_bounce |10 |-0.23 |0.23 |1.05 |8.9547 |0.84 |45.60 |15.00 |2.70 |-0.22 |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.11 |0.00 |0.12 |-55.4564 |0.00 |0.00 |0.63 |0.20 |-0.92 |
+| CHOP |momentum_continuation_refined_v1 |10 |-0.28 |0.00 |0.38 |-55.4962 |0.00 |0.00 |7.29 |0.50 |-0.73 |
 | CHOP |trend_pullback_refined_v1 |10 |0.04 |0.00 |0.07 |18.6449 |1.68 |50.00 |2.15 |0.20 |0.57 |
 | CHOP |breakout_expansion_refined_v1 |10 |-0.30 |0.00 |0.35 |-59.6613 |0.00 |0.00 |2.01 |0.50 |-0.86 |
 | CHOP |mean_reversion_refined_v1 |10 |-0.02 |0.24 |0.70 |16.0000 |0.70 |48.15 |9.65 |1.70 |-0.03 |
@@ -1140,50 +1141,50 @@ Composite score is the average ordinal rank across avg return, median return, ma
 
 | regime |rank |strategy |score |samples |avgReturn |medReturn |maxDD |expectancy |PF |winRate |exposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| TREND_UP |1 |momentum_continuation |3.00 |10 |0.86 |1.11 |1.51 |33.4943 |3.34 |65.83 |85.62 |1.25 |
-| TREND_UP |2 |momentum_continuation_refined_v1 |3.25 |10 |0.35 |0.00 |0.88 |50.0860 |2.61 |72.22 |21.46 |1.53 |
+| TREND_UP |1 |momentum_continuation |2.63 |10 |0.86 |1.11 |1.51 |33.4943 |3.34 |65.83 |85.62 |1.25 |
+| TREND_UP |2 |mean_reversion_bounce |3.25 |10 |0.46 |0.33 |1.02 |39.8715 |0.71 |64.81 |7.50 |1.05 |
 | TREND_UP |3 |trend_pullback_refined_v1 |3.38 |10 |0.35 |0.00 |1.52 |60.1885 |3.27 |77.78 |13.82 |1.16 |
-| TREND_UP |4 |mean_reversion_bounce |3.75 |10 |0.46 |0.33 |1.02 |39.8715 |0.71 |64.81 |7.50 |1.05 |
-| TREND_UP |5 |trend_pullback |4.50 |10 |0.59 |0.62 |1.61 |22.0869 |2.33 |60.12 |44.79 |0.57 |
-| TREND_UP |6 |mean_reversion_refined_v1 |5.38 |10 |0.08 |0.00 |0.73 |18.2420 |0.68 |62.50 |1.81 |0.45 |
+| TREND_UP |4 |trend_pullback |4.00 |10 |0.59 |0.62 |1.61 |22.0869 |2.33 |60.12 |44.79 |0.57 |
+| TREND_UP |5 |momentum_continuation_refined_v1 |4.75 |10 |0.46 |0.19 |1.47 |23.7418 |1.79 |59.26 |57.71 |0.50 |
+| TREND_UP |6 |mean_reversion_refined_v1 |5.25 |10 |0.08 |0.00 |0.73 |18.2420 |0.68 |62.50 |1.81 |0.45 |
 | TREND_UP |7 |breakout_expansion |5.88 |10 |0.42 |0.58 |2.80 |19.0815 |2.15 |55.17 |60.49 |0.36 |
 | TREND_UP |8 |breakout_expansion_refined_v1 |6.88 |10 |0.03 |0.05 |1.84 |-0.3187 |1.39 |40.17 |24.86 |0.03 |
-| TREND_DOWN |1 |momentum_continuation_refined_v1 |2.38 |10 |0.09 |0.00 |0.08 |90.2471 |n/a |100.00 |0.49 |11.06 |
-| TREND_DOWN |2 |trend_pullback_refined_v1 |2.75 |10 |0.09 |0.00 |0.04 |86.7500 |n/a |100.00 |0.56 |24.16 |
-| TREND_DOWN |3 |mean_reversion_refined_v1 |4.00 |10 |-0.07 |0.00 |1.84 |-13.5505 |0.72 |31.94 |8.61 |-0.12 |
-| TREND_DOWN |4 |mean_reversion_bounce |5.13 |10 |-0.22 |0.00 |3.09 |-14.7602 |0.58 |30.95 |14.93 |-0.26 |
-| TREND_DOWN |5 |momentum_continuation |5.13 |10 |-0.27 |-0.19 |1.85 |-6.7519 |0.30 |34.38 |11.53 |-0.46 |
-| TREND_DOWN |6 |trend_pullback |5.13 |10 |-0.43 |-0.69 |4.14 |5.5182 |0.87 |48.58 |39.31 |-0.22 |
-| TREND_DOWN |7 |breakout_expansion_refined_v1 |5.50 |10 |-0.18 |0.00 |0.74 |-45.1996 |0.00 |0.00 |2.22 |-0.91 |
-| TREND_DOWN |8 |breakout_expansion |6.38 |10 |-0.79 |-1.06 |2.84 |-21.0206 |0.63 |33.67 |25.97 |-0.55 |
-| HIGH_VOL |1 |breakout_expansion_refined_v1 |2.38 |10 |0.04 |0.07 |1.68 |13.5075 |0.86 |50.93 |18.33 |0.06 |
-| HIGH_VOL |2 |mean_reversion_refined_v1 |3.50 |10 |-0.08 |0.12 |3.16 |-2.1206 |1.27 |36.32 |21.74 |-0.06 |
-| HIGH_VOL |3 |momentum_continuation |4.50 |10 |-0.02 |-0.02 |1.87 |-0.8862 |1.15 |35.00 |48.82 |-0.02 |
-| HIGH_VOL |4 |mean_reversion_bounce |4.50 |10 |-0.40 |0.12 |3.54 |-0.2241 |1.25 |37.29 |24.86 |-0.23 |
-| HIGH_VOL |5 |breakout_expansion |5.00 |10 |-0.11 |-0.05 |1.79 |-3.3971 |0.92 |40.83 |36.94 |-0.10 |
-| HIGH_VOL |6 |momentum_continuation_refined_v1 |5.13 |10 |-0.06 |0.00 |0.56 |-55.5888 |0.00 |0.00 |0.42 |-1.00 |
-| HIGH_VOL |7 |trend_pullback_refined_v1 |5.75 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| HIGH_VOL |8 |trend_pullback |5.75 |10 |-0.35 |0.00 |3.36 |-5.1680 |1.17 |33.10 |50.07 |-0.19 |
-| LOW_VOL |1 |momentum_continuation |2.38 |10 |0.33 |0.75 |2.65 |17.1279 |7.81 |48.33 |45.42 |0.27 |
-| LOW_VOL |2 |momentum_continuation_refined_v1 |2.63 |10 |-0.04 |0.00 |1.40 |10.7509 |0.00 |50.00 |5.83 |-0.18 |
-| LOW_VOL |3 |mean_reversion_refined_v1 |4.25 |10 |-0.43 |0.00 |3.31 |-2.8156 |0.53 |40.48 |15.90 |-0.45 |
+| TREND_DOWN |1 |trend_pullback_refined_v1 |2.25 |10 |0.09 |0.00 |0.04 |86.7500 |n/a |100.00 |0.56 |24.16 |
+| TREND_DOWN |2 |mean_reversion_refined_v1 |3.63 |10 |-0.07 |0.00 |1.84 |-13.5505 |0.72 |31.94 |8.61 |-0.12 |
+| TREND_DOWN |3 |momentum_continuation_refined_v1 |4.63 |10 |-0.06 |0.00 |0.63 |-62.7806 |0.00 |0.00 |0.76 |-1.00 |
+| TREND_DOWN |4 |mean_reversion_bounce |4.75 |10 |-0.22 |0.00 |3.09 |-14.7602 |0.58 |30.95 |14.93 |-0.26 |
+| TREND_DOWN |5 |momentum_continuation |4.75 |10 |-0.27 |-0.19 |1.85 |-6.7519 |0.30 |34.38 |11.53 |-0.46 |
+| TREND_DOWN |6 |trend_pullback |4.75 |10 |-0.43 |-0.69 |4.14 |5.5182 |0.87 |48.58 |39.31 |-0.22 |
+| TREND_DOWN |7 |breakout_expansion_refined_v1 |5.38 |10 |-0.18 |0.00 |0.74 |-45.1996 |0.00 |0.00 |2.22 |-0.91 |
+| TREND_DOWN |8 |breakout_expansion |6.00 |10 |-0.79 |-1.06 |2.84 |-21.0206 |0.63 |33.67 |25.97 |-0.55 |
+| HIGH_VOL |1 |breakout_expansion_refined_v1 |2.63 |10 |0.04 |0.07 |1.68 |13.5075 |0.86 |50.93 |18.33 |0.06 |
+| HIGH_VOL |2 |momentum_continuation_refined_v1 |2.75 |10 |0.04 |0.00 |0.56 |20.6086 |0.00 |50.00 |4.37 |0.43 |
+| HIGH_VOL |3 |mean_reversion_refined_v1 |3.88 |10 |-0.08 |0.12 |3.16 |-2.1206 |1.27 |36.32 |21.74 |-0.06 |
+| HIGH_VOL |4 |mean_reversion_bounce |4.88 |10 |-0.40 |0.12 |3.54 |-0.2241 |1.25 |37.29 |24.86 |-0.23 |
+| HIGH_VOL |5 |momentum_continuation |5.00 |10 |-0.02 |-0.02 |1.87 |-0.8862 |1.15 |35.00 |48.82 |-0.02 |
+| HIGH_VOL |6 |breakout_expansion |5.38 |10 |-0.11 |-0.05 |1.79 |-3.3971 |0.92 |40.83 |36.94 |-0.10 |
+| HIGH_VOL |7 |trend_pullback_refined_v1 |5.88 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| HIGH_VOL |8 |trend_pullback |6.13 |10 |-0.35 |0.00 |3.36 |-5.1680 |1.17 |33.10 |50.07 |-0.19 |
+| LOW_VOL |1 |momentum_continuation |2.25 |10 |0.33 |0.75 |2.65 |17.1279 |7.81 |48.33 |45.42 |0.27 |
+| LOW_VOL |2 |momentum_continuation_refined_v1 |2.50 |10 |0.13 |0.10 |1.40 |8.6597 |0.64 |44.44 |14.44 |0.21 |
+| LOW_VOL |3 |mean_reversion_refined_v1 |4.38 |10 |-0.43 |0.00 |3.31 |-2.8156 |0.53 |40.48 |15.90 |-0.45 |
 | LOW_VOL |4 |trend_pullback_refined_v1 |5.13 |10 |-0.25 |0.00 |1.96 |-39.9427 |0.30 |12.50 |6.25 |-0.73 |
 | LOW_VOL |5 |breakout_expansion_refined_v1 |5.25 |10 |-0.06 |0.00 |0.58 |-58.1384 |0.00 |0.00 |0.21 |-1.00 |
-| LOW_VOL |6 |mean_reversion_bounce |5.25 |10 |-0.75 |0.00 |4.54 |-11.3419 |0.65 |32.74 |19.93 |-0.59 |
+| LOW_VOL |6 |mean_reversion_bounce |5.38 |10 |-0.75 |0.00 |4.54 |-11.3419 |0.65 |32.74 |19.93 |-0.59 |
 | LOW_VOL |7 |trend_pullback |5.38 |10 |-0.94 |-0.02 |4.34 |-7.5739 |1.48 |40.01 |28.26 |-0.47 |
 | LOW_VOL |8 |breakout_expansion |5.75 |10 |-0.87 |-0.77 |3.58 |-16.0528 |1.05 |33.77 |31.60 |-0.46 |
-| NEWS_SHOCK |1 |breakout_expansion_refined_v1 |2.63 |10 |0.21 |0.00 |1.11 |12.1158 |0.60 |42.86 |10.21 |0.52 |
-| NEWS_SHOCK |2 |breakout_expansion |2.88 |10 |0.07 |0.13 |1.18 |1.3169 |1.29 |37.96 |20.97 |0.10 |
+| NEWS_SHOCK |1 |breakout_expansion_refined_v1 |2.50 |10 |0.21 |0.00 |1.11 |12.1158 |0.60 |42.86 |10.21 |0.52 |
+| NEWS_SHOCK |2 |breakout_expansion |2.75 |10 |0.07 |0.13 |1.18 |1.3169 |1.29 |37.96 |20.97 |0.10 |
 | NEWS_SHOCK |3 |trend_pullback |4.63 |10 |-0.01 |-0.11 |2.05 |3.9023 |1.57 |33.33 |24.31 |-0.01 |
-| NEWS_SHOCK |4 |momentum_continuation_refined_v1 |5.00 |10 |-0.05 |0.00 |0.79 |-53.8830 |0.00 |0.00 |0.63 |-0.68 |
-| NEWS_SHOCK |5 |mean_reversion_refined_v1 |5.00 |10 |-0.09 |0.00 |1.79 |-8.6901 |20.95 |25.00 |4.44 |-0.27 |
-| NEWS_SHOCK |6 |mean_reversion_bounce |5.00 |10 |-0.23 |0.00 |2.03 |-0.0023 |0.36 |36.25 |5.00 |-0.43 |
-| NEWS_SHOCK |7 |momentum_continuation |5.38 |10 |-0.04 |-0.04 |1.63 |-0.7105 |0.38 |31.48 |50.21 |-0.05 |
-| NEWS_SHOCK |8 |trend_pullback_refined_v1 |5.50 |10 |-0.06 |0.00 |0.58 |-58.4424 |0.00 |0.00 |0.00 |-1.00 |
-| CHOP |1 |trend_pullback_refined_v1 |1.63 |10 |0.04 |0.00 |0.65 |18.6449 |1.68 |50.00 |2.15 |0.57 |
+| NEWS_SHOCK |4 |mean_reversion_refined_v1 |4.75 |10 |-0.09 |0.00 |1.79 |-8.6901 |20.95 |25.00 |4.44 |-0.27 |
+| NEWS_SHOCK |5 |mean_reversion_bounce |4.75 |10 |-0.23 |0.00 |2.03 |-0.0023 |0.36 |36.25 |5.00 |-0.43 |
+| NEWS_SHOCK |6 |momentum_continuation |5.25 |10 |-0.04 |-0.04 |1.63 |-0.7105 |0.38 |31.48 |50.21 |-0.05 |
+| NEWS_SHOCK |7 |trend_pullback_refined_v1 |5.38 |10 |-0.06 |0.00 |0.58 |-58.4424 |0.00 |0.00 |0.00 |-1.00 |
+| NEWS_SHOCK |8 |momentum_continuation_refined_v1 |6.00 |10 |-0.27 |0.00 |1.69 |-34.4807 |0.22 |8.00 |7.36 |-0.60 |
+| CHOP |1 |trend_pullback_refined_v1 |1.50 |10 |0.04 |0.00 |0.65 |18.6449 |1.68 |50.00 |2.15 |0.57 |
 | CHOP |2 |mean_reversion_refined_v1 |2.50 |10 |-0.02 |0.24 |1.61 |16.0000 |0.70 |48.15 |9.65 |-0.03 |
-| CHOP |3 |mean_reversion_bounce |3.63 |10 |-0.23 |0.23 |2.60 |8.9547 |0.84 |45.60 |15.00 |-0.22 |
-| CHOP |4 |momentum_continuation_refined_v1 |4.75 |10 |-0.11 |0.00 |1.21 |-55.4564 |0.00 |0.00 |0.63 |-0.92 |
+| CHOP |3 |mean_reversion_bounce |3.50 |10 |-0.23 |0.23 |2.60 |8.9547 |0.84 |45.60 |15.00 |-0.22 |
+| CHOP |4 |momentum_continuation_refined_v1 |5.00 |10 |-0.28 |0.00 |1.21 |-55.4962 |0.00 |0.00 |7.29 |-0.73 |
 | CHOP |5 |momentum_continuation |5.25 |10 |-0.28 |-0.44 |1.76 |-17.2365 |0.31 |28.33 |37.78 |-0.33 |
 | CHOP |6 |breakout_expansion_refined_v1 |5.88 |10 |-0.30 |0.00 |1.40 |-59.6613 |0.00 |0.00 |2.01 |-0.86 |
 | CHOP |7 |trend_pullback |6.00 |10 |-0.84 |-1.15 |2.62 |-30.5388 |0.36 |21.00 |20.90 |-0.64 |
@@ -1196,7 +1197,7 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | trend_pullback |60 |-0.33 |1.49 |1.30 |-1.9622 |3.85 |34.61 |0.44 |
 | breakout_expansion |60 |-0.36 |1.25 |1.03 |-9.7584 |3.28 |34.34 |0.08 |
 | mean_reversion_bounce |60 |-0.23 |0.98 |0.81 |5.7315 |2.33 |14.54 |1.03 |
-| momentum_continuation_refined_v1 |60 |0.03 |0.12 |0.87 |10.7865 |0.25 |4.91 |1.46 |
+| momentum_continuation_refined_v1 |60 |0.00 |0.42 |0.73 |-4.1446 |0.93 |15.32 |0.37 |
 | trend_pullback_refined_v1 |60 |0.03 |0.13 |1.47 |18.4541 |0.30 |3.80 |3.30 |
 | breakout_expansion_refined_v1 |60 |-0.04 |0.48 |0.74 |-7.8398 |1.28 |9.64 |0.51 |
 | mean_reversion_refined_v1 |60 |-0.10 |0.68 |2.87 |1.8632 |1.62 |10.36 |0.89 |
@@ -1276,8 +1277,8 @@ Router profit factor in the summary is the arithmetic average of non-null per-wi
 ### Portfolio Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
-| equal_weight |60 |-0.11 |0.48 |1.22 |-0.6676 |15.13 |92.08 |0.49 |
-| custom_weight |60 |-0.11 |0.48 |1.22 |-0.6676 |15.13 |92.08 |0.49 |
+| equal_weight |60 |-0.12 |0.50 |1.20 |-0.7318 |15.82 |92.37 |0.47 |
+| custom_weight |60 |-0.12 |0.50 |1.20 |-0.7318 |15.82 |92.37 |0.47 |
 | regime_weight |60 |-0.30 |0.83 |1.08 |-7.4085 |4.85 |52.49 |0.09 |
 
 ### Router vs Best Static Strategy Comparison
@@ -1286,18 +1287,18 @@ All contestants evaluated across the same non-overlapping regime windows. ret/DD
 
 | metric |a6_regime_router |momentum_continuation (best avg return) |trend_pullback_refined_v1 (best ret/DD) |equal_weight |regime_weight |
 | --- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.26 |0.10 |0.03 |-0.11 |-0.30 |
-| median return (%) |0.00 |0.00 |0.00 |-0.11 |-0.09 |
+| avg return (%) |-0.26 |0.10 |0.03 |-0.12 |-0.30 |
+| median return (%) |0.00 |0.00 |0.00 |-0.12 |-0.09 |
 | max drawdown (%) |4.54 |2.65 |1.96 |2.06 |4.05 |
-| avg drawdown (%) |1.32 |0.85 |0.13 |0.48 |0.83 |
+| avg drawdown (%) |1.32 |0.85 |0.13 |0.50 |0.83 |
 | global PF |0.81 |1.16 |1.29 |0.83 |0.70 |
-| avg PF |2.21 |2.32 |1.47 |1.22 |1.08 |
-| global expectancy ($) |-6.6933 |4.3205 |9.0274 |-0.7456 |-6.1443 |
-| avg expectancy ($) |-4.9564 |4.6419 |18.4541 |-0.6676 |-7.4085 |
-| exposure (%) |45.02 |46.56 |3.80 |92.08 |52.49 |
-| trade count |229 |133 |18 |908 |291 |
+| avg PF |2.21 |2.32 |1.47 |1.20 |1.08 |
+| global expectancy ($) |-6.6933 |4.3205 |9.0274 |-0.7333 |-6.1443 |
+| avg expectancy ($) |-4.9564 |4.6419 |18.4541 |-0.7318 |-7.4085 |
+| exposure (%) |45.02 |46.56 |3.80 |92.37 |52.49 |
+| trade count |229 |133 |18 |949 |291 |
 | no-trade windows |3 |3 |52 |0 |3 |
-| ret/DD |0.20 |1.16 |3.30 |0.49 |0.09 |
+| ret/DD |0.20 |1.16 |3.30 |0.47 |0.09 |
 
 Best static by avg return: **momentum_continuation** (0.10%)
 Best static by ret/DD: **trend_pullback_refined_v1** (ret/DD = 3.30)
@@ -1308,22 +1309,22 @@ Router verdict: **NOT VALIDATED** — router does not beat all four benchmarks (
 
 IN-SAMPLE: router maps are derived from the same primary-config windows they are evaluated on, so these results are hypothesis discovery, not validation. See Walk-Forward Router Validation below for out-of-sample evidence. Five experimental router configurations evaluated against the default A6 router on the same primary-config windows. conservative_router trades only if the regime's top strategy has avgReturn > 0 AND avgPF > 1. momentum_only_router uses momentum_continuation for every regime. top_by_regime_return_router picks the highest-avgReturn strategy per regime from the multi-window aggregates. top_by_regime_retdd_router picks the best ret/DD strategy per regime (no trade if no strategy has ret/DD > 0). no_trade_in_bad_regimes_router uses the default A6 map but blanks any regime where the default router had negative avg return.
 
-Verdict benchmarks: best static by avg return = **momentum_continuation** (0.10%), best static by ret/DD = **trend_pullback_refined_v1** (3.30), equal_weight avg ret = -0.11%, regime_weight avg ret = -0.30%.
+Verdict benchmarks: best static by avg return = **momentum_continuation** (0.10%), best static by ret/DD = **trend_pullback_refined_v1** (3.30), equal_weight avg ret = -0.12%, regime_weight avg ret = -0.30%.
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.26 |0.07 |0.10 |0.10 |0.15 |-0.08 |
+| avg return (%) |-0.26 |0.07 |0.10 |0.10 |0.07 |-0.08 |
 | median return (%) |0.00 |0.00 |0.00 |0.00 |0.00 |0.00 |
 | max drawdown (%) |4.54 |2.65 |2.65 |2.65 |2.65 |2.18 |
-| avg drawdown (%) |1.32 |0.62 |0.85 |0.77 |0.65 |0.42 |
-| global PF |0.81 |1.15 |1.16 |1.16 |1.33 |0.78 |
-| avg PF |2.21 |3.11 |2.32 |2.35 |1.00 |1.09 |
-| global expectancy ($) |-6.6933 |4.3590 |4.3205 |4.6407 |9.8161 |-7.2881 |
-| avg expectancy ($) |-4.9564 |-0.3985 |4.6419 |2.9141 |13.5048 |-11.0378 |
-| exposure (%) |45.02 |32.41 |46.56 |36.12 |20.63 |20.54 |
-| trade count |229 |96 |133 |124 |93 |64 |
-| no-trade windows |3 |20 |3 |6 |12 |31 |
-| ret/DD |0.20 |0.91 |1.16 |1.05 |1.42 |0.18 |
+| avg drawdown (%) |1.32 |0.62 |0.85 |0.77 |0.62 |0.42 |
+| global PF |0.81 |1.15 |1.16 |1.16 |1.15 |0.78 |
+| avg PF |2.21 |3.11 |2.32 |2.35 |3.11 |1.09 |
+| global expectancy ($) |-6.6933 |4.3590 |4.3205 |4.6407 |4.3590 |-7.2881 |
+| avg expectancy ($) |-4.9564 |-0.3985 |4.6419 |2.9141 |-0.3985 |-11.0378 |
+| exposure (%) |45.02 |32.41 |46.56 |36.12 |32.41 |20.54 |
+| trade count |229 |96 |133 |124 |96 |64 |
+| no-trade windows |3 |20 |3 |6 |20 |31 |
+| ret/DD |0.20 |0.91 |1.16 |1.05 |0.91 |0.18 |
 | verdict |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
 
 Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
@@ -1333,8 +1334,8 @@ Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum
 | a6_regime_router |be+mc |mc |mrb+tp |mrb |mc |mc+mrb |
 | conservative_router |mc |— |— |mc |— |tp_refined_v1 |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
-| top_by_regime_return_router |mc |mc_refined_v1 |be_refined_v1 |mc |be_refined_v1 |tp_refined_v1 |
-| top_by_regime_retdd_router |mc_refined_v1 |tp_refined_v1 |be_refined_v1 |mc |be_refined_v1 |tp_refined_v1 |
+| top_by_regime_return_router |mc |tp_refined_v1 |be_refined_v1 |mc |be_refined_v1 |tp_refined_v1 |
+| top_by_regime_retdd_router |mc |tp_refined_v1 |mc_refined_v1 |mc |be_refined_v1 |tp_refined_v1 |
 | no_trade_in_bad_regimes_router |be+mc |— |— |— |— |— |
 
 ### Walk-Forward Router Validation
@@ -1347,27 +1348,27 @@ Train period (in-sample; maps fitted here):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.24 |0.04 |0.06 |-0.02 |0.10 |-0.09 |
-| median return (%) |0.00 |0.00 |0.00 |-0.01 |0.00 |0.00 |
-| max drawdown (%) |4.54 |1.63 |2.65 |2.38 |1.63 |2.18 |
-| global PF |0.83 |1.12 |1.10 |0.95 |1.51 |0.74 |
-| global expectancy ($) |-5.9682 |3.1594 |2.7802 |-1.3000 |11.6851 |-9.2034 |
-| trade count |166 |59 |86 |74 |35 |43 |
-| no-trade windows |3 |11 |3 |7 |22 |23 |
-| ret/DD |0.26 |1.08 |1.16 |0.85 |1.88 |0.41 |
+| avg return (%) |-0.24 |-0.04 |0.06 |0.03 |-0.04 |-0.09 |
+| median return (%) |0.00 |0.00 |0.00 |0.00 |0.00 |0.00 |
+| max drawdown (%) |4.54 |2.65 |2.65 |2.65 |2.65 |2.18 |
+| global PF |0.83 |0.91 |1.10 |1.04 |0.91 |0.74 |
+| global expectancy ($) |-5.9682 |-2.9023 |2.7802 |1.3120 |-2.9023 |-9.2034 |
+| trade count |166 |60 |86 |81 |60 |43 |
+| no-trade windows |3 |16 |3 |6 |16 |23 |
+| ret/DD |0.26 |0.52 |1.16 |0.97 |0.52 |0.41 |
 
 Test period (out-of-sample; maps frozen from train):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.30 |-0.13 |0.19 |-0.12 |-0.11 |-0.04 |
-| median return (%) |-0.11 |-0.16 |-0.16 |-0.27 |0.00 |0.00 |
-| max drawdown (%) |3.16 |1.87 |2.35 |1.87 |1.87 |1.10 |
-| global PF |0.75 |0.76 |1.26 |0.81 |0.63 |0.89 |
-| global expectancy ($) |-8.6039 |-7.7735 |7.1388 |-6.0039 |-13.8457 |-3.3661 |
-| trade count |63 |29 |47 |37 |14 |21 |
-| no-trade windows |0 |4 |0 |2 |11 |8 |
-| ret/DD |0.05 |-0.15 |1.18 |0.05 |-0.11 |-0.24 |
+| avg return (%) |-0.30 |0.33 |0.19 |0.26 |0.33 |-0.04 |
+| median return (%) |-0.11 |0.00 |-0.16 |0.22 |0.00 |0.00 |
+| max drawdown (%) |3.16 |2.35 |2.35 |2.35 |2.35 |1.10 |
+| global PF |0.75 |1.69 |1.26 |1.41 |1.69 |0.89 |
+| global expectancy ($) |-8.6039 |16.4612 |7.1388 |10.9111 |16.4612 |-3.3661 |
+| trade count |63 |36 |47 |43 |36 |21 |
+| no-trade windows |0 |4 |0 |0 |4 |8 |
+| ret/DD |0.05 |1.63 |1.18 |1.21 |1.63 |-0.24 |
 | verdict vs benchmarks |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
 
 Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
@@ -1378,7 +1379,7 @@ Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=
 | conservative_router |mc |mean_reversion_refined_v1 |mc |— |— |— |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
 | top_by_regime_return_router |mc |mean_reversion_refined_v1 |mc |be_refined_v1 |be_refined_v1 |mean_reversion_refined_v1 |
-| top_by_regime_retdd_router |mc_refined_v1 |mean_reversion_refined_v1 |mc |— |be_refined_v1 |tp_refined_v1 |
+| top_by_regime_retdd_router |mc |mean_reversion_refined_v1 |mc_refined_v1 |— |be_refined_v1 |tp_refined_v1 |
 | no_trade_in_bad_regimes_router |be+mc |— |— |— |— |— |
 
 Rolling expanding-window folds (3 folds; each re-derives maps from its train prefix and scores the next chronological slice). Columns: test avg return % per fold, then test verdict per fold (Y/N), then folds validated.
@@ -1386,10 +1387,10 @@ Rolling expanding-window folds (3 folds; each re-derives maps from its train pre
 | router |f1 ret% |f2 ret% |f3 ret% |f1 ok |f2 ok |f3 ok |validated |
 | --- |--- |--- |--- |--- |--- |--- |--- |
 | a6_regime_router |-0.07 |0.05 |-0.32 |N |N |N |0/3 |
-| conservative_router |-0.04 |0.26 |-0.01 |N |N |N |0/3 |
+| conservative_router |-0.32 |0.45 |0.09 |N |N |Y |1/3 |
 | momentum_only_router |0.01 |0.47 |0.01 |N |N |N |0/3 |
-| top_by_regime_return_router |0.01 |0.40 |-0.08 |N |N |N |0/3 |
-| top_by_regime_retdd_router |-0.07 |0.29 |0.02 |N |N |N |0/3 |
+| top_by_regime_return_router |-0.18 |0.56 |-0.04 |N |N |N |0/3 |
+| top_by_regime_retdd_router |-0.32 |0.45 |0.09 |N |N |Y |1/3 |
 | no_trade_in_bad_regimes_router |-0.37 |0.10 |-0.04 |N |N |N |0/3 |
 
 ### Regime-Window Purity Diagnostics
@@ -1429,7 +1430,7 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | regime |strategy |samples |score |returnStd |drawdownStd |profitFactorStd |expectancyStd |
 | --- |--- |--- |--- |--- |--- |--- |--- |
 | CHOP |trend_pullback_refined_v1 |10 |-0.12 |0.12 |0.21 |n/a |n/a |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.48 |0.35 |0.38 |n/a |n/a |
+| CHOP |momentum_continuation_refined_v1 |10 |-0.95 |0.39 |0.52 |0.00 |1.79 |
 | CHOP |breakout_expansion_refined_v1 |10 |-1.34 |0.43 |0.50 |0.00 |3.24 |
 | CHOP |breakout_expansion |10 |-8.08 |0.75 |0.45 |0.53 |27.10 |
 | CHOP |mean_reversion_bounce |10 |-13.37 |1.08 |0.76 |0.66 |50.06 |
@@ -1437,31 +1438,31 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | CHOP |trend_pullback |10 |-15.14 |1.20 |0.74 |0.72 |54.57 |
 | CHOP |mean_reversion_refined_v1 |10 |-16.20 |0.88 |0.62 |0.76 |62.45 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |-0.23 |0.18 |0.18 |n/a |n/a |
 | HIGH_VOL |breakout_expansion |10 |-5.94 |0.58 |0.60 |0.65 |21.53 |
 | HIGH_VOL |momentum_continuation |10 |-7.54 |0.78 |0.44 |1.10 |27.74 |
 | HIGH_VOL |mean_reversion_bounce |10 |-8.61 |1.60 |1.22 |1.06 |28.95 |
 | HIGH_VOL |trend_pullback |10 |-8.69 |1.43 |0.94 |1.50 |29.49 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-9.18 |1.19 |0.89 |1.16 |33.15 |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-13.61 |0.74 |0.52 |0.70 |52.67 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |-36.07 |0.37 |0.21 |n/a |107.76 |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |-0.24 |0.18 |0.18 |n/a |n/a |
 | LOW_VOL |trend_pullback_refined_v1 |10 |-9.69 |0.63 |0.74 |0.42 |35.94 |
 | LOW_VOL |breakout_expansion |10 |-10.35 |1.75 |1.04 |1.53 |33.61 |
 | LOW_VOL |trend_pullback |10 |-12.18 |2.15 |1.50 |1.66 |39.65 |
 | LOW_VOL |mean_reversion_bounce |10 |-16.00 |1.65 |1.44 |1.07 |56.87 |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |-17.13 |0.89 |0.48 |1.07 |66.61 |
 | LOW_VOL |momentum_continuation |10 |-17.47 |1.78 |0.84 |16.81 |51.76 |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-18.27 |1.29 |1.07 |1.15 |67.88 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |-36.19 |0.52 |0.52 |n/a |107.41 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-0.24 |0.18 |0.18 |n/a |n/a |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.26 |0.17 |0.25 |n/a |n/a |
 | NEWS_SHOCK |breakout_expansion |10 |-6.94 |0.71 |0.33 |1.07 |25.92 |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-7.78 |0.54 |0.61 |0.49 |28.41 |
 | NEWS_SHOCK |momentum_continuation |10 |-11.44 |0.60 |0.48 |0.67 |43.86 |
 | NEWS_SHOCK |trend_pullback |10 |-15.76 |1.02 |0.58 |3.51 |57.91 |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |-15.88 |0.83 |0.41 |0.83 |62.31 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |-16.30 |0.68 |0.88 |0.31 |62.40 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |-22.09 |0.53 |0.62 |35.80 |51.07 |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |-0.06 |0.27 |0.01 |n/a |n/a |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |-0.07 |0.29 |0.03 |n/a |n/a |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |-0.26 |0.20 |0.20 |n/a |n/a |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-5.43 |0.26 |0.29 |0.00 |20.44 |
 | TREND_DOWN |breakout_expansion |10 |-11.12 |1.18 |0.73 |0.87 |38.53 |
 | TREND_DOWN |momentum_continuation |10 |-11.82 |0.69 |0.59 |0.62 |44.27 |
@@ -1470,9 +1471,9 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-15.90 |0.67 |0.62 |1.34 |60.72 |
 | TREND_UP |trend_pullback |10 |-4.01 |0.50 |0.42 |1.74 |15.76 |
 | TREND_UP |trend_pullback_refined_v1 |10 |-7.59 |0.57 |0.54 |0.18 |30.46 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |-8.35 |0.64 |0.37 |1.24 |32.55 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |-9.56 |1.08 |0.45 |1.20 |35.67 |
 | TREND_UP |momentum_continuation |10 |-10.05 |1.14 |0.36 |4.15 |37.98 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |-10.41 |1.02 |0.44 |1.76 |40.24 |
 | TREND_UP |breakout_expansion |10 |-10.83 |1.34 |0.78 |2.07 |40.82 |
 | TREND_UP |mean_reversion_bounce |10 |-11.67 |0.55 |0.30 |0.83 |46.85 |
 | TREND_UP |mean_reversion_refined_v1 |10 |-13.30 |0.32 |0.27 |0.97 |51.99 |
@@ -1498,7 +1499,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_UP |trend_pullback |10 |0.08 |0.20 |1.16 |0.1798 |0.81 |45.00 |37.85 |2.80 |0.07 |
 | TREND_UP |breakout_expansion |10 |0.52 |-0.03 |1.12 |13.4121 |2.04 |50.33 |62.71 |3.80 |0.46 |
 | TREND_UP |mean_reversion_bounce |10 |-0.51 |-0.18 |1.15 |-16.7523 |0.23 |24.76 |10.07 |2.10 |-0.44 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |0.22 |0.00 |0.24 |12.6381 |1.14 |55.56 |19.31 |0.70 |0.92 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |0.41 |0.20 |0.75 |17.4027 |1.18 |56.25 |49.51 |1.80 |0.55 |
 | TREND_UP |trend_pullback_refined_v1 |10 |0.29 |0.00 |0.26 |39.8787 |4.08 |66.67 |13.89 |0.80 |1.13 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |0.18 |-0.01 |1.27 |6.5905 |1.24 |41.17 |25.49 |3.70 |0.14 |
 | TREND_UP |mean_reversion_refined_v1 |10 |-0.36 |0.00 |0.39 |-46.8190 |0.00 |0.00 |2.29 |0.70 |-0.92 |
@@ -1506,7 +1507,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_DOWN |trend_pullback |10 |-1.24 |-1.12 |2.20 |-16.0440 |0.79 |32.92 |42.08 |5.40 |-0.56 |
 | TREND_DOWN |breakout_expansion |10 |-0.89 |-0.85 |1.45 |-27.8405 |0.06 |28.33 |25.00 |2.80 |-0.62 |
 | TREND_DOWN |mean_reversion_bounce |10 |-0.67 |-0.61 |0.97 |-42.6276 |0.31 |11.25 |9.44 |1.90 |-0.69 |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.08 |0.00 |0.01 |84.0610 |n/a |100.00 |0.56 |0.10 |10.18 |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |0.09 |0.00 |0.01 |92.8150 |n/a |100.00 |0.49 |0.10 |10.19 |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-0.11 |0.00 |0.13 |-54.1929 |0.00 |0.00 |1.87 |0.20 |-0.82 |
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-0.49 |-0.61 |0.78 |-39.7834 |0.37 |13.57 |7.85 |1.60 |-0.63 |
@@ -1514,7 +1515,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | HIGH_VOL |trend_pullback |10 |-0.10 |0.34 |1.48 |6.6469 |2.69 |41.26 |63.61 |4.70 |-0.07 |
 | HIGH_VOL |breakout_expansion |10 |-0.00 |-0.13 |1.16 |-4.4259 |1.25 |38.17 |36.46 |2.90 |-0.00 |
 | HIGH_VOL |mean_reversion_bounce |10 |0.08 |-0.07 |0.73 |3.8604 |0.56 |41.67 |21.53 |2.00 |0.10 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |-0.01 |0.00 |0.17 |-16.0451 |0.87 |25.00 |4.03 |0.30 |-0.07 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |-0.01 |0.00 |0.16 |-15.9105 |0.88 |25.00 |4.10 |0.30 |-0.07 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |-0.16 |0.00 |0.17 |-53.5371 |0.00 |0.00 |1.25 |0.30 |-0.93 |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-0.37 |-0.13 |1.24 |-18.2323 |0.76 |23.89 |26.60 |2.90 |-0.30 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |0.28 |0.21 |0.58 |12.0109 |1.05 |48.33 |12.22 |2.10 |0.49 |
@@ -1522,7 +1523,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | LOW_VOL |trend_pullback |10 |-0.31 |-0.11 |1.61 |5.3754 |0.85 |45.50 |32.15 |3.60 |-0.19 |
 | LOW_VOL |breakout_expansion |10 |-0.74 |-0.36 |1.96 |-14.8554 |0.96 |34.56 |42.08 |4.70 |-0.38 |
 | LOW_VOL |mean_reversion_bounce |10 |-0.24 |0.01 |1.50 |-1.2764 |1.27 |40.37 |30.49 |4.00 |-0.16 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |0.03 |0.00 |0.37 |3.5417 |1.01 |50.00 |8.06 |0.80 |0.08 |
 | LOW_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-0.25 |-0.06 |1.35 |10.8063 |0.91 |48.33 |25.21 |3.10 |-0.19 |
@@ -1530,7 +1531,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | NEWS_SHOCK |trend_pullback |10 |-0.04 |-0.28 |1.01 |4.0035 |1.23 |39.50 |33.54 |2.30 |-0.04 |
 | NEWS_SHOCK |breakout_expansion |10 |-0.27 |-0.19 |0.87 |-11.6798 |0.14 |29.17 |21.67 |1.30 |-0.31 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |0.27 |0.08 |0.35 |43.0205 |1.12 |82.14 |4.51 |1.10 |0.78 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.03 |0.00 |0.05 |-26.9570 |0.00 |0.00 |2.22 |0.10 |-0.60 |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.11 |0.00 |0.26 |-22.4692 |0.28 |11.11 |5.90 |0.60 |-0.44 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-0.03 |0.00 |0.05 |-28.9458 |0.00 |0.00 |2.22 |0.10 |-0.60 |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |-0.45 |-0.53 |0.72 |-43.2712 |0.18 |7.14 |12.64 |1.10 |-0.62 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |-0.06 |0.00 |0.19 |21.0773 |0.00 |50.00 |1.53 |0.40 |-0.33 |
@@ -1538,7 +1539,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | CHOP |trend_pullback |10 |-0.86 |-0.83 |1.35 |-15.6461 |0.29 |28.33 |16.25 |2.50 |-0.64 |
 | CHOP |breakout_expansion |10 |-0.67 |-0.62 |1.25 |-27.7181 |0.96 |20.00 |24.72 |2.40 |-0.53 |
 | CHOP |mean_reversion_bounce |10 |-1.27 |-1.50 |2.04 |-26.5928 |0.58 |20.50 |26.88 |4.60 |-0.62 |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.05 |0.00 |0.05 |-53.6288 |0.00 |0.00 |0.21 |0.10 |-1.00 |
+| CHOP |momentum_continuation_refined_v1 |10 |-0.11 |0.00 |0.11 |-53.4961 |0.00 |0.00 |0.21 |0.20 |-1.00 |
 | CHOP |trend_pullback_refined_v1 |10 |-0.17 |0.00 |0.20 |-55.0641 |0.00 |0.00 |2.57 |0.30 |-0.81 |
 | CHOP |breakout_expansion_refined_v1 |10 |-0.09 |0.00 |0.19 |-21.4853 |0.00 |25.00 |0.97 |0.40 |-0.46 |
 | CHOP |mean_reversion_refined_v1 |10 |-0.27 |-0.04 |1.30 |-2.6599 |0.60 |36.67 |20.14 |2.80 |-0.21 |
@@ -1550,48 +1551,48 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | regime |rank |strategy |score |samples |avgReturn |medReturn |maxDD |expectancy |PF |winRate |exposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
 | TREND_UP |1 |trend_pullback_refined_v1 |2.00 |10 |0.29 |0.00 |1.09 |39.8787 |4.08 |66.67 |13.89 |1.13 |
-| TREND_UP |2 |momentum_continuation |2.75 |10 |0.69 |0.42 |1.14 |29.7918 |3.50 |63.33 |75.90 |0.87 |
-| TREND_UP |3 |momentum_continuation_refined_v1 |3.25 |10 |0.22 |0.00 |1.00 |12.6381 |1.14 |55.56 |19.31 |0.92 |
-| TREND_UP |4 |breakout_expansion |4.63 |10 |0.52 |-0.03 |2.91 |13.4121 |2.04 |50.33 |62.71 |0.46 |
-| TREND_UP |5 |trend_pullback |5.25 |10 |0.08 |0.20 |2.05 |0.1798 |0.81 |45.00 |37.85 |0.07 |
-| TREND_UP |6 |breakout_expansion_refined_v1 |5.50 |10 |0.18 |-0.01 |2.98 |6.5905 |1.24 |41.17 |25.49 |0.14 |
+| TREND_UP |2 |momentum_continuation |2.50 |10 |0.69 |0.42 |1.14 |29.7918 |3.50 |63.33 |75.90 |0.87 |
+| TREND_UP |3 |momentum_continuation_refined_v1 |3.63 |10 |0.41 |0.20 |1.24 |17.4027 |1.18 |56.25 |49.51 |0.55 |
+| TREND_UP |4 |breakout_expansion |4.75 |10 |0.52 |-0.03 |2.91 |13.4121 |2.04 |50.33 |62.71 |0.46 |
+| TREND_UP |5 |trend_pullback |5.13 |10 |0.08 |0.20 |2.05 |0.1798 |0.81 |45.00 |37.85 |0.07 |
+| TREND_UP |6 |breakout_expansion_refined_v1 |5.38 |10 |0.18 |-0.01 |2.98 |6.5905 |1.24 |41.17 |25.49 |0.14 |
 | TREND_UP |7 |mean_reversion_refined_v1 |6.13 |10 |-0.36 |0.00 |1.70 |-46.8190 |0.00 |0.00 |2.29 |-0.92 |
 | TREND_UP |8 |mean_reversion_bounce |6.50 |10 |-0.51 |-0.18 |2.72 |-16.7523 |0.23 |24.76 |10.07 |-0.44 |
 | TREND_DOWN |1 |trend_pullback_refined_v1 |2.38 |10 |0.09 |0.00 |0.09 |92.8150 |n/a |100.00 |0.49 |10.19 |
-| TREND_DOWN |2 |momentum_continuation_refined_v1 |2.50 |10 |0.08 |0.00 |0.08 |84.0610 |n/a |100.00 |0.56 |10.18 |
-| TREND_DOWN |3 |momentum_continuation |4.50 |10 |-0.37 |-0.40 |1.39 |-19.0708 |0.00 |33.33 |11.39 |-0.63 |
-| TREND_DOWN |4 |mean_reversion_refined_v1 |4.88 |10 |-0.49 |-0.61 |1.89 |-39.7834 |0.37 |13.57 |7.85 |-0.63 |
-| TREND_DOWN |5 |breakout_expansion_refined_v1 |5.25 |10 |-0.11 |0.00 |0.78 |-54.1929 |0.00 |0.00 |1.87 |-0.82 |
-| TREND_DOWN |6 |trend_pullback |5.38 |10 |-1.24 |-1.12 |5.41 |-16.0440 |0.79 |32.92 |42.08 |-0.56 |
-| TREND_DOWN |7 |mean_reversion_bounce |5.75 |10 |-0.67 |-0.61 |2.41 |-42.6276 |0.31 |11.25 |9.44 |-0.69 |
-| TREND_DOWN |8 |breakout_expansion |5.75 |10 |-0.89 |-0.85 |3.24 |-27.8405 |0.06 |28.33 |25.00 |-0.62 |
+| TREND_DOWN |2 |momentum_continuation |4.13 |10 |-0.37 |-0.40 |1.39 |-19.0708 |0.00 |33.33 |11.39 |-0.63 |
+| TREND_DOWN |3 |mean_reversion_refined_v1 |4.50 |10 |-0.49 |-0.61 |1.89 |-39.7834 |0.37 |13.57 |7.85 |-0.63 |
+| TREND_DOWN |4 |breakout_expansion_refined_v1 |4.88 |10 |-0.11 |0.00 |0.78 |-54.1929 |0.00 |0.00 |1.87 |-0.82 |
+| TREND_DOWN |5 |trend_pullback |5.00 |10 |-1.24 |-1.12 |5.41 |-16.0440 |0.79 |32.92 |42.08 |-0.56 |
+| TREND_DOWN |6 |momentum_continuation_refined_v1 |5.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| TREND_DOWN |7 |mean_reversion_bounce |5.38 |10 |-0.67 |-0.61 |2.41 |-42.6276 |0.31 |11.25 |9.44 |-0.69 |
+| TREND_DOWN |8 |breakout_expansion |5.38 |10 |-0.89 |-0.85 |3.24 |-27.8405 |0.06 |28.33 |25.00 |-0.62 |
 | HIGH_VOL |1 |mean_reversion_refined_v1 |2.00 |10 |0.28 |0.21 |1.70 |12.0109 |1.05 |48.33 |12.22 |0.49 |
 | HIGH_VOL |2 |mean_reversion_bounce |3.50 |10 |0.08 |-0.07 |1.70 |3.8604 |0.56 |41.67 |21.53 |0.10 |
-| HIGH_VOL |3 |momentum_continuation_refined_v1 |3.88 |10 |-0.01 |0.00 |0.92 |-16.0451 |0.87 |25.00 |4.03 |-0.07 |
+| HIGH_VOL |3 |momentum_continuation_refined_v1 |3.88 |10 |-0.01 |0.00 |0.92 |-15.9105 |0.88 |25.00 |4.10 |-0.07 |
 | HIGH_VOL |4 |trend_pullback |4.00 |10 |-0.10 |0.34 |3.74 |6.6469 |2.69 |41.26 |63.61 |-0.07 |
 | HIGH_VOL |5 |breakout_expansion |4.13 |10 |-0.00 |-0.13 |1.81 |-4.4259 |1.25 |38.17 |36.46 |-0.00 |
 | HIGH_VOL |6 |trend_pullback_refined_v1 |5.63 |10 |-0.16 |0.00 |1.10 |-53.5371 |0.00 |0.00 |1.25 |-0.93 |
 | HIGH_VOL |7 |momentum_continuation |6.25 |10 |-0.21 |-0.35 |2.68 |-7.4758 |0.78 |29.00 |53.54 |-0.19 |
 | HIGH_VOL |8 |breakout_expansion_refined_v1 |6.63 |10 |-0.37 |-0.13 |2.14 |-18.2323 |0.76 |23.89 |26.60 |-0.30 |
-| LOW_VOL |1 |mean_reversion_bounce |2.88 |10 |-0.24 |0.01 |2.42 |-1.2764 |1.27 |40.37 |30.49 |-0.16 |
-| LOW_VOL |2 |mean_reversion_refined_v1 |3.50 |10 |-0.25 |-0.06 |2.42 |10.8063 |0.91 |48.33 |25.21 |-0.19 |
-| LOW_VOL |3 |trend_pullback |4.63 |10 |-0.31 |-0.11 |2.58 |5.3754 |0.85 |45.50 |32.15 |-0.19 |
-| LOW_VOL |4 |momentum_continuation_refined_v1 |5.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| LOW_VOL |5 |momentum_continuation |5.13 |10 |-0.31 |-0.75 |2.42 |-5.4505 |1.04 |38.00 |56.67 |-0.22 |
-| LOW_VOL |6 |trend_pullback_refined_v1 |5.63 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| LOW_VOL |7 |breakout_expansion |6.00 |10 |-0.74 |-0.36 |4.41 |-14.8554 |0.96 |34.56 |42.08 |-0.38 |
-| LOW_VOL |8 |breakout_expansion_refined_v1 |6.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| NEWS_SHOCK |1 |mean_reversion_bounce |2.25 |10 |0.27 |0.08 |1.82 |43.0205 |1.12 |82.14 |4.51 |0.78 |
-| NEWS_SHOCK |2 |momentum_continuation_refined_v1 |4.00 |10 |-0.03 |0.00 |0.45 |-26.9570 |0.00 |0.00 |2.22 |-0.60 |
-| NEWS_SHOCK |3 |mean_reversion_refined_v1 |4.00 |10 |-0.06 |0.00 |1.59 |21.0773 |0.00 |50.00 |1.53 |-0.33 |
-| NEWS_SHOCK |4 |trend_pullback |4.25 |10 |-0.04 |-0.28 |1.95 |4.0035 |1.23 |39.50 |33.54 |-0.04 |
-| NEWS_SHOCK |5 |trend_pullback_refined_v1 |5.00 |10 |-0.03 |0.00 |0.49 |-28.9458 |0.00 |0.00 |2.22 |-0.60 |
+| LOW_VOL |1 |momentum_continuation_refined_v1 |2.13 |10 |0.03 |0.00 |1.18 |3.5417 |1.01 |50.00 |8.06 |0.08 |
+| LOW_VOL |2 |mean_reversion_bounce |3.25 |10 |-0.24 |0.01 |2.42 |-1.2764 |1.27 |40.37 |30.49 |-0.16 |
+| LOW_VOL |3 |mean_reversion_refined_v1 |3.88 |10 |-0.25 |-0.06 |2.42 |10.8063 |0.91 |48.33 |25.21 |-0.19 |
+| LOW_VOL |4 |trend_pullback |5.00 |10 |-0.31 |-0.11 |2.58 |5.3754 |0.85 |45.50 |32.15 |-0.19 |
+| LOW_VOL |5 |trend_pullback_refined_v1 |5.38 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| LOW_VOL |6 |momentum_continuation |5.50 |10 |-0.31 |-0.75 |2.42 |-5.4505 |1.04 |38.00 |56.67 |-0.22 |
+| LOW_VOL |7 |breakout_expansion_refined_v1 |5.88 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| LOW_VOL |8 |breakout_expansion |6.50 |10 |-0.74 |-0.36 |4.41 |-14.8554 |0.96 |34.56 |42.08 |-0.38 |
+| NEWS_SHOCK |1 |mean_reversion_bounce |2.13 |10 |0.27 |0.08 |1.82 |43.0205 |1.12 |82.14 |4.51 |0.78 |
+| NEWS_SHOCK |2 |mean_reversion_refined_v1 |3.88 |10 |-0.06 |0.00 |1.59 |21.0773 |0.00 |50.00 |1.53 |-0.33 |
+| NEWS_SHOCK |3 |trend_pullback |4.13 |10 |-0.04 |-0.28 |1.95 |4.0035 |1.23 |39.50 |33.54 |-0.04 |
+| NEWS_SHOCK |4 |momentum_continuation_refined_v1 |4.38 |10 |-0.11 |0.00 |1.44 |-22.4692 |0.28 |11.11 |5.90 |-0.44 |
+| NEWS_SHOCK |5 |trend_pullback_refined_v1 |4.63 |10 |-0.03 |0.00 |0.49 |-28.9458 |0.00 |0.00 |2.22 |-0.60 |
 | NEWS_SHOCK |6 |momentum_continuation |5.00 |10 |-0.23 |-0.33 |1.48 |-15.0454 |0.96 |28.33 |42.22 |-0.23 |
-| NEWS_SHOCK |7 |breakout_expansion |5.13 |10 |-0.27 |-0.19 |1.73 |-11.6798 |0.14 |29.17 |21.67 |-0.31 |
-| NEWS_SHOCK |8 |breakout_expansion_refined_v1 |6.38 |10 |-0.45 |-0.53 |1.49 |-43.2712 |0.18 |7.14 |12.64 |-0.62 |
+| NEWS_SHOCK |7 |breakout_expansion |5.25 |10 |-0.27 |-0.19 |1.73 |-11.6798 |0.14 |29.17 |21.67 |-0.31 |
+| NEWS_SHOCK |8 |breakout_expansion_refined_v1 |6.63 |10 |-0.45 |-0.53 |1.49 |-43.2712 |0.18 |7.14 |12.64 |-0.62 |
 | CHOP |1 |mean_reversion_refined_v1 |2.88 |10 |-0.27 |-0.04 |2.53 |-2.6599 |0.60 |36.67 |20.14 |-0.21 |
-| CHOP |2 |breakout_expansion_refined_v1 |3.13 |10 |-0.09 |0.00 |0.75 |-21.4853 |0.00 |25.00 |0.97 |-0.46 |
-| CHOP |3 |momentum_continuation_refined_v1 |4.00 |10 |-0.05 |0.00 |0.54 |-53.6288 |0.00 |0.00 |0.21 |-1.00 |
+| CHOP |2 |breakout_expansion_refined_v1 |3.00 |10 |-0.09 |0.00 |0.75 |-21.4853 |0.00 |25.00 |0.97 |-0.46 |
+| CHOP |3 |momentum_continuation_refined_v1 |4.13 |10 |-0.11 |0.00 |0.54 |-53.4961 |0.00 |0.00 |0.21 |-1.00 |
 | CHOP |4 |breakout_expansion |4.88 |10 |-0.67 |-0.62 |2.59 |-27.7181 |0.96 |20.00 |24.72 |-0.53 |
 | CHOP |5 |trend_pullback |4.88 |10 |-0.86 |-0.83 |3.06 |-15.6461 |0.29 |28.33 |16.25 |-0.64 |
 | CHOP |6 |trend_pullback_refined_v1 |5.13 |10 |-0.17 |0.00 |0.83 |-55.0641 |0.00 |0.00 |2.57 |-0.81 |
@@ -1605,7 +1606,7 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | trend_pullback |60 |-0.41 |1.47 |1.13 |-2.5807 |3.55 |37.58 |0.65 |
 | breakout_expansion |60 |-0.34 |1.30 |0.94 |-12.2020 |2.98 |35.44 |0.11 |
 | mean_reversion_bounce |60 |-0.39 |1.12 |0.65 |-7.7638 |2.62 |17.15 |0.14 |
-| momentum_continuation_refined_v1 |60 |0.04 |0.09 |0.67 |1.1624 |0.22 |4.39 |1.59 |
+| momentum_continuation_refined_v1 |60 |0.04 |0.27 |0.79 |-2.7806 |0.62 |11.30 |0.22 |
 | trend_pullback_refined_v1 |60 |0.00 |0.12 |1.02 |-8.8761 |0.27 |3.40 |0.91 |
 | breakout_expansion_refined_v1 |60 |-0.14 |0.59 |0.64 |-18.6066 |1.38 |11.26 |-0.02 |
 | mean_reversion_refined_v1 |60 |-0.19 |0.77 |0.62 |-5.5438 |1.78 |11.54 |0.16 |
@@ -1685,31 +1686,31 @@ Router profit factor in the summary is the arithmetic average of non-null per-wi
 ### Portfolio Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
-| equal_weight |60 |-0.20 |0.53 |1.16 |-1.4244 |14.98 |92.00 |0.35 |
-| custom_weight |60 |-0.20 |0.53 |1.16 |-1.4244 |14.98 |92.00 |0.35 |
+| equal_weight |60 |-0.20 |0.54 |1.19 |-1.3986 |15.38 |92.58 |0.37 |
+| custom_weight |60 |-0.20 |0.54 |1.19 |-1.3986 |15.38 |92.58 |0.37 |
 | regime_weight |60 |-0.31 |0.86 |1.36 |-7.6580 |4.83 |53.65 |0.60 |
 
 ### Router vs Best Static Strategy Comparison
 
 All contestants evaluated across the same non-overlapping regime windows. ret/DD is the average of per-window (totalReturnPct / maxDrawdownPct) ratios; windows with zero drawdown are excluded from that average. Global profit factor and global expectancy aggregate all trades across all windows combined.
 
-| metric |a6_regime_router |momentum_continuation_refined_v1 (best avg return) |momentum_continuation_refined_v1 (best ret/DD) |equal_weight |regime_weight |
+| metric |a6_regime_router |momentum_continuation_refined_v1 (best avg return) |trend_pullback_refined_v1 (best ret/DD) |equal_weight |regime_weight |
 | --- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.46 |0.04 |0.04 |-0.20 |-0.31 |
+| avg return (%) |-0.46 |0.04 |0.00 |-0.20 |-0.31 |
 | median return (%) |-0.30 |0.00 |0.00 |-0.29 |-0.25 |
-| max drawdown (%) |3.95 |1.00 |1.00 |1.27 |2.74 |
-| avg drawdown (%) |1.55 |0.09 |0.09 |0.53 |0.86 |
-| global PF |0.68 |1.72 |1.72 |0.71 |0.70 |
-| avg PF |1.35 |0.67 |0.67 |1.16 |1.36 |
-| global expectancy ($) |-11.5826 |16.1907 |16.1907 |-1.3336 |-6.3388 |
-| avg expectancy ($) |-8.1327 |1.1624 |1.1624 |-1.4244 |-7.6580 |
-| exposure (%) |45.31 |4.39 |4.39 |92.00 |53.65 |
-| trade count |239 |13 |13 |899 |290 |
-| no-trade windows |2 |52 |52 |0 |2 |
-| ret/DD |0.01 |1.59 |1.59 |0.35 |0.60 |
+| max drawdown (%) |3.95 |1.44 |1.10 |1.27 |2.74 |
+| avg drawdown (%) |1.55 |0.27 |0.12 |0.54 |0.86 |
+| global PF |0.68 |1.20 |1.06 |0.71 |0.70 |
+| avg PF |1.35 |0.79 |1.02 |1.19 |1.36 |
+| global expectancy ($) |-11.5826 |5.7199 |1.6973 |-1.2987 |-6.3388 |
+| avg expectancy ($) |-8.1327 |-2.7806 |-8.8761 |-1.3986 |-7.6580 |
+| exposure (%) |45.31 |11.30 |3.40 |92.58 |53.65 |
+| trade count |239 |37 |16 |923 |290 |
+| no-trade windows |2 |41 |50 |0 |2 |
+| ret/DD |0.01 |0.22 |0.91 |0.37 |0.60 |
 
 Best static by avg return: **momentum_continuation_refined_v1** (0.04%)
-Best static by ret/DD: **momentum_continuation_refined_v1** (ret/DD = 1.59)
+Best static by ret/DD: **trend_pullback_refined_v1** (ret/DD = 0.91)
 
 Router verdict: **NOT VALIDATED** — router does not beat all four benchmarks (best static by avg return, best static by ret/DD, equal-weight, regime-weight). Do not claim A6 routing outperforms until all four are exceeded.
 
@@ -1717,22 +1718,22 @@ Router verdict: **NOT VALIDATED** — router does not beat all four benchmarks (
 
 IN-SAMPLE: router maps are derived from the same primary-config windows they are evaluated on, so these results are hypothesis discovery, not validation. See Walk-Forward Router Validation below for out-of-sample evidence. Five experimental router configurations evaluated against the default A6 router on the same primary-config windows. conservative_router trades only if the regime's top strategy has avgReturn > 0 AND avgPF > 1. momentum_only_router uses momentum_continuation for every regime. top_by_regime_return_router picks the highest-avgReturn strategy per regime from the multi-window aggregates. top_by_regime_retdd_router picks the best ret/DD strategy per regime (no trade if no strategy has ret/DD > 0). no_trade_in_bad_regimes_router uses the default A6 map but blanks any regime where the default router had negative avg return.
 
-Verdict benchmarks: best static by avg return = **momentum_continuation_refined_v1** (0.04%), best static by ret/DD = **momentum_continuation_refined_v1** (1.59), equal_weight avg ret = -0.20%, regime_weight avg ret = -0.31%.
+Verdict benchmarks: best static by avg return = **momentum_continuation_refined_v1** (0.04%), best static by ret/DD = **trend_pullback_refined_v1** (0.91), equal_weight avg ret = -0.20%, regime_weight avg ret = -0.31%.
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.46 |0.03 |-0.17 |0.05 |0.01 |0.02 |
+| avg return (%) |-0.46 |0.05 |-0.17 |0.05 |0.02 |0.02 |
 | median return (%) |-0.30 |0.00 |-0.28 |0.00 |0.00 |0.00 |
 | max drawdown (%) |3.95 |2.20 |2.68 |2.20 |1.89 |2.30 |
-| avg drawdown (%) |1.55 |0.56 |0.98 |0.57 |0.32 |0.38 |
-| global PF |0.68 |1.08 |0.77 |1.12 |1.03 |1.08 |
-| avg PF |1.35 |0.75 |1.04 |0.75 |1.06 |0.60 |
-| global expectancy ($) |-11.5826 |2.4274 |-7.5580 |3.3657 |0.9666 |2.2040 |
-| avg expectancy ($) |-8.1327 |1.3776 |-9.3378 |3.2568 |7.5407 |-5.8058 |
-| exposure (%) |45.31 |22.38 |43.66 |22.48 |7.16 |17.25 |
-| trade count |239 |86 |131 |87 |53 |52 |
-| no-trade windows |2 |17 |1 |16 |38 |32 |
-| ret/DD |0.01 |0.34 |0.26 |0.56 |0.44 |0.15 |
+| avg drawdown (%) |1.55 |0.61 |0.98 |0.61 |0.38 |0.38 |
+| global PF |0.68 |1.11 |0.77 |1.11 |1.07 |1.08 |
+| avg PF |1.35 |0.82 |1.04 |0.82 |1.02 |0.60 |
+| global expectancy ($) |-11.5826 |3.1706 |-7.5580 |3.1706 |2.2801 |2.2040 |
+| avg expectancy ($) |-8.1327 |3.4586 |-9.3378 |3.4586 |11.3636 |-5.8058 |
+| exposure (%) |45.31 |23.62 |43.66 |23.62 |8.40 |17.25 |
+| trade count |239 |92 |131 |92 |59 |52 |
+| no-trade windows |2 |16 |1 |16 |34 |32 |
+| ret/DD |0.01 |0.38 |0.26 |0.38 |0.53 |0.15 |
 | verdict |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
 
 Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
@@ -1740,10 +1741,10 @@ Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum
 | router |TREND_UP |TREND_DOWN |HIGH_VOL |LOW_VOL |NEWS_SHOCK |CHOP |
 | --- |--- |--- |--- |--- |--- |--- |
 | a6_regime_router |be+mc |mc |mrb+tp |mrb |mc |mc+mrb |
-| conservative_router |mc |— |mean_reversion_refined_v1 |— |mrb |— |
+| conservative_router |mc |— |mean_reversion_refined_v1 |mc_refined_v1 |mrb |— |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
-| top_by_regime_return_router |mc |tp_refined_v1 |mean_reversion_refined_v1 |mc_refined_v1 |mrb |mc_refined_v1 |
-| top_by_regime_retdd_router |tp_refined_v1 |tp_refined_v1 |mean_reversion_refined_v1 |— |mrb |— |
+| top_by_regime_return_router |mc |tp_refined_v1 |mean_reversion_refined_v1 |mc_refined_v1 |mrb |be_refined_v1 |
+| top_by_regime_retdd_router |tp_refined_v1 |tp_refined_v1 |mean_reversion_refined_v1 |mc_refined_v1 |mrb |— |
 | no_trade_in_bad_regimes_router |be+mc |— |— |— |mc |— |
 
 ### Walk-Forward Router Validation
@@ -1756,28 +1757,28 @@ Train period (in-sample; maps fitted here):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.46 |0.04 |-0.07 |-0.00 |-0.07 |0.12 |
+| avg return (%) |-0.46 |0.09 |-0.07 |0.09 |-0.01 |0.12 |
 | median return (%) |-0.23 |0.00 |-0.21 |0.00 |0.00 |0.00 |
-| max drawdown (%) |3.95 |3.07 |2.68 |3.07 |2.53 |2.30 |
-| global PF |0.69 |1.08 |0.88 |1.00 |0.86 |1.54 |
-| global expectancy ($) |-11.1872 |2.5935 |-3.5702 |-0.0406 |-4.5423 |14.1824 |
-| trade count |174 |59 |86 |91 |65 |36 |
-| no-trade windows |1 |18 |1 |6 |15 |24 |
-| ret/DD |0.11 |1.03 |0.46 |0.80 |0.85 |0.58 |
+| max drawdown (%) |3.95 |2.20 |2.68 |2.20 |1.87 |2.30 |
+| global PF |0.69 |1.21 |0.88 |1.21 |0.96 |1.54 |
+| global expectancy ($) |-11.1872 |6.0464 |-3.5702 |6.0464 |-1.2883 |14.1824 |
+| trade count |174 |63 |86 |63 |44 |36 |
+| no-trade windows |1 |12 |1 |12 |23 |24 |
+| ret/DD |0.11 |0.51 |0.46 |0.51 |0.26 |0.58 |
 
 Test period (out-of-sample; maps frozen from train):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.46 |-0.37 |-0.38 |-0.31 |-0.08 |-0.22 |
-| median return (%) |-0.32 |0.00 |-0.46 |0.00 |0.09 |-0.06 |
-| max drawdown (%) |2.72 |2.91 |2.42 |2.91 |2.58 |1.62 |
-| global PF |0.66 |0.63 |0.58 |0.73 |0.90 |0.32 |
-| global expectancy ($) |-12.6412 |-15.0648 |-15.1791 |-10.4705 |-3.5162 |-24.7472 |
-| trade count |65 |44 |45 |53 |42 |16 |
-| no-trade windows |1 |6 |0 |3 |4 |8 |
-| ret/DD |-0.21 |-0.22 |-0.19 |0.13 |0.66 |-0.62 |
-| verdict vs benchmarks |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
+| avg return (%) |-0.46 |-0.05 |-0.38 |-0.05 |0.11 |-0.22 |
+| median return (%) |-0.32 |0.00 |-0.46 |0.00 |0.00 |-0.06 |
+| max drawdown (%) |2.72 |1.89 |2.42 |1.89 |1.89 |1.62 |
+| global PF |0.66 |0.90 |0.58 |0.90 |1.42 |0.32 |
+| global expectancy ($) |-12.6412 |-3.0767 |-15.1791 |-3.0767 |12.7475 |-24.7472 |
+| trade count |65 |29 |45 |29 |15 |16 |
+| no-trade windows |1 |4 |0 |4 |11 |8 |
+| ret/DD |-0.21 |0.13 |-0.19 |0.13 |1.23 |-0.62 |
+| verdict vs benchmarks |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |VALIDATED |NOT VALIDATED |
 
 Train-derived regime maps (be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
 
@@ -1795,11 +1796,11 @@ Rolling expanding-window folds (3 folds; each re-derives maps from its train pre
 | router |f1 ret% |f2 ret% |f3 ret% |f1 ok |f2 ok |f3 ok |validated |
 | --- |--- |--- |--- |--- |--- |--- |--- |
 | a6_regime_router |-0.26 |-0.22 |-0.72 |N |N |N |0/3 |
-| conservative_router |0.35 |-0.11 |-0.56 |N |N |N |0/3 |
+| conservative_router |0.24 |0.11 |-0.15 |N |N |N |0/3 |
 | momentum_only_router |0.31 |-0.26 |-0.44 |N |N |N |0/3 |
-| top_by_regime_return_router |0.11 |0.09 |-0.56 |N |N |N |0/3 |
-| top_by_regime_retdd_router |0.11 |0.06 |-0.36 |N |N |N |0/3 |
-| no_trade_in_bad_regimes_router |-0.14 |-0.05 |-0.22 |N |N |N |0/3 |
+| top_by_regime_return_router |0.24 |0.11 |-0.15 |N |N |N |0/3 |
+| top_by_regime_retdd_router |0.14 |0.10 |-0.03 |N |N |N |0/3 |
+| no_trade_in_bad_regimes_router |0.41 |-0.05 |-0.22 |N |N |N |0/3 |
 
 ### Regime-Window Purity Diagnostics
 
@@ -1829,15 +1830,15 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 
 | config |total windows |windows TU/TD/HV/LV/NS/CH |min purity% |med purity% |avg purity% |best static (ret) |best static (rtDD) |router avg ret% |router gPF |router gExpect |delta vs best ret% |noTrade |trades |verdict |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
-| 144b/50% ★ |60 |10/10/10/10/10/10 |54.17 |72.57 |72.79 |momentum_continuation_refined_v1 |momentum_continuation_refined_v1 |-0.46 |0.68 |-11.5826 |-0.50 |2 |239 |NO |
-| 144b/65% |42 |6/10/7/10/1/8 |65.97 |77.08 |78.97 |momentum_continuation_refined_v1 |momentum_continuation_refined_v1 |-0.53 |0.67 |-12.2728 |-0.60 |2 |182 |NO |
-| 336b/50% |19 |2/3/5/6/0/3 |50.30 |61.01 |62.31 |trend_pullback_refined_v1 |momentum_continuation_refined_v1 |-0.42 |0.86 |-5.0261 |-0.65 |0 |158 |NO |
-| 336b/65% |5 |1/0/2/2/0/0 |67.86 |75.30 |79.05 |momentum_continuation |momentum_continuation_refined_v1 |1.10 |1.47 |13.1094 |-0.52 |0 |42 |NO |
+| 144b/50% ★ |60 |10/10/10/10/10/10 |54.17 |72.57 |72.79 |momentum_continuation_refined_v1 |trend_pullback_refined_v1 |-0.46 |0.68 |-11.5826 |-0.50 |2 |239 |NO |
+| 144b/65% |42 |6/10/7/10/1/8 |65.97 |77.08 |78.97 |momentum_continuation_refined_v1 |trend_pullback_refined_v1 |-0.53 |0.67 |-12.2728 |-0.57 |2 |182 |NO |
+| 336b/50% |19 |2/3/5/6/0/3 |50.30 |61.01 |62.31 |trend_pullback_refined_v1 |trend_pullback_refined_v1 |-0.42 |0.86 |-5.0261 |-0.65 |0 |158 |NO |
+| 336b/65% |5 |1/0/2/2/0/0 |67.86 |75.30 |79.05 |momentum_continuation |trend_pullback_refined_v1 |1.10 |1.47 |13.1094 |-0.52 |0 |42 |NO |
 
 ### Stability Rankings
 | regime |strategy |samples |score |returnStd |drawdownStd |profitFactorStd |expectancyStd |
 | --- |--- |--- |--- |--- |--- |--- |--- |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.22 |0.17 |0.17 |n/a |n/a |
+| CHOP |momentum_continuation_refined_v1 |10 |-0.27 |0.23 |0.23 |0.00 |0.19 |
 | CHOP |trend_pullback_refined_v1 |10 |-0.50 |0.27 |0.34 |0.00 |0.75 |
 | CHOP |momentum_continuation |10 |-7.29 |0.51 |0.37 |0.54 |25.51 |
 | CHOP |mean_reversion_bounce |10 |-10.11 |1.63 |1.12 |0.74 |31.85 |
@@ -1850,26 +1851,26 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-9.48 |0.96 |0.60 |0.79 |34.10 |
 | HIGH_VOL |breakout_expansion |10 |-10.33 |0.96 |0.45 |1.45 |38.46 |
 | HIGH_VOL |momentum_continuation |10 |-13.04 |1.09 |0.63 |1.18 |48.40 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |-13.32 |0.22 |0.36 |1.23 |51.43 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |-13.37 |0.22 |0.34 |1.25 |51.62 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-13.58 |1.18 |0.45 |1.33 |52.51 |
 | HIGH_VOL |mean_reversion_bounce |10 |-13.80 |1.15 |0.50 |0.84 |53.03 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | LOW_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | LOW_VOL |mean_reversion_bounce |10 |-9.06 |1.22 |0.80 |1.03 |32.23 |
 | LOW_VOL |breakout_expansion |10 |-9.77 |1.52 |1.01 |1.08 |32.50 |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |-11.38 |0.51 |0.50 |0.88 |43.76 |
 | LOW_VOL |momentum_continuation |10 |-11.69 |1.32 |0.56 |1.32 |42.33 |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-13.83 |1.13 |0.78 |0.80 |51.61 |
 | LOW_VOL |trend_pullback |10 |-13.93 |1.40 |0.78 |0.82 |51.47 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.14 |0.09 |0.14 |n/a |n/a |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |-0.15 |0.09 |0.15 |n/a |n/a |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-4.19 |0.23 |0.48 |0.49 |15.13 |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |-6.57 |0.47 |0.57 |0.48 |23.00 |
 | NEWS_SHOCK |momentum_continuation |10 |-9.47 |0.57 |0.40 |1.69 |34.33 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |-12.52 |0.52 |0.57 |0.73 |49.34 |
 | NEWS_SHOCK |breakout_expansion |10 |-15.10 |0.70 |0.57 |0.34 |57.68 |
 | NEWS_SHOCK |trend_pullback |10 |-15.13 |1.03 |0.50 |2.03 |56.79 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |-35.38 |0.61 |0.50 |n/a |104.83 |
-| TREND_DOWN |momentum_continuation_refined_v1 |10 |-0.06 |0.27 |0.03 |n/a |n/a |
+| TREND_DOWN |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | TREND_DOWN |trend_pullback_refined_v1 |10 |-0.07 |0.29 |0.03 |n/a |n/a |
 | TREND_DOWN |breakout_expansion_refined_v1 |10 |-0.27 |0.23 |0.28 |0.00 |0.14 |
 | TREND_DOWN |trend_pullback |10 |-8.18 |1.62 |1.38 |0.74 |24.05 |
@@ -1883,8 +1884,8 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | TREND_UP |breakout_expansion_refined_v1 |10 |-10.62 |1.61 |0.84 |1.20 |39.56 |
 | TREND_UP |trend_pullback |10 |-10.76 |0.96 |0.52 |0.66 |41.21 |
 | TREND_UP |trend_pullback_refined_v1 |10 |-10.83 |0.65 |0.43 |4.53 |38.87 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |-11.13 |0.83 |0.48 |0.88 |43.97 |
 | TREND_UP |mean_reversion_bounce |10 |-14.68 |1.24 |1.07 |0.36 |54.01 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |-15.64 |0.70 |0.40 |1.61 |60.73 |
 
 ## SOL-USD
 
@@ -1907,7 +1908,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | TREND_UP |trend_pullback |10 |0.45 |0.64 |1.28 |19.3843 |4.24 |53.33 |61.46 |3.20 |0.35 |
 | TREND_UP |breakout_expansion |10 |0.17 |0.12 |1.60 |7.4222 |1.67 |42.93 |62.15 |4.80 |0.11 |
 | TREND_UP |mean_reversion_bounce |10 |-0.36 |-0.29 |0.88 |-7.8819 |0.34 |33.33 |9.17 |1.80 |-0.40 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |0.31 |0.00 |0.68 |13.8031 |1.21 |44.44 |40.63 |2.10 |0.46 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |0.47 |0.30 |0.86 |21.4512 |0.88 |52.59 |65.90 |2.20 |0.56 |
 | TREND_UP |trend_pullback_refined_v1 |10 |0.42 |0.00 |0.58 |21.4390 |1.70 |47.22 |36.25 |1.20 |0.73 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |-0.73 |-0.70 |1.68 |-17.0531 |0.73 |27.00 |29.65 |3.90 |-0.44 |
 | TREND_UP |mean_reversion_refined_v1 |10 |-0.08 |0.00 |0.11 |-41.8078 |0.00 |0.00 |0.35 |0.20 |-0.79 |
@@ -1923,7 +1924,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | HIGH_VOL |trend_pullback |10 |-0.10 |0.64 |1.75 |4.0619 |1.19 |41.29 |47.22 |5.40 |-0.06 |
 | HIGH_VOL |breakout_expansion |10 |-0.19 |-0.11 |1.06 |-8.2498 |0.97 |33.25 |28.47 |2.90 |-0.18 |
 | HIGH_VOL |mean_reversion_bounce |10 |-0.41 |-0.25 |1.90 |8.7694 |1.05 |45.58 |34.31 |4.50 |-0.22 |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |0.10 |0.00 |0.02 |96.9255 |n/a |100.00 |1.32 |0.10 |4.08 |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |0.09 |0.00 |0.23 |18.7998 |0.94 |55.56 |11.74 |0.50 |0.39 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |0.10 |0.00 |0.02 |96.9000 |n/a |100.00 |1.25 |0.10 |4.09 |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |0.04 |-0.10 |0.72 |-5.9658 |1.49 |31.67 |19.24 |2.10 |0.05 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-0.61 |-0.44 |1.44 |3.7708 |0.43 |38.75 |19.65 |3.30 |-0.42 |
@@ -1931,7 +1932,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | LOW_VOL |trend_pullback |10 |-0.39 |0.07 |1.98 |-7.9449 |1.45 |38.42 |35.83 |4.90 |-0.20 |
 | LOW_VOL |breakout_expansion |10 |-0.84 |-0.88 |1.95 |-18.6794 |0.61 |30.71 |34.79 |4.80 |-0.43 |
 | LOW_VOL |mean_reversion_bounce |10 |-0.61 |-0.39 |1.56 |-2.4491 |0.49 |38.15 |27.01 |3.50 |-0.39 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |-0.07 |0.00 |0.44 |-9.0545 |0.48 |37.50 |12.78 |0.80 |-0.17 |
 | LOW_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-0.25 |-0.08 |1.10 |0.9135 |0.50 |40.83 |16.74 |2.40 |-0.22 |
@@ -1939,7 +1940,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | NEWS_SHOCK |trend_pullback |10 |-0.27 |-0.12 |1.14 |-9.8664 |0.84 |30.56 |24.38 |2.60 |-0.24 |
 | NEWS_SHOCK |breakout_expansion |10 |-0.14 |-0.32 |0.77 |-5.1963 |0.15 |37.04 |15.07 |1.30 |-0.18 |
 | NEWS_SHOCK |mean_reversion_bounce |10 |0.12 |0.00 |0.52 |15.0092 |0.69 |52.08 |10.97 |1.40 |0.24 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.32 |0.00 |0.32 |-53.9723 |0.00 |0.00 |2.85 |0.60 |-1.00 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |0.00 |n/a |
 | NEWS_SHOCK |breakout_expansion_refined_v1 |10 |-0.24 |0.00 |0.43 |-26.1511 |0.00 |20.00 |6.88 |0.70 |-0.56 |
 | NEWS_SHOCK |mean_reversion_refined_v1 |10 |0.24 |0.02 |0.43 |37.5630 |0.00 |71.43 |10.07 |1.00 |0.57 |
@@ -1947,7 +1948,7 @@ Note: persisted regimes are deterministic proxy research snapshots, not GPT/A6 d
 | CHOP |trend_pullback |10 |-0.43 |-0.24 |1.01 |-14.4915 |0.32 |33.33 |22.78 |2.00 |-0.43 |
 | CHOP |breakout_expansion |10 |-0.26 |-0.08 |1.19 |-2.6102 |0.93 |41.17 |33.96 |3.10 |-0.22 |
 | CHOP |mean_reversion_bounce |10 |-0.44 |-0.12 |1.23 |-4.7523 |1.08 |34.07 |15.07 |2.90 |-0.36 |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.17 |0.00 |0.20 |-55.3102 |0.00 |0.00 |2.15 |0.30 |-0.85 |
+| CHOP |momentum_continuation_refined_v1 |10 |-0.25 |0.00 |0.38 |-38.8677 |0.00 |20.00 |7.29 |0.60 |-0.65 |
 | CHOP |trend_pullback_refined_v1 |10 |-0.14 |0.00 |0.27 |-10.9593 |0.00 |50.00 |7.50 |0.40 |-0.52 |
 | CHOP |breakout_expansion_refined_v1 |10 |-0.23 |-0.27 |0.55 |-24.2782 |0.00 |28.57 |12.08 |0.80 |-0.42 |
 | CHOP |mean_reversion_refined_v1 |10 |-0.36 |-0.13 |0.96 |-11.5893 |0.98 |30.37 |8.96 |2.20 |-0.38 |
@@ -1959,9 +1960,9 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | regime |rank |strategy |score |samples |avgReturn |medReturn |maxDD |expectancy |PF |winRate |exposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
 | TREND_UP |1 |momentum_continuation |2.13 |10 |0.97 |0.77 |1.48 |31.2520 |7.35 |62.14 |88.96 |1.10 |
-| TREND_UP |2 |trend_pullback_refined_v1 |3.00 |10 |0.42 |0.00 |1.22 |21.4390 |1.70 |47.22 |36.25 |0.73 |
-| TREND_UP |3 |trend_pullback |3.63 |10 |0.45 |0.64 |2.71 |19.3843 |4.24 |53.33 |61.46 |0.35 |
-| TREND_UP |4 |momentum_continuation_refined_v1 |4.13 |10 |0.31 |0.00 |1.91 |13.8031 |1.21 |44.44 |40.63 |0.46 |
+| TREND_UP |2 |trend_pullback_refined_v1 |3.38 |10 |0.42 |0.00 |1.22 |21.4390 |1.70 |47.22 |36.25 |0.73 |
+| TREND_UP |3 |momentum_continuation_refined_v1 |3.63 |10 |0.47 |0.30 |1.48 |21.4512 |0.88 |52.59 |65.90 |0.56 |
+| TREND_UP |4 |trend_pullback |3.75 |10 |0.45 |0.64 |2.71 |19.3843 |4.24 |53.33 |61.46 |0.35 |
 | TREND_UP |5 |breakout_expansion |5.00 |10 |0.17 |0.12 |2.48 |7.4222 |1.67 |42.93 |62.15 |0.11 |
 | TREND_UP |6 |mean_reversion_refined_v1 |5.75 |10 |-0.08 |0.00 |0.58 |-41.8078 |0.00 |0.00 |0.35 |-0.79 |
 | TREND_UP |7 |mean_reversion_bounce |5.75 |10 |-0.36 |-0.29 |2.48 |-7.8819 |0.34 |33.33 |9.17 |-0.40 |
@@ -1974,37 +1975,37 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | TREND_DOWN |6 |breakout_expansion |5.00 |10 |-0.77 |-0.65 |2.40 |-26.9329 |0.53 |22.50 |17.64 |-0.60 |
 | TREND_DOWN |7 |momentum_continuation_refined_v1 |5.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
 | TREND_DOWN |8 |mean_reversion_bounce |5.75 |10 |-1.03 |-0.61 |3.40 |-39.2013 |0.29 |9.52 |15.14 |-0.75 |
-| HIGH_VOL |1 |momentum_continuation_refined_v1 |2.63 |10 |0.10 |0.00 |0.24 |96.9255 |n/a |100.00 |1.32 |4.08 |
-| HIGH_VOL |2 |trend_pullback_refined_v1 |2.75 |10 |0.10 |0.00 |0.24 |96.9000 |n/a |100.00 |1.25 |4.09 |
-| HIGH_VOL |3 |momentum_continuation |4.13 |10 |0.15 |-0.07 |1.76 |3.8513 |0.70 |45.00 |58.96 |0.15 |
+| HIGH_VOL |1 |trend_pullback_refined_v1 |2.38 |10 |0.10 |0.00 |0.24 |96.9000 |n/a |100.00 |1.25 |4.09 |
+| HIGH_VOL |2 |momentum_continuation_refined_v1 |2.50 |10 |0.09 |0.00 |1.11 |18.7998 |0.94 |55.56 |11.74 |0.39 |
+| HIGH_VOL |3 |momentum_continuation |4.25 |10 |0.15 |-0.07 |1.76 |3.8513 |0.70 |45.00 |58.96 |0.15 |
 | HIGH_VOL |4 |breakout_expansion_refined_v1 |4.50 |10 |0.04 |-0.10 |2.07 |-5.9658 |1.49 |31.67 |19.24 |0.05 |
 | HIGH_VOL |5 |trend_pullback |4.50 |10 |-0.10 |0.64 |3.30 |4.0619 |1.19 |41.29 |47.22 |-0.06 |
 | HIGH_VOL |6 |mean_reversion_bounce |5.50 |10 |-0.41 |-0.25 |3.62 |8.7694 |1.05 |45.58 |34.31 |-0.22 |
 | HIGH_VOL |7 |breakout_expansion |5.88 |10 |-0.19 |-0.11 |2.57 |-8.2498 |0.97 |33.25 |28.47 |-0.18 |
-| HIGH_VOL |8 |mean_reversion_refined_v1 |6.50 |10 |-0.61 |-0.44 |3.28 |3.7708 |0.43 |38.75 |19.65 |-0.42 |
-| LOW_VOL |1 |mean_reversion_refined_v1 |3.13 |10 |-0.25 |-0.08 |2.34 |0.9135 |0.50 |40.83 |16.74 |-0.22 |
-| LOW_VOL |2 |trend_pullback |3.50 |10 |-0.39 |0.07 |4.46 |-7.9449 |1.45 |38.42 |35.83 |-0.20 |
-| LOW_VOL |3 |mean_reversion_bounce |4.63 |10 |-0.61 |-0.39 |3.10 |-2.4491 |0.49 |38.15 |27.01 |-0.39 |
-| LOW_VOL |4 |momentum_continuation |5.00 |10 |-0.44 |-0.45 |3.14 |-8.6220 |0.95 |34.17 |55.90 |-0.28 |
-| LOW_VOL |5 |momentum_continuation_refined_v1 |5.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| LOW_VOL |6 |trend_pullback_refined_v1 |5.63 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| LOW_VOL |7 |breakout_expansion |5.88 |10 |-0.84 |-0.88 |3.38 |-18.6794 |0.61 |30.71 |34.79 |-0.43 |
-| LOW_VOL |8 |breakout_expansion_refined_v1 |6.13 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| NEWS_SHOCK |1 |mean_reversion_refined_v1 |2.75 |10 |0.24 |0.02 |1.71 |37.5630 |0.00 |71.43 |10.07 |0.57 |
+| HIGH_VOL |8 |mean_reversion_refined_v1 |6.63 |10 |-0.61 |-0.44 |3.28 |3.7708 |0.43 |38.75 |19.65 |-0.42 |
+| LOW_VOL |1 |mean_reversion_refined_v1 |3.25 |10 |-0.25 |-0.08 |2.34 |0.9135 |0.50 |40.83 |16.74 |-0.22 |
+| LOW_VOL |2 |momentum_continuation_refined_v1 |3.38 |10 |-0.07 |0.00 |1.90 |-9.0545 |0.48 |37.50 |12.78 |-0.17 |
+| LOW_VOL |3 |trend_pullback |3.63 |10 |-0.39 |0.07 |4.46 |-7.9449 |1.45 |38.42 |35.83 |-0.20 |
+| LOW_VOL |4 |mean_reversion_bounce |4.75 |10 |-0.61 |-0.39 |3.10 |-2.4491 |0.49 |38.15 |27.01 |-0.39 |
+| LOW_VOL |5 |trend_pullback_refined_v1 |5.25 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| LOW_VOL |6 |momentum_continuation |5.25 |10 |-0.44 |-0.45 |3.14 |-8.6220 |0.95 |34.17 |55.90 |-0.28 |
+| LOW_VOL |7 |breakout_expansion_refined_v1 |5.75 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| LOW_VOL |8 |breakout_expansion |6.25 |10 |-0.84 |-0.88 |3.38 |-18.6794 |0.61 |30.71 |34.79 |-0.43 |
+| NEWS_SHOCK |1 |mean_reversion_refined_v1 |2.88 |10 |0.24 |0.02 |1.71 |37.5630 |0.00 |71.43 |10.07 |0.57 |
 | NEWS_SHOCK |2 |mean_reversion_bounce |2.88 |10 |0.12 |0.00 |1.71 |15.0092 |0.69 |52.08 |10.97 |0.24 |
-| NEWS_SHOCK |3 |breakout_expansion |4.38 |10 |-0.14 |-0.32 |1.45 |-5.1963 |0.15 |37.04 |15.07 |-0.18 |
+| NEWS_SHOCK |3 |breakout_expansion |4.25 |10 |-0.14 |-0.32 |1.45 |-5.1963 |0.15 |37.04 |15.07 |-0.18 |
 | NEWS_SHOCK |4 |breakout_expansion_refined_v1 |5.00 |10 |-0.24 |0.00 |1.45 |-26.1511 |0.00 |20.00 |6.88 |-0.56 |
-| NEWS_SHOCK |5 |trend_pullback |5.38 |10 |-0.27 |-0.12 |2.17 |-9.8664 |0.84 |30.56 |24.38 |-0.24 |
-| NEWS_SHOCK |6 |momentum_continuation_refined_v1 |5.50 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
-| NEWS_SHOCK |7 |momentum_continuation |5.63 |10 |-0.27 |-0.26 |1.46 |-25.9894 |0.33 |14.58 |23.96 |-0.41 |
-| NEWS_SHOCK |8 |trend_pullback_refined_v1 |6.00 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
+| NEWS_SHOCK |5 |momentum_continuation_refined_v1 |5.13 |10 |-0.32 |0.00 |1.10 |-53.9723 |0.00 |0.00 |2.85 |-1.00 |
+| NEWS_SHOCK |6 |trend_pullback |5.25 |10 |-0.27 |-0.12 |2.17 |-9.8664 |0.84 |30.56 |24.38 |-0.24 |
+| NEWS_SHOCK |7 |momentum_continuation |5.50 |10 |-0.27 |-0.26 |1.46 |-25.9894 |0.33 |14.58 |23.96 |-0.41 |
+| NEWS_SHOCK |8 |trend_pullback_refined_v1 |5.63 |10 |0.00 |0.00 |0.00 |n/a |n/a |n/a |0.00 |n/a |
 | CHOP |1 |trend_pullback_refined_v1 |3.50 |10 |-0.14 |0.00 |1.74 |-10.9593 |0.00 |50.00 |7.50 |-0.52 |
 | CHOP |2 |breakout_expansion |3.50 |10 |-0.26 |-0.08 |2.48 |-2.6102 |0.93 |41.17 |33.96 |-0.22 |
 | CHOP |3 |momentum_continuation |3.63 |10 |-0.40 |0.02 |2.10 |-10.9379 |2.10 |38.33 |53.89 |-0.36 |
 | CHOP |4 |mean_reversion_bounce |4.50 |10 |-0.44 |-0.12 |3.01 |-4.7523 |1.08 |34.07 |15.07 |-0.36 |
-| CHOP |5 |momentum_continuation_refined_v1 |4.63 |10 |-0.17 |0.00 |1.16 |-55.3102 |0.00 |0.00 |2.15 |-0.85 |
+| CHOP |5 |momentum_continuation_refined_v1 |4.75 |10 |-0.25 |0.00 |1.16 |-38.8677 |0.00 |20.00 |7.29 |-0.65 |
 | CHOP |6 |mean_reversion_refined_v1 |4.88 |10 |-0.36 |-0.13 |2.93 |-11.5893 |0.98 |30.37 |8.96 |-0.38 |
-| CHOP |7 |breakout_expansion_refined_v1 |5.38 |10 |-0.23 |-0.27 |1.14 |-24.2782 |0.00 |28.57 |12.08 |-0.42 |
+| CHOP |7 |breakout_expansion_refined_v1 |5.25 |10 |-0.23 |-0.27 |1.14 |-24.2782 |0.00 |28.57 |12.08 |-0.42 |
 | CHOP |8 |trend_pullback |6.00 |10 |-0.43 |-0.24 |2.73 |-14.4915 |0.32 |33.33 |22.78 |-0.43 |
 
 ### A6 Routing Results
@@ -2014,7 +2015,7 @@ Composite score is the average ordinal rank across avg return, median return, ma
 | trend_pullback |60 |-0.30 |1.56 |1.44 |-3.7211 |3.98 |39.06 |0.98 |
 | breakout_expansion |60 |-0.34 |1.31 |0.84 |-9.1210 |3.32 |32.01 |0.02 |
 | mean_reversion_bounce |60 |-0.45 |1.25 |0.67 |-3.8921 |2.75 |18.61 |1.52 |
-| momentum_continuation_refined_v1 |60 |0.04 |0.15 |0.87 |7.6804 |0.42 |7.35 |0.95 |
+| momentum_continuation_refined_v1 |60 |-0.01 |0.37 |0.45 |-7.8794 |0.78 |16.76 |0.26 |
 | trend_pullback_refined_v1 |60 |0.08 |0.14 |1.42 |27.5168 |0.30 |7.57 |1.09 |
 | breakout_expansion_refined_v1 |60 |-0.20 |0.57 |0.66 |-18.9225 |1.27 |11.34 |-0.19 |
 | mean_reversion_refined_v1 |60 |-0.27 |0.84 |0.46 |-1.4739 |1.78 |11.27 |0.78 |
@@ -2094,8 +2095,8 @@ Router profit factor in the summary is the arithmetic average of non-null per-wi
 ### Portfolio Results
 | label |samples |avgReturn |avgDD |avgPF |avgExpectancy |avgTrades |avgExposure |ret/DD |
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |
-| equal_weight |60 |-0.19 |0.56 |1.10 |-1.2126 |15.97 |92.26 |0.34 |
-| custom_weight |60 |-0.19 |0.56 |1.10 |-1.2126 |15.97 |92.26 |0.34 |
+| equal_weight |60 |-0.19 |0.58 |1.10 |-1.2418 |16.33 |92.67 |0.36 |
+| custom_weight |60 |-0.19 |0.58 |1.10 |-1.2418 |16.33 |92.67 |0.36 |
 | regime_weight |60 |-0.35 |0.98 |2.10 |-5.6025 |5.27 |54.57 |0.06 |
 
 ### Router vs Best Static Strategy Comparison
@@ -2105,17 +2106,17 @@ All contestants evaluated across the same non-overlapping regime windows. ret/DD
 | metric |a6_regime_router |trend_pullback_refined_v1 (best avg return) |mean_reversion_bounce (best ret/DD) |equal_weight |regime_weight |
 | --- |--- |--- |--- |--- |--- |
 | avg return (%) |-0.51 |0.08 |-0.45 |-0.19 |-0.35 |
-| median return (%) |-0.40 |0.00 |-0.22 |-0.20 |-0.24 |
+| median return (%) |-0.40 |0.00 |-0.22 |-0.21 |-0.24 |
 | max drawdown (%) |4.41 |1.74 |3.62 |1.55 |2.67 |
-| avg drawdown (%) |1.59 |0.14 |1.25 |0.56 |0.98 |
+| avg drawdown (%) |1.59 |0.14 |1.25 |0.58 |0.98 |
 | global PF |0.66 |2.09 |0.59 |0.74 |0.68 |
 | avg PF |3.27 |1.42 |0.67 |1.10 |2.10 |
-| global expectancy ($) |-12.4930 |25.1091 |-16.5056 |-1.1744 |-6.6748 |
-| avg expectancy ($) |-6.3231 |27.5168 |-3.8921 |-1.2126 |-5.6025 |
-| exposure (%) |45.90 |7.57 |18.61 |92.26 |54.57 |
-| trade count |245 |18 |165 |958 |316 |
+| global expectancy ($) |-12.4930 |25.1091 |-16.5056 |-1.1898 |-6.6748 |
+| avg expectancy ($) |-6.3231 |27.5168 |-3.8921 |-1.2418 |-5.6025 |
+| exposure (%) |45.90 |7.57 |18.61 |92.67 |54.57 |
+| trade count |245 |18 |165 |980 |316 |
 | no-trade windows |3 |50 |8 |0 |2 |
-| ret/DD |0.06 |1.09 |1.52 |0.34 |0.06 |
+| ret/DD |0.06 |1.09 |1.52 |0.36 |0.06 |
 
 Best static by avg return: **trend_pullback_refined_v1** (0.08%)
 Best static by ret/DD: **mean_reversion_bounce** (ret/DD = 1.52)
@@ -2130,18 +2131,18 @@ Verdict benchmarks: best static by avg return = **trend_pullback_refined_v1** (0
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.51 |0.08 |-0.05 |0.03 |0.08 |0.03 |
+| avg return (%) |-0.51 |0.08 |-0.05 |0.05 |0.08 |0.03 |
 | median return (%) |-0.40 |0.00 |-0.16 |0.00 |0.00 |0.00 |
 | max drawdown (%) |4.41 |1.48 |3.14 |1.76 |1.48 |1.48 |
 | avg drawdown (%) |1.59 |0.33 |0.98 |0.61 |0.33 |0.36 |
-| global PF |0.66 |1.42 |0.92 |1.09 |1.42 |1.10 |
-| avg PF |3.27 |3.05 |1.89 |2.25 |3.05 |1.37 |
-| global expectancy ($) |-12.4930 |10.2547 |-2.4118 |2.4589 |10.2547 |2.9590 |
-| avg expectancy ($) |-6.3231 |-0.3606 |-4.3925 |-4.6014 |-0.3606 |-8.7596 |
-| exposure (%) |45.90 |22.47 |49.72 |36.97 |22.47 |19.71 |
-| trade count |245 |46 |129 |79 |46 |53 |
-| no-trade windows |3 |33 |2 |19 |33 |33 |
-| ret/DD |0.06 |0.38 |0.30 |0.24 |0.38 |0.17 |
+| global PF |0.66 |1.42 |0.92 |1.15 |1.42 |1.10 |
+| avg PF |3.27 |3.05 |1.89 |2.32 |3.05 |1.37 |
+| global expectancy ($) |-12.4930 |10.2547 |-2.4118 |3.8534 |10.2547 |2.9590 |
+| avg expectancy ($) |-6.3231 |-0.3606 |-4.3925 |-1.7770 |-0.3606 |-8.7596 |
+| exposure (%) |45.90 |22.47 |49.72 |37.07 |22.47 |19.71 |
+| trade count |245 |46 |129 |80 |46 |53 |
+| no-trade windows |3 |33 |2 |18 |33 |33 |
+| ret/DD |0.06 |0.38 |0.30 |0.26 |0.38 |0.17 |
 | verdict |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |NOT VALIDATED |
 
 Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum_continuation, mrb=mean_reversion_bounce, tp=trend_pullback; — = no trade):
@@ -2151,7 +2152,7 @@ Regime strategy maps (strategy abbreviations: be=breakout_expansion, mc=momentum
 | a6_regime_router |be+mc |mc |mrb+tp |mrb |mc |mc+mrb |
 | conservative_router |mc |— |— |— |— |— |
 | momentum_only_router |mc |mc |mc |mc |mc |mc |
-| top_by_regime_return_router |mc |tp_refined_v1 |mc |mc_refined_v1 |mean_reversion_refined_v1 |tp_refined_v1 |
+| top_by_regime_return_router |mc |tp_refined_v1 |mc |tp_refined_v1 |mean_reversion_refined_v1 |tp_refined_v1 |
 | top_by_regime_retdd_router |mc |— |tp_refined_v1 |— |mean_reversion_refined_v1 |— |
 | no_trade_in_bad_regimes_router |be+mc |— |— |— |— |— |
 
@@ -2165,14 +2166,14 @@ Train period (in-sample; maps fitted here):
 
 | metric |a6_regime_router |conservative_router |momentum_only_router |top_by_regime_return_router |top_by_regime_retdd_router |no_trade_in_bad_regimes_router |
 | --- |--- |--- |--- |--- |--- |--- |
-| avg return (%) |-0.49 |0.18 |0.08 |0.11 |0.18 |0.10 |
+| avg return (%) |-0.49 |0.18 |0.08 |0.14 |0.18 |0.10 |
 | median return (%) |-0.48 |0.00 |0.04 |0.00 |0.00 |0.00 |
 | max drawdown (%) |4.41 |1.48 |3.14 |1.76 |1.48 |1.48 |
-| global PF |0.68 |1.99 |1.14 |1.29 |1.99 |1.36 |
-| global expectancy ($) |-11.4622 |20.1693 |3.6193 |7.2846 |20.1693 |9.8104 |
-| trade count |181 |37 |92 |66 |37 |44 |
-| no-trade windows |0 |22 |0 |10 |22 |22 |
-| ret/DD |0.09 |0.70 |0.30 |0.40 |0.70 |0.41 |
+| global PF |0.68 |1.99 |1.14 |1.37 |1.99 |1.36 |
+| global expectancy ($) |-11.4622 |20.1693 |3.6193 |8.8777 |20.1693 |9.8104 |
+| trade count |181 |37 |92 |67 |37 |44 |
+| no-trade windows |0 |22 |0 |9 |22 |22 |
+| ret/DD |0.09 |0.70 |0.30 |0.42 |0.70 |0.41 |
 
 Test period (out-of-sample; maps frozen from train):
 
@@ -2204,11 +2205,11 @@ Rolling expanding-window folds (3 folds; each re-derives maps from its train pre
 | router |f1 ret% |f2 ret% |f3 ret% |f1 ok |f2 ok |f3 ok |validated |
 | --- |--- |--- |--- |--- |--- |--- |--- |
 | a6_regime_router |-0.08 |-0.09 |-0.91 |N |N |N |0/3 |
-| conservative_router |0.32 |0.12 |-0.27 |N |N |N |0/3 |
+| conservative_router |0.35 |0.12 |-0.27 |N |N |N |0/3 |
 | momentum_only_router |0.24 |0.02 |-0.48 |N |N |N |0/3 |
-| top_by_regime_return_router |0.32 |0.07 |-0.28 |N |N |N |0/3 |
-| top_by_regime_retdd_router |0.32 |0.12 |-0.27 |N |N |N |0/3 |
-| no_trade_in_bad_regimes_router |0.00 |0.07 |-0.27 |N |N |N |0/3 |
+| top_by_regime_return_router |0.44 |0.13 |-0.28 |N |N |N |0/3 |
+| top_by_regime_retdd_router |0.35 |0.12 |-0.27 |N |N |N |0/3 |
+| no_trade_in_bad_regimes_router |0.33 |0.07 |-0.27 |N |N |N |0/3 |
 
 ### Regime-Window Purity Diagnostics
 
@@ -2240,13 +2241,13 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | --- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |--- |
 | 144b/50% ★ |60 |10/10/10/10/10/10 |50.69 |72.92 |73.10 |trend_pullback_refined_v1 |mean_reversion_bounce |-0.51 |0.66 |-12.4930 |-0.59 |3 |245 |NO |
 | 144b/65% |43 |10/10/6/9/3/5 |65.97 |79.17 |79.15 |trend_pullback_refined_v1 |trend_pullback_refined_v1 |-0.47 |0.68 |-11.5774 |-0.55 |2 |176 |NO |
-| 336b/50% |14 |5/1/3/4/1/0 |50.60 |61.61 |62.35 |momentum_continuation |momentum_continuation_refined_v1 |-0.06 |0.98 |-0.7259 |-0.60 |0 |124 |NO |
-| 336b/65% |3 |0/0/0/3/0/0 |66.96 |67.56 |78.17 |trend_pullback |breakout_expansion_refined_v1 |0.81 |1.33 |10.0940 |-0.37 |0 |24 |NO |
+| 336b/50% |14 |5/1/3/4/1/0 |50.60 |61.61 |62.35 |momentum_continuation |trend_pullback_refined_v1 |-0.06 |0.98 |-0.7259 |-0.60 |0 |124 |NO |
+| 336b/65% |3 |0/0/0/3/0/0 |66.96 |67.56 |78.17 |trend_pullback |momentum_continuation_refined_v1 |0.81 |1.33 |10.0940 |-0.37 |0 |24 |NO |
 
 ### Stability Rankings
 | regime |strategy |samples |score |returnStd |drawdownStd |profitFactorStd |expectancyStd |
 | --- |--- |--- |--- |--- |--- |--- |--- |
-| CHOP |momentum_continuation_refined_v1 |10 |-0.67 |0.38 |0.42 |0.00 |1.21 |
+| CHOP |momentum_continuation_refined_v1 |10 |-9.71 |0.42 |0.45 |0.00 |36.96 |
 | CHOP |momentum_continuation |10 |-11.20 |0.91 |0.49 |4.54 |37.27 |
 | CHOP |breakout_expansion |10 |-12.15 |0.98 |0.63 |0.89 |45.06 |
 | CHOP |mean_reversion_bounce |10 |-13.09 |1.11 |0.91 |1.50 |47.08 |
@@ -2255,14 +2256,13 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | CHOP |breakout_expansion_refined_v1 |10 |-15.06 |0.57 |0.43 |0.00 |58.35 |
 | CHOP |trend_pullback_refined_v1 |10 |-22.67 |0.57 |0.59 |n/a |66.42 |
 | HIGH_VOL |trend_pullback_refined_v1 |10 |-0.09 |0.31 |0.07 |n/a |n/a |
-| HIGH_VOL |momentum_continuation_refined_v1 |10 |-0.09 |0.31 |0.08 |n/a |n/a |
 | HIGH_VOL |breakout_expansion |10 |-8.54 |1.11 |0.65 |0.93 |30.70 |
 | HIGH_VOL |trend_pullback |10 |-9.85 |1.56 |0.90 |0.96 |35.60 |
 | HIGH_VOL |breakout_expansion_refined_v1 |10 |-10.89 |1.34 |0.66 |2.56 |39.16 |
 | HIGH_VOL |mean_reversion_bounce |10 |-11.92 |1.39 |1.12 |1.07 |42.45 |
 | HIGH_VOL |momentum_continuation |10 |-12.68 |0.95 |0.40 |0.81 |49.18 |
 | HIGH_VOL |mean_reversion_refined_v1 |10 |-16.10 |1.24 |1.17 |0.44 |59.09 |
-| LOW_VOL |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
+| HIGH_VOL |momentum_continuation_refined_v1 |10 |-19.66 |0.40 |0.42 |1.34 |76.85 |
 | LOW_VOL |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | LOW_VOL |breakout_expansion_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
 | LOW_VOL |breakout_expansion |10 |-5.99 |1.03 |0.79 |0.44 |18.35 |
@@ -2270,8 +2270,9 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | LOW_VOL |momentum_continuation |10 |-13.24 |1.64 |0.82 |1.19 |47.55 |
 | LOW_VOL |mean_reversion_refined_v1 |10 |-15.59 |1.08 |0.86 |0.44 |58.98 |
 | LOW_VOL |mean_reversion_bounce |10 |-15.71 |1.40 |1.13 |0.44 |57.43 |
-| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
+| LOW_VOL |momentum_continuation_refined_v1 |10 |-17.27 |0.77 |0.67 |0.84 |66.52 |
 | NEWS_SHOCK |trend_pullback_refined_v1 |10 |0.00 |0.00 |0.00 |n/a |n/a |
+| NEWS_SHOCK |momentum_continuation_refined_v1 |10 |-0.86 |0.46 |0.46 |0.00 |1.22 |
 | NEWS_SHOCK |momentum_continuation |10 |-6.80 |0.39 |0.49 |0.65 |24.60 |
 | NEWS_SHOCK |trend_pullback |10 |-6.92 |0.60 |0.64 |0.60 |24.72 |
 | NEWS_SHOCK |breakout_expansion |10 |-16.11 |0.68 |0.49 |0.37 |62.34 |
@@ -2288,10 +2289,10 @@ Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct �
 | TREND_DOWN |mean_reversion_refined_v1 |10 |-15.13 |1.05 |0.99 |0.14 |56.05 |
 | TREND_UP |mean_reversion_refined_v1 |10 |-2.07 |0.18 |0.22 |0.00 |7.56 |
 | TREND_UP |breakout_expansion_refined_v1 |10 |-8.16 |1.01 |0.67 |0.65 |27.37 |
-| TREND_UP |momentum_continuation_refined_v1 |10 |-8.44 |0.78 |0.70 |1.03 |32.49 |
 | TREND_UP |momentum_continuation |10 |-9.04 |0.92 |0.31 |9.93 |28.90 |
 | TREND_UP |trend_pullback |10 |-10.13 |0.90 |0.74 |8.51 |32.17 |
 | TREND_UP |breakout_expansion |10 |-11.15 |1.68 |0.77 |1.78 |41.06 |
+| TREND_UP |momentum_continuation_refined_v1 |10 |-12.12 |0.80 |0.46 |0.74 |48.37 |
 | TREND_UP |trend_pullback_refined_v1 |10 |-13.71 |0.81 |0.54 |1.69 |53.48 |
 | TREND_UP |mean_reversion_bounce |10 |-16.75 |1.00 |0.68 |0.63 |63.28 |
 

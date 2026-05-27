@@ -38,6 +38,63 @@ export const GATE_EVALUATORS: Record<StrategyGateId, GateEvaluator> = {
     return fail("gate trend_confirmed failed");
   },
 
+  short_term_momentum_confirmed(context) {
+    const { current } = context.input;
+    const previous = previousFeature(context);
+    if (
+      previous &&
+      isFiniteNumber(current.macdHist) &&
+      isFiniteNumber(previous.macdHist) &&
+      current.macdHist > 0 &&
+      current.macdHist > previous.macdHist
+    ) {
+      return pass("gate short_term_momentum_confirmed via macdHist");
+    }
+    if (
+      isFiniteNumber(current.ema20Slope) &&
+      current.ema20Slope > 0 &&
+      isFiniteNumber(current.rsi14) &&
+      current.rsi14 >= 50 &&
+      current.rsi14 <= 68
+    ) {
+      return pass("gate short_term_momentum_confirmed via ema20/rsi");
+    }
+    return fail("gate short_term_momentum_confirmed failed");
+  },
+
+  price_above_medium_trend(context) {
+    const { current } = context.input;
+    if (isFiniteNumber(current.close) && isFiniteNumber(current.ema50) && current.close > current.ema50) {
+      return pass("gate price_above_medium_trend");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema20) &&
+      isFiniteNumber(current.ema20Slope) &&
+      current.close > current.ema20 &&
+      current.ema20Slope > 0
+    ) {
+      return pass("gate price_above_medium_trend via ema20 slope");
+    }
+    return fail("gate price_above_medium_trend failed");
+  },
+
+  macro_not_strongly_bearish(context) {
+    const { current, daily } = context.input;
+    if (current.daily_ema50AboveEma200 === true || current.daily_priceAboveEma200 === true) {
+      return pass("gate macro_not_strongly_bearish");
+    }
+    if (current.daily_ema50AboveEma200 === false && current.daily_priceAboveEma200 === false) {
+      return fail("gate macro_not_strongly_bearish failed: daily flags bearish");
+    }
+    if (!daily) return pass("gate macro_not_strongly_bearish unavailable");
+    const emaBearish = isFiniteNumber(daily.ema50) && isFiniteNumber(daily.ema200) && daily.ema50 < daily.ema200;
+    const priceBearish = isFiniteNumber(daily.ema200) && daily.close < daily.ema200;
+    return emaBearish && priceBearish
+      ? fail("gate macro_not_strongly_bearish failed")
+      : pass("gate macro_not_strongly_bearish");
+  },
+
   macro_trend_confirmed(context) {
     const { current, daily } = context.input;
     if (current.daily_ema50AboveEma200 === true || current.daily_priceAboveEma200 === true) {
@@ -83,12 +140,38 @@ export const GATE_EVALUATORS: Record<StrategyGateId, GateEvaluator> = {
       : fail("gate volume_confirmed failed");
   },
 
+  volume_not_dead(context) {
+    const { current } = context.input;
+    if (!isFiniteNumber(current.relativeVolume20)) return pass("gate volume_not_dead unavailable");
+    return current.relativeVolume20 >= 0.6
+      ? pass("gate volume_not_dead")
+      : fail("gate volume_not_dead failed");
+  },
+
   volume_not_weak(context) {
     const { current } = context.input;
     if (!isFiniteNumber(current.relativeVolume20)) return pass("gate volume_not_weak unavailable");
     return current.relativeVolume20 >= 0.8
       ? pass("gate volume_not_weak")
       : fail("gate volume_not_weak failed");
+  },
+
+  momentum_not_fading(context) {
+    const { current } = context.input;
+    const previous = previousFeature(context);
+    if (
+      previous &&
+      isFiniteNumber(current.macdHist) &&
+      isFiniteNumber(previous.macdHist) &&
+      current.macdHist < previous.macdHist &&
+      current.macdHist <= 0
+    ) {
+      return fail("gate momentum_not_fading failed: macdHist fading below zero");
+    }
+    if (isFiniteNumber(current.ema20Slope) && current.ema20Slope < 0) {
+      return fail("gate momentum_not_fading failed: ema20 slope negative");
+    }
+    return pass("gate momentum_not_fading");
   },
 
   oversold_confirmed(context) {
@@ -135,4 +218,3 @@ export const GATE_EVALUATORS: Record<StrategyGateId, GateEvaluator> = {
       : fail("gate avoid_low_confidence_regime failed");
   },
 };
-

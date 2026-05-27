@@ -6,7 +6,7 @@ import { FEATURE_VERSION } from "@/lib/versions";
 import type { Bar, Exchange, FeatureSnapshot, RegimeContext, RegimeLabel, Timeframe } from "@/lib/quant/types";
 import { REFINED_STRATEGY_PAIRS } from "@/lib/strategies/refinement/strategyVariants";
 import { STRATEGY_REGISTRY } from "@/lib/strategies/strategyRegistry";
-import { runBacktest } from "@/lib/backtest/backtestEngine";
+import { runBacktest as runBacktestRaw } from "@/lib/backtest/backtestEngine";
 import { runPortfolioBacktest, type PortfolioBacktestConfig } from "@/lib/backtest/portfolioBacktest";
 import {
   createRegimeStrategyRouter,
@@ -29,6 +29,8 @@ import {
   type RegimeWindowBacktest,
 } from "@/lib/backtest/regimeValidation";
 import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics, SimulatedTrade } from "@/lib/backtest/types";
+
+type BacktestRunResult = ReturnType<typeof runBacktestRaw>;
 
 interface InstrumentArg {
   symbol: string;
@@ -138,6 +140,7 @@ const TINY_GROSS_LOSS_USD = 1;
 const CROSS_ASSET_OPPORTUNITY_TOP_N = 30;
 const MIN_OPPORTUNITY_TEST_TRADES = 5;
 const EQUITY_WATCHLIST = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"];
+const backtestResultCache = new Map<string, BacktestRunResult>();
 
 const PORTFOLIO_REGIME_WEIGHTS: NonNullable<PortfolioBacktestConfig["regimeWeights"]> = {
   TREND_UP: { breakout_expansion: 0.6, momentum_continuation: 0.4 },
@@ -599,6 +602,28 @@ function sliceInput(
     dailyFeatures: base.dailyFeatures?.filter((feature) => feature.ts < window.endTs),
     regimes: base.regimes?.filter((regime) => regime.ts <= window.endTs),
   };
+}
+
+function backtestCacheKey(input: BacktestInput): string {
+  return [
+    input.config.symbol,
+    input.config.exchange,
+    input.config.strategyId,
+    input.config.startTs,
+    input.config.endTs,
+    input.bars.length,
+    input.features.length,
+    input.regimes?.length ?? 0,
+  ].join("|");
+}
+
+function runBacktest(input: BacktestInput): BacktestRunResult {
+  const key = backtestCacheKey(input);
+  const cached = backtestResultCache.get(key);
+  if (cached) return cached;
+  const result = runBacktestRaw(input);
+  backtestResultCache.set(key, result);
+  return result;
 }
 
 function summarizeMetrics(label: string, metrics: BacktestMetrics[]): RoutingSummary {
@@ -2107,6 +2132,14 @@ function deltaFmt(refined: number | null | undefined, base: number | null | unde
   return `${delta >= 0 ? "+" : ""}${delta.toFixed(digits)}`;
 }
 
+function tradeReduction(baseTrades: number | undefined, refinedTrades: number | undefined): string {
+  const base = baseTrades ?? 0;
+  const refined = refinedTrades ?? 0;
+  if (base === 0) return refined === 0 ? "0 (n/a)" : `${base - refined} (n/a)`;
+  const reduction = base - refined;
+  return `${reduction} (${fmt(reduction / base * 100)}%)`;
+}
+
 function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[] {
   if (summaries.length === 0) return [];
 
@@ -2121,17 +2154,28 @@ function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[
       fmt(base?.avgReturn),
       fmt(refined?.avgReturn),
       deltaFmt(refined?.avgReturn, base?.avgReturn),
+      fmt(base?.medianReturn),
+      fmt(refined?.medianReturn),
       fmt(base?.globalProfitFactor),
       fmt(refined?.globalProfitFactor),
       deltaFmt(refined?.globalProfitFactor, base?.globalProfitFactor),
+      fmt(base?.avgProfitFactor),
+      fmt(refined?.avgProfitFactor),
       fmt(base?.globalExpectancy, 4),
       fmt(refined?.globalExpectancy, 4),
       deltaFmt(refined?.globalExpectancy, base?.globalExpectancy, 4),
+      fmt(base?.avgExpectancy, 4),
+      fmt(refined?.avgExpectancy, 4),
       fmt(base?.maxDrawdown),
       fmt(refined?.maxDrawdown),
       deltaFmt(refined?.maxDrawdown, base?.maxDrawdown),
       String(base?.tradeCount ?? 0),
       String(refined?.tradeCount ?? 0),
+      tradeReduction(base?.tradeCount, refined?.tradeCount),
+      fmt(base?.avgExposure),
+      fmt(refined?.avgExposure),
+      fmt(base?.avgReturnToDrawdown),
+      fmt(refined?.avgReturnToDrawdown),
       `${baseSurvival.validated}/${baseSurvival.eligible}`,
       `${refinedSurvival.validated}/${refinedSurvival.eligible}`,
       `${baseSurvival.testPass}/${baseSurvival.eligible}`,
@@ -2145,7 +2189,7 @@ function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[
     "Research-only refined variants are registered beside their base strategies and evaluated as separate benchmark candidates. Aggregated metrics below average per-asset full-window strategy stats across the selected crypto universe; walk-forward survival counts use the cross-asset opportunity candidate validation rules.",
     "",
     table(
-      ["base", "refined", "base ret%", "refined ret%", "ret delta", "base gPF", "refined gPF", "gPF delta", "base gExpect", "refined gExpect", "expect delta", "base maxDD", "refined maxDD", "DD delta", "base trades", "refined trades", "base validated", "refined validated", "base test pass", "refined test pass"],
+      ["base", "refined", "base ret%", "refined ret%", "ret delta", "base medRet%", "refined medRet%", "base gPF", "refined gPF", "gPF delta", "base avgPF", "refined avgPF", "base gExpect", "refined gExpect", "expect delta", "base avgExpect", "refined avgExpect", "base maxDD", "refined maxDD", "DD delta", "base trades", "refined trades", "trade reduction", "base exposure", "refined exposure", "base ret/DD", "refined ret/DD", "base validated", "refined validated", "base test pass", "refined test pass"],
       rows,
     ),
     "",
@@ -2238,6 +2282,7 @@ interface InstrumentReport {
 }
 
 async function runInstrument(instrument: InstrumentArg): Promise<InstrumentReport> {
+  backtestResultCache.clear();
   const timeframe: Timeframe = "1h";
   const bounds = process.env.START_TS && process.env.END_TS
     ? { startTs: process.env.START_TS, endTs: process.env.END_TS }
@@ -2460,6 +2505,7 @@ async function main(): Promise<void> {
     "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
     "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
     "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
+    "- Refined momentum_continuation_refined_v1 for Priority 8B with short-term momentum confirmation, medium-trend filtering, macro-not-strongly-bearish gating, volume-not-dead filtering, overextension avoidance, and a tightly gated TREND_DOWN survival experiment.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
     "",

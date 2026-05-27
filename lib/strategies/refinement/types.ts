@@ -3,11 +3,16 @@ import type { StrategyDefinition, StrategyInput } from "../types";
 
 export type StrategyGateId =
   | "trend_confirmed"
+  | "short_term_momentum_confirmed"
+  | "price_above_medium_trend"
+  | "macro_not_strongly_bearish"
   | "macro_trend_confirmed"
   | "volatility_expansion_confirmed"
   | "volatility_compression_confirmed"
   | "volume_confirmed"
+  | "volume_not_dead"
   | "volume_not_weak"
+  | "momentum_not_fading"
   | "oversold_confirmed"
   | "overbought_confirmed"
   | "avoid_overextended_entry"
