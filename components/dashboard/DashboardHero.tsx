@@ -6,7 +6,7 @@ import { Pulse } from "@/components/ui/Pulse";
 const STATUS_CHIPS = [
   { label: "Research Mode",        color: "green"  },
   { label: "Multi-Asset Enabled",  color: "blue"   },
-  { label: "A6 Regime Layer Active", color: "blue" },
+  { label: "Regime Layer Active",    color: "blue" },
   { label: "Execution Disabled",   color: "amber"  },
   { label: "Risk Engine Pending",  color: "red"    },
 ] as const;

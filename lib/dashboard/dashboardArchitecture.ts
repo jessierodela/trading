@@ -103,7 +103,7 @@ export const PIPELINE_STAGES: PipelineStage[] = [
     maturity: "Active / In Progress",
   },
   {
-    name: "A6 Regime Detector",
+    name: "Regime Detector",
     status: "active",
     purpose: "Classifies the current market environment before strategy evaluation.",
     inputs: ["1H EMA20 slope", "1D EMA50 / EMA200", "ATR %", "Relative volume", "Candle range vs ATR"],

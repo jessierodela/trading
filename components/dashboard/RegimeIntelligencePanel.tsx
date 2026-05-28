@@ -21,11 +21,11 @@ export function RegimeIntelligencePanel() {
             Regime Intelligence
           </p>
           <p className="text-[11px] text-[var(--color-text-muted)]">
-            A6 regime detector classifies the market environment before strategy evaluation.
+            The regime detector classifies the market environment before strategy evaluation.
           </p>
         </div>
         <span className="text-[9px] text-[var(--color-accent-blue)] tracking-[.1em] border border-[var(--color-accent-blue)] px-[10px] py-[4px] rounded-full uppercase opacity-80 shrink-0">
-          A6 Active
+          Active
         </span>
       </div>
 
