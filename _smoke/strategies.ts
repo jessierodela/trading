@@ -265,6 +265,48 @@ async function testStrategies(): Promise<void> {
   assert("mean reversion confidence capped", typeof bounce?.confidence === "number" && bounce.confidence <= 0.65);
   if (bounce) assertSignalShape("bounce", bounce);
 
+  const refinedMeanStrategy = getStrategyById("mean_reversion_refined_v1");
+  const refinedMeanCurrent = {
+    ...bounceCurrent(1),
+    rsi14: 34,
+    macdHist: -0.4,
+    atrPct: 2,
+    candleRangeAtr: 1.2,
+    bbWidth: 0.08,
+    bbWidthPrev: 0.09,
+    bbLower: 94,
+    bbMiddle: 100,
+    distanceFromEma20Atr: -2,
+  };
+  const refinedMean = refinedMeanStrategy?.evaluate({
+    current: refinedMeanCurrent,
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("CHOP"),
+  });
+  assert("refined mean reversion emits in reliable CHOP oversold range", refinedMean?.strategyId === "mean_reversion_refined_v1", refinedMean);
+  const refinedMeanTrendDown = refinedMeanStrategy?.evaluate({
+    current: refinedMeanCurrent,
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("TREND_DOWN"),
+  });
+  assert("refined mean reversion blocks TREND_DOWN", refinedMeanTrendDown === null, refinedMeanTrendDown);
+  const refinedMeanHighVol = refinedMeanStrategy?.evaluate({
+    current: refinedMeanCurrent,
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("HIGH_VOL"),
+  });
+  assert("refined mean reversion blocks HIGH_VOL", refinedMeanHighVol === null, refinedMeanHighVol);
+  const refinedMeanNoStretch = refinedMeanStrategy?.evaluate({
+    current: { ...refinedMeanCurrent, close: 99, distanceFromEma20Atr: -0.25 },
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("LOW_VOL"),
+  });
+  assert("refined mean reversion requires price stretched from mean", refinedMeanNoStretch === null, refinedMeanNoStretch);
+
   console.log("\n=== regime handling ===");
   const newsBlocked = runStrategies({
     current: bullishMomentum(1),

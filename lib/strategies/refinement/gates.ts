@@ -263,6 +263,93 @@ export const GATE_EVALUATORS: Record<StrategyGateId, GateEvaluator> = {
     return pass("gate momentum_reset_without_reversal");
   },
 
+  range_bound_context(context) {
+    const { current, regime } = context.input;
+    if (regime?.regime === "LOW_VOL" || regime?.regime === "CHOP") {
+      return pass("gate range_bound_context via regime");
+    }
+    if (
+      isFiniteNumber(current.ema20Slope) &&
+      Math.abs(current.ema20Slope) <= 0.15 &&
+      (!isFiniteNumber(current.ema50Slope) || Math.abs(current.ema50Slope) <= 0.1)
+    ) {
+      return pass("gate range_bound_context via flat trend");
+    }
+    if (
+      isFiniteNumber(current.bbWidth) &&
+      isFiniteNumber(current.bbWidthPrev) &&
+      current.bbWidth <= current.bbWidthPrev * 1.03
+    ) {
+      return pass("gate range_bound_context via non-expanding bands");
+    }
+    return fail("gate range_bound_context failed");
+  },
+
+  volatility_not_expanding_aggressively_against_trade(context) {
+    const { current } = context.input;
+    if (isFiniteNumber(current.candleRangeAtr) && current.candleRangeAtr > 2) {
+      return fail("gate volatility_not_expanding_aggressively_against_trade failed: candle range extended");
+    }
+    if (
+      isFiniteNumber(current.bbWidth) &&
+      isFiniteNumber(current.bbWidthPrev) &&
+      current.bbWidthPrev > 0 &&
+      (current.bbWidth - current.bbWidthPrev) / current.bbWidthPrev > 0.12
+    ) {
+      return fail("gate volatility_not_expanding_aggressively_against_trade failed: band expansion aggressive");
+    }
+    if (isFiniteNumber(current.atrPct) && current.atrPct > 6) {
+      return fail("gate volatility_not_expanding_aggressively_against_trade failed: atrPct elevated");
+    }
+    return pass("gate volatility_not_expanding_aggressively_against_trade");
+  },
+
+  price_stretched_from_mean(context) {
+    const { current } = context.input;
+    if (isFiniteNumber(current.distanceFromEma20Atr) && current.distanceFromEma20Atr <= -1.2) {
+      return pass("gate price_stretched_from_mean");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.bbLower) &&
+      current.close <= current.bbLower
+    ) {
+      return pass("gate price_stretched_from_mean via lower band");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema20) &&
+      isFiniteNumber(current.atr14) &&
+      (current.close - current.ema20) / current.atr14 <= -1.2
+    ) {
+      return pass("gate price_stretched_from_mean via ema20");
+    }
+    return fail("gate price_stretched_from_mean failed");
+  },
+
+  reversion_target_available(context) {
+    const { current } = context.input;
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema20) &&
+      isFiniteNumber(current.atr14) &&
+      current.ema20 > current.close &&
+      (current.ema20 - current.close) / current.atr14 >= 0.75
+    ) {
+      return pass("gate reversion_target_available via ema20");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.bbMiddle) &&
+      isFiniteNumber(current.atr14) &&
+      current.bbMiddle > current.close &&
+      (current.bbMiddle - current.close) / current.atr14 >= 0.75
+    ) {
+      return pass("gate reversion_target_available via middle band");
+    }
+    return fail("gate reversion_target_available failed");
+  },
+
   volatility_compression_confirmed(context) {
     const { current } = context.input;
     if (isFiniteNumber(current.bbWidth) && isFiniteNumber(current.bbWidthPrev) && current.bbWidth <= current.bbWidthPrev) {
