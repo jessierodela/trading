@@ -6,6 +6,7 @@ interface ReportSpec {
   label: string;
   file: string;
   markdown: string;
+  missingReason?: string;
 }
 
 interface TableData {
@@ -21,6 +22,15 @@ const SECTION_TITLES = [
   "Cross-Asset Router Validation Summary",
 ] as const;
 
+const REQUIRED_REPORT_PATTERNS: Array<{ key: string; label: string; test: (file: string) => boolean }> = [
+  { key: "baseline", label: "baseline", test: (file) => /^P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT_\d{8}-\d{6}\.md$/.test(file) },
+  { key: "breakout8c", label: "breakout8c", test: (file) => file.includes("breakout8c") },
+  { key: "trend8d", label: "trend8d", test: (file) => file.includes("trend8d") },
+  { key: "mean8e", label: "mean8e", test: (file) => file.includes("mean8e") },
+  { key: "results8f", label: "results8f", test: (file) => file.includes("results8f") },
+  { key: "reporting-hardening", label: "reporting-hardening", test: (file) => file.includes("reporting-hardening") },
+];
+
 function timestampForFilename(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -35,25 +45,55 @@ function timestampForFilename(): string {
   ].join("");
 }
 
+function loadReport(fileInput: string, fallbackLabel: string): ReportSpec {
+  const fullPath = path.isAbsolute(fileInput) ? fileInput : path.resolve(process.cwd(), fileInput);
+  const file = path.basename(fullPath);
+  if (!fs.existsSync(fullPath)) {
+    return {
+      key: fallbackLabel,
+      label: fallbackLabel,
+      file,
+      markdown: "",
+      missingReason: `explicit report not found: ${fileInput}`,
+    };
+  }
+  return {
+    key: fallbackLabel,
+    label: fallbackLabel,
+    file,
+    markdown: fs.readFileSync(fullPath, "utf8"),
+  };
+}
+
+function explicitReportList(): ReportSpec[] | null {
+  const raw = process.env.P5_COMPARE_REPORTS?.trim();
+  if (!raw) return null;
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((file, index) => loadReport(file, `explicit-${index + 1}`));
+}
+
 function discoverReports(): ReportSpec[] {
+  const explicit = explicitReportList();
+  if (explicit) return explicit;
+
   const files = fs.existsSync(REPORT_DIR)
     ? fs.readdirSync(REPORT_DIR).filter((file) => file.endsWith(".md") && file.startsWith("P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT"))
     : [];
 
-  const patterns: Array<{ key: string; label: string; test: (file: string) => boolean }> = [
-    { key: "baseline", label: "baseline", test: (file) => /^P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT_\d{8}-\d{6}\.md$/.test(file) },
-    { key: "breakout8c", label: "breakout8c", test: (file) => file.includes("breakout8c") },
-    { key: "trend8d", label: "trend8d", test: (file) => file.includes("trend8d") },
-    { key: "mean8e", label: "mean8e", test: (file) => file.includes("mean8e") },
-    { key: "results8f", label: "results8f", test: (file) => file.includes("results8f") },
-    { key: "reporting-hardening", label: "reporting-hardening", test: (file) => file.includes("reporting-hardening") },
-  ];
-
-  return patterns.map((pattern) => {
+  return REQUIRED_REPORT_PATTERNS.map((pattern) => {
     const matches = files.filter(pattern.test).sort();
     const file = matches[matches.length - 1];
     if (!file) {
-      return { key: pattern.key, label: pattern.label, file: "", markdown: "" };
+      return {
+        key: pattern.key,
+        label: pattern.label,
+        file: "",
+        markdown: "",
+        missingReason: `no report matched expected snapshot '${pattern.label}'`,
+      };
     }
     const fullPath = path.join(REPORT_DIR, file);
     return {
@@ -106,6 +146,26 @@ function table(headers: string[], rows: string[][]): string {
 
 function reportPathFor(report: ReportSpec): string {
   return report.file ? path.join("reports", "p5", report.file) : "missing";
+}
+
+function missingReports(reports: ReportSpec[]): ReportSpec[] {
+  return reports.filter((report) => !report.markdown);
+}
+
+function missingReportsSection(reports: ReportSpec[]): string[] {
+  const missing = missingReports(reports);
+  return [
+    "## Missing Snapshot Warnings",
+    "",
+    missing.length === 0
+      ? "All expected report snapshots were found."
+      : "WARNING: one or more expected report snapshots were missing. Extracted comparisons for those snapshots are incomplete.",
+    "",
+    ...(missing.length === 0
+      ? []
+      : missing.map((report) => `- ${report.label}: ${report.missingReason ?? "missing"}`)),
+    missing.length === 0 ? "" : "",
+  ];
 }
 
 function sectionAvailabilityRows(reports: ReportSpec[]): string[][] {
@@ -217,6 +277,13 @@ function regimeClarificationNote(): string[] {
 
 function main(): void {
   const reports = discoverReports();
+  const missing = missingReports(reports);
+  for (const report of missing) {
+    console.warn(`[compare:p5] WARNING missing ${report.label}: ${report.missingReason ?? "missing"}`);
+  }
+  if (process.env.COMPARE_P5_STRICT === "1" && missing.length > 0) {
+    throw new Error(`COMPARE_P5_STRICT=1 and missing required reports: ${missing.map((report) => report.label).join(", ")}`);
+  }
   const generatedAt = new Date().toISOString();
   const outputPath = path.join(REPORT_DIR, `P5_REFINEMENT_COMPARISON_${timestampForFilename()}.md`);
 
@@ -225,6 +292,8 @@ function main(): void {
     "",
     `Generated: ${generatedAt}`,
     "",
+    "Note: source versioned P5 reports are local research artifacts and may not be committed to git. This comparison stores the extracted sections needed for review.",
+    "",
     "## Compared Reports",
     "",
     table(
@@ -232,6 +301,7 @@ function main(): void {
       sectionAvailabilityRows(reports),
     ),
     "",
+    ...missingReportsSection(reports),
     ...currentConclusion(),
     ...regimeClarificationNote(),
     ...gateDiagnosticsSummary(reports),
