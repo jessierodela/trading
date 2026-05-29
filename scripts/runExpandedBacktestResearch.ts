@@ -605,16 +605,46 @@ function sliceInput(
 }
 
 function backtestCacheKey(input: BacktestInput): string {
-  return [
-    input.config.symbol,
-    input.config.exchange,
-    input.config.strategyId,
-    input.config.startTs,
-    input.config.endTs,
-    input.bars.length,
-    input.features.length,
-    input.regimes?.length ?? 0,
-  ].join("|");
+  const strategyVersion = input.strategyRouter?.version ??
+    STRATEGY_REGISTRY.find((strategy) => strategy.id === input.config.strategyId)?.version ??
+    "unknown";
+  const firstBar = input.bars[0]?.ts ?? "none";
+  const lastBar = input.bars[input.bars.length - 1]?.ts ?? "none";
+  return JSON.stringify({
+    config: {
+      symbol: input.config.symbol,
+      exchange: input.config.exchange,
+      assetType: input.config.assetType ?? "UNKNOWN",
+      dataSource: input.config.dataSource ?? "unknown",
+      timeframe: input.config.timeframe,
+      strategyId: input.config.strategyId,
+      strategyVersion,
+      featureVersion: input.config.featureVersion,
+      startTs: input.config.startTs,
+      endTs: input.config.endTs,
+      initialCapital: input.config.initialCapital,
+      riskPerTradePct: input.config.riskPerTradePct,
+      maxPositionPct: input.config.maxPositionPct,
+      maxConcurrentPositions: input.config.maxConcurrentPositions,
+      allowShorts: input.config.allowShorts ?? false,
+      feeBps: input.config.feeBps,
+      slippageBps: input.config.slippageBps,
+      defaultRewardRisk: input.config.defaultRewardRisk ?? null,
+      closeOpenPositionAtEnd: input.config.closeOpenPositionAtEnd,
+      enterOnNextBarOpen: input.config.enterOnNextBarOpen,
+      sameBarStopFirst: input.config.sameBarStopFirst,
+      routerId: input.strategyRouter?.id ?? null,
+      routerVersion: input.strategyRouter?.version ?? null,
+    },
+    data: {
+      bars: input.bars.length,
+      firstBar,
+      lastBar,
+      features: input.features.length,
+      dailyFeatures: input.dailyFeatures?.length ?? 0,
+      regimes: input.regimes?.length ?? 0,
+    },
+  });
 }
 
 function runBacktest(input: BacktestInput): BacktestRunResult {
@@ -2072,6 +2102,64 @@ function crossAssetValidatedCandidateSummarySection(summaries: AssetSummary[]): 
   ];
 }
 
+function momentumRefinedFailureReason(candidate: OpportunityCandidateValidation, foldsValidated: number, totalFolds: number): string {
+  const reasons: string[] = [];
+  if (candidate.test.avgReturn === null || candidate.test.avgReturn <= 0) reasons.push("test return not positive");
+  if (candidate.test.globalProfitFactor === null || candidate.test.globalProfitFactor <= 1) reasons.push("test PF <= 1 or unavailable");
+  if (candidate.test.globalExpectancy === null || candidate.test.globalExpectancy <= 0) reasons.push("test expectancy not positive");
+  if (candidate.test.tradeCount < MIN_OPPORTUNITY_TEST_TRADES) {
+    reasons.push(`test trades ${candidate.test.tradeCount} < ${MIN_OPPORTUNITY_TEST_TRADES}`);
+  }
+  if (foldsValidated < totalFolds) reasons.push(`rolling validation failed (${foldsValidated}/${totalFolds})`);
+  return reasons.join("; ") || "none";
+}
+
+function momentumRefinedFinalVerdict(candidate: OpportunityCandidateValidation, foldsValidated: number, totalFolds: number): string {
+  return candidate.testPass && totalFolds > 0 && foldsValidated === totalFolds ? "VALIDATED" : "NOT VALIDATED";
+}
+
+function momentumRefinedTestPassBreakdownSection(summaries: AssetSummary[]): string[] {
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const rows = summaries
+    .flatMap((summary) => summary.opportunityWalkForward?.candidates ?? [])
+    .filter((candidate) =>
+      candidate.strategyId === "momentum_continuation_refined_v1" &&
+      candidate.train.tradeCount > 0 &&
+      candidate.train.globalExpectancy !== null &&
+      candidate.testPass,
+    )
+    .map((candidate) => {
+      const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+      return { candidate, foldsValidated };
+    })
+    .sort((a, b) => (b.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY));
+
+  return [
+    "## Momentum Refined Test-Pass Breakdown",
+    "",
+    `momentum_continuation_refined_v1 remains **NOT VALIDATED**. These rows passed the held-out 70/30 test gates but did not pass the full rolling-validation requirement, so none are promoted to validated edge or router defaults.`,
+    "",
+    table(
+      ["asset", "regime", "train return", "test return", "test global PF", "test expectancy", "test trades", "folds validated", "final verdict", "failure reason"],
+      rows.length > 0
+        ? rows.map(({ candidate, foldsValidated }) => [
+            candidate.symbol,
+            candidate.regime,
+            fmt(candidate.train.avgReturn),
+            fmt(candidate.test.avgReturn),
+            fmt(candidate.test.globalProfitFactor),
+            fmt(candidate.test.globalExpectancy, 4),
+            String(candidate.test.tradeCount),
+            `${foldsValidated}/${totalFolds}`,
+            momentumRefinedFinalVerdict(candidate, foldsValidated, totalFolds),
+            momentumRefinedFailureReason(candidate, foldsValidated, totalFolds),
+          ])
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", `0/${totalFolds}`, "NOT VALIDATED", "no held-out test-pass candidates"]],
+    ),
+    "",
+  ];
+}
+
 function aggregateStrategyStats(summaries: AssetSummary[], strategyId: string): FullStats | null {
   const rows = summaries
     .map((summary) => summary.strategyFullStats.find((stats) => stats.label === strategyId))
@@ -2472,6 +2560,7 @@ async function main(): Promise<void> {
         ...crossAssetOpportunitySection(summaries),
         ...crossAssetOpportunityWalkForwardSection(summaries),
         ...crossAssetValidatedCandidateSummarySection(summaries),
+        ...momentumRefinedTestPassBreakdownSection(summaries),
         ...strategyRefinementComparisonSection(summaries),
         ...crossAssetRouterValidationSection(summaries),
       ]
@@ -2506,6 +2595,7 @@ async function main(): Promise<void> {
     "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
     "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
     "- Refined momentum_continuation_refined_v1 for Priority 8B with short-term momentum confirmation, medium-trend filtering, macro-not-strongly-bearish gating, volume-not-dead filtering, overextension avoidance, and a tightly gated TREND_DOWN survival experiment.",
+    "- Added Momentum Refined Test-Pass Breakdown: refined momentum improved quality metrics but remains NOT VALIDATED because its held-out test-pass candidates did not pass rolling validation.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
     "",
@@ -2557,7 +2647,11 @@ async function main(): Promise<void> {
     "",
   ].join("\n");
 
-  const reportPath = path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
+  const configuredReportPath = process.env.P5_REPORT_PATH?.trim();
+  const reportPath = configuredReportPath
+    ? path.resolve(process.cwd(), configuredReportPath)
+    : path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, report);
   console.log(`wrote ${reportPath}`);
 }
