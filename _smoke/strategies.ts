@@ -3,7 +3,11 @@ import { InMemorySignalStore } from "../lib/storage";
 import { breakoutExpansion } from "../lib/strategies/breakoutExpansion";
 import { meanReversionBounce } from "../lib/strategies/meanReversionBounce";
 import { momentumContinuation } from "../lib/strategies/momentumContinuation";
-import { REFINED_STRATEGY_VARIANTS } from "../lib/strategies/refinement/strategyVariants";
+import {
+  REFINED_STRATEGY_CONFIGS,
+  REFINED_STRATEGY_RULE_SUMMARIES,
+  REFINED_STRATEGY_VARIANTS,
+} from "../lib/strategies/refinement/strategyVariants";
 import { runStrategyWindow } from "../lib/strategies/runStrategyWindow";
 import { runStrategies, STRATEGY_REGISTRY, getStrategyById } from "../lib/strategies/strategyRegistry";
 import { trendPullback } from "../lib/strategies/trendPullback";
@@ -122,6 +126,22 @@ async function testStrategies(): Promise<void> {
   assert("registry lookup refined momentum works", getStrategyById("momentum_continuation_refined_v1") === REFINED_STRATEGY_VARIANTS[0]);
   assert("registry lookup refined breakout works", getStrategyById("breakout_expansion_refined_v1") === REFINED_STRATEGY_VARIANTS.find((strategy) => strategy.id === "breakout_expansion_refined_v1"));
   assert("registry includes all refined variants", REFINED_STRATEGY_VARIANTS.every((strategy) => getStrategyById(strategy.id) === strategy));
+  assert("refined rule summaries match config count", REFINED_STRATEGY_RULE_SUMMARIES.length === REFINED_STRATEGY_CONFIGS.length);
+  for (const config of REFINED_STRATEGY_CONFIGS) {
+    const summary = REFINED_STRATEGY_RULE_SUMMARIES.find((entry) => entry.refinedStrategyId === config.id);
+    assert(`rule summary exists for ${config.id}`, !!summary, summary);
+    assert(`rule summary base matches ${config.id}`, summary?.baseStrategyId === config.baseStrategyId, summary);
+    assert(
+      `rule summary allowed regimes match ${config.id}`,
+      JSON.stringify(summary?.allowedRegimes ?? []) === JSON.stringify(config.allowedRegimes ?? []),
+      summary,
+    );
+    assert(
+      `rule summary blocked regimes match ${config.id}`,
+      JSON.stringify(summary?.blockedRegimes ?? []) === JSON.stringify(config.blockedRegimes ?? []),
+      summary,
+    );
+  }
   assert("registry lookup missing returns null", getStrategyById("missing") === null);
   assert("momentum version matches STRATEGY_VERSIONS", momentumContinuation.version === STRATEGY_VERSIONS.momentumContinuation);
   assert("trend version matches STRATEGY_VERSIONS", trendPullback.version === STRATEGY_VERSIONS.trendPullback);

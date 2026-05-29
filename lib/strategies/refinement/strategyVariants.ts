@@ -4,9 +4,9 @@ import { meanReversionBounce } from "../meanReversionBounce";
 import { momentumContinuation } from "../momentumContinuation";
 import { trendPullback } from "../trendPullback";
 import { createGatedStrategy } from "./createGatedStrategy";
-import type { RefinedStrategyPair, RefinedStrategyRuleSummary } from "./types";
+import type { GatedStrategyConfig, RefinedStrategyPair, RefinedStrategyRuleSummary } from "./types";
 
-export const momentumContinuationRefinedV1 = createGatedStrategy({
+export const momentumContinuationRefinedV1Config: GatedStrategyConfig = {
   id: "momentum_continuation_refined_v1",
   version: STRATEGY_VERSIONS.momentumContinuationRefinedV1,
   name: "Momentum Continuation Refined v1",
@@ -24,9 +24,9 @@ export const momentumContinuationRefinedV1 = createGatedStrategy({
     "avoid_overextended_entry",
     "avoid_low_confidence_regime",
   ],
-});
+};
 
-export const breakoutExpansionRefinedV1 = createGatedStrategy({
+export const breakoutExpansionRefinedV1Config: GatedStrategyConfig = {
   id: "breakout_expansion_refined_v1",
   version: STRATEGY_VERSIONS.breakoutExpansionRefinedV1,
   name: "Breakout Expansion Refined v1",
@@ -44,9 +44,9 @@ export const breakoutExpansionRefinedV1 = createGatedStrategy({
     "avoid_overextended_entry",
     "avoid_low_confidence_regime",
   ],
-});
+};
 
-export const trendPullbackRefinedV1 = createGatedStrategy({
+export const trendPullbackRefinedV1Config: GatedStrategyConfig = {
   id: "trend_pullback_refined_v1",
   version: STRATEGY_VERSIONS.trendPullbackRefinedV1,
   name: "Trend Pullback Refined v1",
@@ -64,9 +64,9 @@ export const trendPullbackRefinedV1 = createGatedStrategy({
     "avoid_overextended_entry",
     "avoid_low_confidence_regime",
   ],
-});
+};
 
-export const meanReversionRefinedV1 = createGatedStrategy({
+export const meanReversionRefinedV1Config: GatedStrategyConfig = {
   id: "mean_reversion_refined_v1",
   version: STRATEGY_VERSIONS.meanReversionRefinedV1,
   name: "Mean Reversion Refined v1",
@@ -83,7 +83,19 @@ export const meanReversionRefinedV1 = createGatedStrategy({
     "reversion_target_available",
     "avoid_low_confidence_regime",
   ],
-});
+};
+
+export const momentumContinuationRefinedV1 = createGatedStrategy(momentumContinuationRefinedV1Config);
+export const breakoutExpansionRefinedV1 = createGatedStrategy(breakoutExpansionRefinedV1Config);
+export const trendPullbackRefinedV1 = createGatedStrategy(trendPullbackRefinedV1Config);
+export const meanReversionRefinedV1 = createGatedStrategy(meanReversionRefinedV1Config);
+
+export const REFINED_STRATEGY_CONFIGS = [
+  momentumContinuationRefinedV1Config,
+  trendPullbackRefinedV1Config,
+  breakoutExpansionRefinedV1Config,
+  meanReversionRefinedV1Config,
+] as const;
 
 export const REFINED_STRATEGY_VARIANTS = [
   momentumContinuationRefinedV1,
@@ -99,29 +111,10 @@ export const REFINED_STRATEGY_PAIRS: readonly RefinedStrategyPair[] = [
   { baseStrategyId: meanReversionBounce.id, refinedStrategyId: meanReversionRefinedV1.id },
 ];
 
-export const REFINED_STRATEGY_RULE_SUMMARIES: readonly RefinedStrategyRuleSummary[] = [
-  {
-    baseStrategyId: momentumContinuation.id,
-    refinedStrategyId: momentumContinuationRefinedV1.id,
-    allowedRegimes: ["TREND_UP", "LOW_VOL", "TREND_DOWN"],
-    blockedRegimes: ["CHOP", "NEWS_SHOCK"],
-  },
-  {
-    baseStrategyId: breakoutExpansion.id,
-    refinedStrategyId: breakoutExpansionRefinedV1.id,
-    allowedRegimes: ["TREND_UP", "HIGH_VOL"],
-    blockedRegimes: ["LOW_VOL", "TREND_DOWN", "CHOP", "NEWS_SHOCK"],
-  },
-  {
-    baseStrategyId: trendPullback.id,
-    refinedStrategyId: trendPullbackRefinedV1.id,
-    allowedRegimes: ["TREND_UP", "HIGH_VOL"],
-    blockedRegimes: ["TREND_DOWN", "CHOP", "LOW_VOL", "NEWS_SHOCK"],
-  },
-  {
-    baseStrategyId: meanReversionBounce.id,
-    refinedStrategyId: meanReversionRefinedV1.id,
-    allowedRegimes: ["LOW_VOL", "CHOP"],
-    blockedRegimes: ["TREND_DOWN", "TREND_UP", "HIGH_VOL", "NEWS_SHOCK"],
-  },
-];
+export const REFINED_STRATEGY_RULE_SUMMARIES: readonly RefinedStrategyRuleSummary[] =
+  REFINED_STRATEGY_CONFIGS.map((config) => ({
+    baseStrategyId: config.baseStrategyId,
+    refinedStrategyId: config.id,
+    allowedRegimes: config.allowedRegimes ?? [],
+    blockedRegimes: config.blockedRegimes ?? [],
+  }));

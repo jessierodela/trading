@@ -1,11 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { getPgPool, PgBarStore, PgFeatureStore } from "@/lib/storage";
 import { closePgPool } from "@/lib/storage/clients";
 import { FEATURE_VERSION } from "@/lib/versions";
 import type { Bar, Exchange, FeatureSnapshot, RegimeContext, RegimeLabel, Timeframe } from "@/lib/quant/types";
-import { REFINED_STRATEGY_PAIRS, REFINED_STRATEGY_RULE_SUMMARIES } from "@/lib/strategies/refinement/strategyVariants";
+import { GATE_EVALUATORS } from "@/lib/strategies/refinement/gates";
+import {
+  REFINED_STRATEGY_CONFIGS,
+  REFINED_STRATEGY_PAIRS,
+  REFINED_STRATEGY_RULE_SUMMARIES,
+} from "@/lib/strategies/refinement/strategyVariants";
 import { STRATEGY_REGISTRY } from "@/lib/strategies/strategyRegistry";
+import type { StrategyGateId } from "@/lib/strategies/refinement/types";
 import { runBacktest as runBacktestRaw } from "@/lib/backtest/backtestEngine";
 import { runPortfolioBacktest, type PortfolioBacktestConfig } from "@/lib/backtest/portfolioBacktest";
 import {
@@ -142,6 +149,7 @@ const TINY_GROSS_LOSS_USD = 1;
 const CROSS_ASSET_OPPORTUNITY_TOP_N = 30;
 const MIN_OPPORTUNITY_TEST_TRADES = 5;
 const EQUITY_WATCHLIST = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"];
+const DAY_MS = 24 * 60 * 60 * 1000;
 const backtestResultCache = new Map<string, BacktestRunResult>();
 
 const PORTFOLIO_REGIME_WEIGHTS: NonNullable<PortfolioBacktestConfig["regimeWeights"]> = {
@@ -241,6 +249,41 @@ interface OpportunityWalkForwardData {
   testWindows: RegimeCandidateWindow[];
   candidates: OpportunityCandidateValidation[];
   rollingFolds: OpportunityRollingFold[];
+}
+
+interface TradePoolStats {
+  grossProfit: number;
+  grossLossAbs: number;
+  pooledProfitFactor: number | null;
+  pooledExpectancy: number | null;
+  tradeCount: number;
+}
+
+interface GateDiagnosticRow {
+  strategyId: string;
+  gate: StrategyGateId;
+  passes: number;
+  fails: number;
+  unavailablePasses: number;
+}
+
+interface RefinementFoldCounts {
+  validated: number;
+  comparable: number;
+  missingBase: number;
+  missingRefined: number;
+}
+
+interface RunMetadata {
+  branch: string;
+  commitSha: string;
+  runTimestamp: string;
+  reportPath: string;
+  strategyVersions: Record<string, string>;
+  featureVersion: string;
+  windowConfig: string;
+  symbolsDiscovered: string[];
+  p5ReportPathEnv: string;
 }
 
 function parseSymbolList(raw: string): string[] {
@@ -491,6 +534,112 @@ function fmt(value: number | null | undefined, digits = 2): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 }
 
+function pctFmt(value: number | null | undefined, digits = 2): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(digits)}%` : "n/a";
+}
+
+function gitValue(args: string): string {
+  try {
+    return execSync(`git ${args}`, { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function csvEscape(value: string | number | null | undefined): string {
+  const raw = value === null || value === undefined ? "" : String(value);
+  return /[",\r\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+}
+
+function strategyVersionSummary(): Record<string, string> {
+  return Object.fromEntries(STRATEGY_REGISTRY.map((strategy) => [strategy.id, strategy.version]));
+}
+
+function strategyVersionsText(strategyVersions: Record<string, string>): string {
+  return Object.entries(strategyVersions)
+    .map(([id, version]) => `${id}=${version}`)
+    .join("; ");
+}
+
+function windowConfigText(): string {
+  return [
+    `WINDOWS_PER_REGIME=${process.env.WINDOWS_PER_REGIME ?? "10"}`,
+    `WINDOW_BARS=${process.env.WINDOW_BARS ?? String(DEFAULT_PROXY_WINDOW_BARS)}`,
+    `MIN_PROXY_WINDOW_BARS=${MIN_PROXY_WINDOW_BARS}`,
+    `RUN_CONFIGS=${RUN_CONFIGS.map((config) => `${config.windowBars}b/${config.minDominantRegimePct}%`).join(",")}`,
+    `MIN_OPPORTUNITY_TEST_TRADES=${MIN_OPPORTUNITY_TEST_TRADES}`,
+  ].join("; ");
+}
+
+function runMetadataSection(metadata: RunMetadata): string[] {
+  return [
+    "## Run Metadata",
+    "",
+    table(
+      ["field", "value"],
+      [
+        ["branch", metadata.branch],
+        ["commit sha", metadata.commitSha],
+        ["run timestamp", metadata.runTimestamp],
+        ["report path", metadata.reportPath],
+        ["feature version", metadata.featureVersion],
+        ["window config", metadata.windowConfig],
+        ["symbols discovered", metadata.symbolsDiscovered.join(", ") || "none"],
+        ["P5_REPORT_PATH", metadata.p5ReportPathEnv || "unset"],
+      ],
+    ),
+    "",
+    "Strategy versions:",
+    "",
+    table(
+      ["strategy", "version"],
+      Object.entries(metadata.strategyVersions).map(([strategy, version]) => [strategy, version]),
+    ),
+    "",
+  ];
+}
+
+function appendReportIndex(args: {
+  timestamp: string;
+  branch: string;
+  commit: string;
+  reportPath: string;
+  logPath: string;
+  exitCode: number;
+  assetsAnalyzed: string[];
+  strategyVersions: Record<string, string>;
+  notes: string;
+}): void {
+  const indexPath = path.join(process.cwd(), "reports", "p5", "index.csv");
+  fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+  const header = [
+    "timestamp",
+    "branch",
+    "commit",
+    "report_path",
+    "log_path",
+    "exit_code",
+    "assets_analyzed",
+    "strategy_versions",
+    "notes",
+  ];
+  if (!fs.existsSync(indexPath) || fs.readFileSync(indexPath, "utf8").trim().length === 0) {
+    fs.writeFileSync(indexPath, `${header.join(",")}\n`);
+  }
+  const row = [
+    args.timestamp,
+    args.branch,
+    args.commit,
+    args.reportPath,
+    args.logPath,
+    args.exitCode,
+    args.assetsAnalyzed.join(";"),
+    strategyVersionsText(args.strategyVersions),
+    args.notes,
+  ].map(csvEscape).join(",");
+  fs.appendFileSync(indexPath, `${row}\n`);
+}
+
 async function fetchBounds(symbol: string, exchange: Exchange, timeframe: Timeframe): Promise<{ startTs: string; endTs: string } | null> {
   const pool = getPgPool();
   const { rows } = await pool.query<{ min_ts: Date | null; max_ts: Date | null }>(
@@ -684,6 +833,41 @@ function profitFactorFromTrades(trades: SimulatedTrade[]): number | null {
   const losses = grossLossAbs(trades);
   if (losses === 0) return null;
   return grossProfit(trades) / losses;
+}
+
+function tradePoolStats(trades: SimulatedTrade[]): TradePoolStats {
+  const profit = grossProfit(trades);
+  const lossAbs = grossLossAbs(trades);
+  return {
+    grossProfit: profit,
+    grossLossAbs: lossAbs,
+    pooledProfitFactor: lossAbs === 0 ? null : profit / lossAbs,
+    pooledExpectancy: trades.length === 0 ? null : trades.reduce((sum, trade) => sum + trade.pnl, 0) / trades.length,
+    tradeCount: trades.length,
+  };
+}
+
+function latestRegimeAtOrBefore(regimes: RegimeContext[] | undefined, ts: string): RegimeContext | null {
+  if (!regimes || regimes.length === 0) return null;
+  let latest: RegimeContext | null = null;
+  for (const regime of regimes) {
+    if (regime.ts <= ts) latest = regime;
+    if (regime.ts > ts) break;
+  }
+  return latest;
+}
+
+function latestClosedDailyFor(dailyFeatures: FeatureSnapshot[] | undefined, current: FeatureSnapshot): FeatureSnapshot | null {
+  if (!dailyFeatures || dailyFeatures.length === 0) return null;
+  const currentMs = Date.parse(current.ts);
+  let latest: FeatureSnapshot | null = null;
+  for (const candidate of dailyFeatures) {
+    const openMs = Date.parse(candidate.ts);
+    if (candidate.symbol !== current.symbol || candidate.exchange !== current.exchange || candidate.timeframe !== "1d") continue;
+    if (openMs + DAY_MS <= currentMs) latest = candidate;
+    if (openMs > currentMs) break;
+  }
+  return latest;
 }
 
 function sourceDisplayFor(regimeSource: RegimeValidationSource, persistedRegimes: PersistedRegimeContext[]): RegimeSourceDisplay {
@@ -1499,6 +1683,75 @@ function opportunityCandidatePass(stats: OpportunityCandidatePeriodStats): boole
   );
 }
 
+function heldoutTradeStatsByStrategy(
+  base: BacktestInput,
+  testWindows: RegimeCandidateWindow[],
+): Record<string, TradePoolStats> {
+  return Object.fromEntries(STRATEGY_REGISTRY.map((strategy) => {
+    const trades = testWindows.flatMap((window) => runBacktest(sliceInput(base, window, strategy.id)).trades);
+    return [strategy.id, tradePoolStats(trades)];
+  }));
+}
+
+function gateDiagnosticsForWindows(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+): GateDiagnosticRow[] {
+  const rows = new Map<string, GateDiagnosticRow>();
+  const featuresByTs = new Map(base.features.map((feature) => [feature.ts, feature]));
+  const sortedFeatures = base.features;
+  const featureIndexByTs = new Map(sortedFeatures.map((feature, index) => [feature.ts, index]));
+
+  for (const config of REFINED_STRATEGY_CONFIGS) {
+    for (const gate of config.gates ?? []) {
+      rows.set(`${config.id}|${gate}`, { strategyId: config.id, gate, passes: 0, fails: 0, unavailablePasses: 0 });
+    }
+  }
+
+  for (const window of windows) {
+    const windowFeatures = base.bars
+      .filter((bar) => bar.ts >= window.startTs && bar.ts <= window.endTs)
+      .map((bar) => featuresByTs.get(bar.ts))
+      .filter((feature): feature is FeatureSnapshot => feature !== undefined);
+
+    for (const current of windowFeatures) {
+      const featureIndex = featureIndexByTs.get(current.ts);
+      if (featureIndex === undefined) continue;
+      const input = {
+        current,
+        previous: featureIndex > 0 ? sortedFeatures[featureIndex - 1] : undefined,
+        recent: sortedFeatures.slice(Math.max(0, featureIndex - 50), featureIndex + 1),
+        daily: latestClosedDailyFor(base.dailyFeatures, current),
+        regime: latestRegimeAtOrBefore(base.regimes, current.ts),
+      };
+
+      for (const config of REFINED_STRATEGY_CONFIGS) {
+        const baseSignal = config.baseStrategy.evaluate(input);
+        if (!baseSignal) continue;
+        const { regime } = input;
+        if (config.allowedRegimes && (!regime || !config.allowedRegimes.includes(regime.regime))) continue;
+        if (regime && config.blockedRegimes?.includes(regime.regime)) continue;
+        if (config.minRegimeReliability !== undefined && (!regime || regime.reliability < config.minRegimeReliability)) continue;
+
+        for (const gate of config.gates ?? []) {
+          const key = `${config.id}|${gate}`;
+          const row = rows.get(key);
+          if (!row) continue;
+          const result = GATE_EVALUATORS[gate]({ input, signal: baseSignal });
+          if (result.passed) {
+            row.passes++;
+            if (result.reason.toLowerCase().includes("unavailable")) row.unavailablePasses++;
+          } else {
+            row.fails++;
+          }
+        }
+      }
+    }
+  }
+
+  return [...rows.values()];
+}
+
 function opportunityFinalVerdict(candidate: OpportunityCandidateValidation, foldsValidated: number, totalFolds: number): string {
   if (candidate.test.samples === 0 || candidate.test.tradeCount < MIN_OPPORTUNITY_TEST_TRADES) return "NEEDS MORE DATA";
   if (candidate.testPass && totalFolds > 0 && foldsValidated === totalFolds) return "VALIDATED";
@@ -1867,6 +2120,8 @@ interface AssetSummary {
   bestStaticByRtDD: { label: string; value: number | null };
   strategyFullStats: FullStats[];
   regimeStrategyStats: RegimeStrategyStat[];
+  heldoutTradeStatsByStrategy: Record<string, TradePoolStats>;
+  gateDiagnostics: GateDiagnosticRow[];
   walkForward: WalkForwardSummary | null;
   opportunityWalkForward: OpportunityWalkForwardData | null;
 }
@@ -2238,6 +2493,16 @@ function tradeReduction(baseTrades: number | undefined, refinedTrades: number | 
   return `${reduction} (${fmt(reduction / base * 100)}%)`;
 }
 
+function tradeReductionCount(baseTrades: number | undefined, refinedTrades: number | undefined): string {
+  return String((baseTrades ?? 0) - (refinedTrades ?? 0));
+}
+
+function tradeReductionPct(baseTrades: number | undefined, refinedTrades: number | undefined): string {
+  const base = baseTrades ?? 0;
+  if (base === 0) return "n/a";
+  return pctFmt(((base - (refinedTrades ?? 0)) / base) * 100);
+}
+
 function countReduction(baseCount: number | undefined, refinedCount: number | undefined): string {
   const base = baseCount ?? 0;
   const refined = refinedCount ?? 0;
@@ -2286,16 +2551,22 @@ function refinementRollingFoldCounts(
   summaries: AssetSummary[],
   baseStrategyId: string,
   refinedStrategyId: string,
-): { validated: number; total: number } {
+): RefinementFoldCounts {
   let validated = 0;
-  let total = 0;
+  let comparable = 0;
+  let missingBase = 0;
+  let missingRefined = 0;
   for (const summary of summaries) {
     for (const fold of summary.opportunityWalkForward?.rollingFolds ?? []) {
       for (const regime of REQUIRED_REGIMES) {
         const base = fold.candidates.find((candidate) => candidate.regime === regime && candidate.strategyId === baseStrategyId);
         const refined = fold.candidates.find((candidate) => candidate.regime === regime && candidate.strategyId === refinedStrategyId);
-        if (!base || !refined) continue;
-        total++;
+        const hasBase = !!base && base.test.samples > 0;
+        const hasRefined = !!refined && refined.test.samples > 0;
+        if (!hasBase) missingBase++;
+        if (!hasRefined) missingRefined++;
+        if (!hasBase || !hasRefined || !base || !refined) continue;
+        comparable++;
         const foldValidated =
           statsImprove(refined.test.avgReturn, base.test.avgReturn, "higher") &&
           statsImprove(refined.test.globalProfitFactor, base.test.globalProfitFactor, "higher") &&
@@ -2306,20 +2577,20 @@ function refinementRollingFoldCounts(
       }
     }
   }
-  return { validated, total };
+  return { validated, comparable, missingBase, missingRefined };
 }
 
 function refinementVerdict(
   baseTest: OpportunityCandidatePeriodStats,
   refinedTest: OpportunityCandidatePeriodStats,
-  folds: { validated: number; total: number },
+  folds: RefinementFoldCounts,
 ): string {
   const returnImproves = statsImprove(refinedTest.avgReturn, baseTest.avgReturn, "higher");
   const pfImproves = statsImprove(refinedTest.globalProfitFactor, baseTest.globalProfitFactor, "higher");
   const expectancyImproves = statsImprove(refinedTest.globalExpectancy, baseTest.globalExpectancy, "higher");
   const drawdownImproves = statsImprove(refinedTest.maxDrawdown, baseTest.maxDrawdown, "lowerOrEqual");
   const sufficientTrades = refinedTest.tradeCount >= MIN_OPPORTUNITY_TEST_TRADES;
-  const foldsConsistent = folds.total > 0 && folds.validated === folds.total;
+  const foldsConsistent = folds.comparable > 0 && folds.validated === folds.comparable;
   if (returnImproves && pfImproves && expectancyImproves && drawdownImproves && sufficientTrades && foldsConsistent) {
     return "VALIDATED";
   }
@@ -2329,7 +2600,7 @@ function refinementVerdict(
     improvements > 0 &&
     (
       !sufficientTrades ||
-      (folds.total > 0 && folds.validated > 0 && folds.validated < folds.total)
+      (folds.comparable > 0 && folds.validated > 0 && folds.validated < folds.comparable)
     )
   ) {
     return "NEEDS MORE DATA";
@@ -2340,12 +2611,88 @@ function refinementVerdict(
     !pfImproves ||
     !expectancyImproves ||
     drawdownWorsenedMaterially(refinedTest.maxDrawdown, baseTest.maxDrawdown) ||
-    (folds.total > 0 && folds.validated === 0)
+    (folds.comparable > 0 && folds.validated === 0)
   ) {
     return "NOT VALIDATED";
   }
 
   return "NEEDS MORE DATA";
+}
+
+function pooledHeldoutStatsForStrategy(summaries: AssetSummary[], strategyId: string): TradePoolStats {
+  const grossProfitTotal = summaries.reduce((sum, summary) => sum + (summary.heldoutTradeStatsByStrategy[strategyId]?.grossProfit ?? 0), 0);
+  const grossLossAbsTotal = summaries.reduce((sum, summary) => sum + (summary.heldoutTradeStatsByStrategy[strategyId]?.grossLossAbs ?? 0), 0);
+  const tradeCount = summaries.reduce((sum, summary) => sum + (summary.heldoutTradeStatsByStrategy[strategyId]?.tradeCount ?? 0), 0);
+  const pnlTotal = summaries.reduce((sum, summary) => {
+    const stats = summary.heldoutTradeStatsByStrategy[strategyId];
+    return sum + (stats?.pooledExpectancy === null || stats === undefined ? 0 : stats.pooledExpectancy * stats.tradeCount);
+  }, 0);
+  return {
+    grossProfit: grossProfitTotal,
+    grossLossAbs: grossLossAbsTotal,
+    pooledProfitFactor: grossLossAbsTotal === 0 ? null : grossProfitTotal / grossLossAbsTotal,
+    pooledExpectancy: tradeCount === 0 ? null : pnlTotal / tradeCount,
+    tradeCount,
+  };
+}
+
+function refinementWarnings(
+  refinedTest: OpportunityCandidatePeriodStats,
+  baseTest: OpportunityCandidatePeriodStats,
+  folds: RefinementFoldCounts,
+): string {
+  const warnings: string[] = [];
+  if (refinedTest.tradeCount < MIN_OPPORTUNITY_TEST_TRADES) {
+    warnings.push(`refined test trades ${refinedTest.tradeCount} < ${MIN_OPPORTUNITY_TEST_TRADES}`);
+  }
+  const baseTrades = baseTest.tradeCount;
+  if (baseTrades > 0 && (baseTrades - refinedTest.tradeCount) / baseTrades > 0.9) {
+    warnings.push("trade reduction > 90%");
+  }
+  if (folds.comparable === 0) warnings.push("no comparable rolling folds");
+  return warnings.join("; ") || "none";
+}
+
+function aggregateGateDiagnostics(summaries: AssetSummary[]): GateDiagnosticRow[] {
+  const rows = new Map<string, GateDiagnosticRow>();
+  for (const summary of summaries) {
+    for (const row of summary.gateDiagnostics) {
+      const key = `${row.strategyId}|${row.gate}`;
+      const existing = rows.get(key) ?? { strategyId: row.strategyId, gate: row.gate, passes: 0, fails: 0, unavailablePasses: 0 };
+      existing.passes += row.passes;
+      existing.fails += row.fails;
+      existing.unavailablePasses += row.unavailablePasses;
+      rows.set(key, existing);
+    }
+  }
+  return [...rows.values()].sort((a, b) => a.strategyId.localeCompare(b.strategyId) || a.gate.localeCompare(b.gate));
+}
+
+function gateAvailabilityDiagnosticsSection(summaries: AssetSummary[]): string[] {
+  const rows = aggregateGateDiagnostics(summaries);
+  if (rows.length === 0) return [];
+  return [
+    "## Gate Availability Diagnostics",
+    "",
+    "Diagnostics evaluate each configured gate independently across base-strategy signal contexts that pass the refined variant's regime and reliability filters. `unavailable passes` are pass-open cases where a gate reason includes unavailable source data; they are useful for spotting indicators that are not actually constraining a variant.",
+    "",
+    table(
+      ["strategy", "gate", "passes", "fails", "unavailable passes", "unavailable pass %"],
+      rows.map((row) => {
+        const attempts = row.passes + row.fails;
+        const unavailablePct = row.passes === 0 ? null : row.unavailablePasses / row.passes * 100;
+        return [
+          row.strategyId,
+          row.gate,
+          String(row.passes),
+          String(row.fails),
+          String(row.unavailablePasses),
+          attempts === 0 ? "n/a" : pctFmt(unavailablePct),
+        ];
+      }),
+    ),
+    "",
+  ];
 }
 
 function strategyRefinementCandidateResultsSection(summaries: AssetSummary[]): string[] {
@@ -2356,6 +2703,8 @@ function strategyRefinementCandidateResultsSection(summaries: AssetSummary[]): s
     const refinedFull = aggregateStrategyStats(summaries, rule.refinedStrategyId);
     const baseTest = candidateStatsForStrategy(candidates, rule.baseStrategyId, "test");
     const refinedTest = candidateStatsForStrategy(candidates, rule.refinedStrategyId, "test");
+    const basePooled = pooledHeldoutStatsForStrategy(summaries, rule.baseStrategyId);
+    const refinedPooled = pooledHeldoutStatsForStrategy(summaries, rule.refinedStrategyId);
     const folds = refinementRollingFoldCounts(summaries, rule.baseStrategyId, rule.refinedStrategyId);
     return [
       rule.baseStrategyId,
@@ -2372,21 +2721,36 @@ function strategyRefinementCandidateResultsSection(summaries: AssetSummary[]): s
       fmt(refinedTest.maxDrawdown),
       String(baseTest.tradeCount),
       String(refinedTest.tradeCount),
-      tradeReduction(baseTest.tradeCount, refinedTest.tradeCount),
+      tradeReductionCount(baseTest.tradeCount, refinedTest.tradeCount),
+      tradeReductionPct(baseTest.tradeCount, refinedTest.tradeCount),
       fmt(baseFull?.avgExposure),
       fmt(refinedFull?.avgExposure),
-      `${folds.validated}/${folds.total}`,
+      fmt(basePooled.grossProfit),
+      fmt(refinedPooled.grossProfit),
+      fmt(basePooled.grossLossAbs),
+      fmt(refinedPooled.grossLossAbs),
+      fmt(basePooled.pooledProfitFactor),
+      fmt(refinedPooled.pooledProfitFactor),
+      fmt(basePooled.pooledExpectancy, 4),
+      fmt(refinedPooled.pooledExpectancy, 4),
+      String(basePooled.tradeCount),
+      String(refinedPooled.tradeCount),
+      String(folds.comparable),
+      String(folds.missingBase),
+      String(folds.missingRefined),
+      String(folds.validated),
       refinementVerdict(baseTest, refinedTest, folds),
+      refinementWarnings(refinedTest, baseTest, folds),
     ];
   });
 
   return [
     "## Strategy Refinement Candidate Results",
     "",
-    "This section uses held-out 70/30 test-window candidate metrics for base-vs-refined comparison, plus rolling expanding-window fold checks. Verdicts are conservative: a variant is VALIDATED only when held-out return, profit factor, expectancy, drawdown, trade sufficiency, and all rolling-fold checks beat the base strategy. These are research verdicts only.",
+    "This section uses held-out 70/30 test-window candidate metrics for base-vs-refined comparison, plus rolling expanding-window fold checks. Candidate metrics are averaged across held-out asset/regime candidate rows, so they are directional research evidence, not pooled trade-level proof. Pooled held-out trade stats are included separately where trades exist. Verdicts are conservative: a variant is VALIDATED only when held-out return, profit factor, expectancy, drawdown, trade sufficiency, and all comparable rolling-fold checks beat the base strategy. These are research verdicts only.",
     "",
     table(
-      ["strategy", "variant", "allowed regimes", "blocked regimes", "base avg return", "refined avg return", "base global PF", "refined global PF", "base global expectancy", "refined global expectancy", "base max drawdown", "refined max drawdown", "base trades", "refined trades", "trade reduction %", "base exposure", "refined exposure", "folds validated", "verdict"],
+      ["strategy", "variant", "allowed regimes", "blocked regimes", "base avg return", "refined avg return", "base global PF", "refined global PF", "base global expectancy", "refined global expectancy", "base max drawdown", "refined max drawdown", "base trades", "refined trades", "trade reduction count", "trade reduction %", "base exposure", "refined exposure", "base gross profit", "refined gross profit", "base gross loss", "refined gross loss", "base pooled PF", "refined pooled PF", "base pooled expectancy", "refined pooled expectancy", "base pooled trades", "refined pooled trades", "comparable folds", "missing base folds", "missing refined folds", "validated folds", "verdict", "warnings"],
       rows,
     ),
     "",
@@ -2624,6 +2988,8 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
   const walkForwardData = computeWalkForward(baseInput, validation.selectedWindows);
   const regimeStrategyStats = crossAssetRegimeStrategyStats(instrument.symbol, baseInput, validation.selectedWindows);
   const opportunityWalkForward = computeOpportunityWalkForward(instrument.symbol, baseInput, validation.selectedWindows);
+  const heldoutTradeStats = heldoutTradeStatsByStrategy(baseInput, opportunityWalkForward?.testWindows ?? []);
+  const gateDiagnostics = gateDiagnosticsForWindows(baseInput, validation.selectedWindows);
   const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
   const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
   const summary: AssetSummary = {
@@ -2639,6 +3005,8 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     bestStaticByRtDD: { label: bestByRtDD?.label ?? "n/a", value: bestByRtDD?.avgReturnToDrawdown ?? null },
     strategyFullStats: staticFull,
     regimeStrategyStats,
+    heldoutTradeStatsByStrategy: heldoutTradeStats,
+    gateDiagnostics,
     walkForward: summarizeWalkForward(walkForwardData),
     opportunityWalkForward,
   };
@@ -2716,6 +3084,12 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
 async function main(): Promise<void> {
   const sections: string[] = [];
   const summaries: AssetSummary[] = [];
+  const configuredReportPath = process.env.P5_REPORT_PATH?.trim();
+  const reportPath = configuredReportPath
+    ? path.resolve(process.cwd(), configuredReportPath)
+    : path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
+  const runTimestamp = new Date().toISOString();
+  const strategyVersions = strategyVersionSummary();
   const resolution = await resolveInstruments();
   const skippedEquitySections = await skippedEquityAssetsSection();
   const { instruments } = resolution;
@@ -2733,10 +3107,23 @@ async function main(): Promise<void> {
         ...crossAssetValidatedCandidateSummarySection(summaries),
         ...momentumRefinedTestPassBreakdownSection(summaries),
         ...strategyRefinementCandidateResultsSection(summaries),
+        ...gateAvailabilityDiagnosticsSection(summaries),
         ...strategyRefinementComparisonSection(summaries),
         ...crossAssetRouterValidationSection(summaries),
       ]
     : ["## Multi-Asset Data Coverage", "", "No assets had sufficient stored data to analyze.", ""];
+
+  const metadata: RunMetadata = {
+    branch: gitValue("rev-parse --abbrev-ref HEAD"),
+    commitSha: gitValue("rev-parse HEAD"),
+    runTimestamp,
+    reportPath,
+    strategyVersions,
+    featureVersion: FEATURE_VERSION,
+    windowConfig: windowConfigText(),
+    symbolsDiscovered: instruments.map((instrument) => `${instrument.symbol}@${instrument.exchange}`),
+    p5ReportPathEnv: process.env.P5_REPORT_PATH ?? "",
+  };
 
   const report = [
     "# P5 Multi-Asset Strategy Research Report",
@@ -2746,6 +3133,7 @@ async function main(): Promise<void> {
     resolvedAssetLine(resolution, summaries),
     "The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_ROUTING_REPORT.md`.",
     "",
+    ...runMetadataSection(metadata),
     "## Implementation Summary",
     "",
     "- Expanded P4 metrics with expectancy, win/loss averages, streaks, exposure, duration, Sharpe/Sortino aliases, profit per bar, return-to-drawdown, and trade frequency.",
@@ -2771,6 +3159,7 @@ async function main(): Promise<void> {
     "- Refined trend_pullback_refined_v1 for Priority 8D as a TREND_UP/HIGH_VOL specialist with strong macro-trend, support-zone pullback, intact-trend, momentum-reset, volume, overextension, and reliability gates.",
     "- Refined mean_reversion_refined_v1 for Priority 8E as a LOW_VOL/CHOP defensive range specialist with oversold, range-bound, non-aggressive-volatility, mean-stretch, reversion-target, and reliability gates.",
     "- Added Strategy Refinement Candidate Results: refined variants are compared against their base strategies on held-out test-window metrics and rolling fold consistency before receiving conservative research verdicts.",
+    "- Added P5 report run metadata, `reports/p5/index.csv` append-only report indexing, pooled held-out trade stats, fold denominator transparency, over-filtering warnings, and Gate Availability Diagnostics.",
     "- Added Momentum Refined Test-Pass Breakdown: refined momentum improved quality metrics but remains NOT VALIDATED because its held-out test-pass candidates did not pass rolling validation.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
@@ -2823,12 +3212,19 @@ async function main(): Promise<void> {
     "",
   ].join("\n");
 
-  const configuredReportPath = process.env.P5_REPORT_PATH?.trim();
-  const reportPath = configuredReportPath
-    ? path.resolve(process.cwd(), configuredReportPath)
-    : path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, report);
+  appendReportIndex({
+    timestamp: runTimestamp,
+    branch: metadata.branch,
+    commit: metadata.commitSha,
+    reportPath,
+    logPath: process.env.P5_LOG_PATH ?? "",
+    exitCode: 0,
+    assetsAnalyzed: summaries.map((summary) => summary.symbol),
+    strategyVersions,
+    notes: process.env.P5_RUN_NOTES ?? "generated by scripts/runExpandedBacktestResearch.ts",
+  });
   console.log(`wrote ${reportPath}`);
 }
 
