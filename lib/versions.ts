@@ -85,6 +85,10 @@ export const FEATURE_VERSION = "features.2026-05-20.v3";
 //                            - P5 8C: specialize breakout expansion for
 //                              TREND_UP/HIGH_VOL only with volatility expansion,
 //                              volume, breakout-structure, trend, and macro gates.
+//   strategy.trend_pullback_refined_v1.2026-05-29.v2
+//                            - P5 8D: specialize trend pullback for TREND_UP
+//                              and macro-confirmed HIGH_VOL with support-zone,
+//                              intact-trend, momentum-reset, and reliability gates.
 export const STRATEGY_VERSIONS = {
   momentumContinuation: "strategy.momentum_continuation.2026-05-21.v1",
   trendPullback: "strategy.trend_pullback.2026-05-21.v1",
@@ -92,7 +96,7 @@ export const STRATEGY_VERSIONS = {
   meanReversionBounce: "strategy.mean_reversion_bounce.2026-05-21.v1",
   momentumContinuationRefinedV1: "strategy.momentum_continuation_refined_v1.2026-05-27.v2",
   breakoutExpansionRefinedV1: "strategy.breakout_expansion_refined_v1.2026-05-29.v2",
-  trendPullbackRefinedV1: "strategy.trend_pullback_refined_v1.2026-05-26.v1",
+  trendPullbackRefinedV1: "strategy.trend_pullback_refined_v1.2026-05-29.v2",
   meanReversionRefinedV1: "strategy.mean_reversion_refined_v1.2026-05-26.v1",
 } as const;
 

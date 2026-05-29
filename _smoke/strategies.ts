@@ -164,6 +164,44 @@ async function testStrategies(): Promise<void> {
   assert("trend stop below ema20", typeof trend?.stopLoss === "number" && trend.stopLoss < pullbackCurrent(1).ema20!);
   if (trend) assertSignalShape("trend", trend);
 
+  const refinedTrendStrategy = getStrategyById("trend_pullback_refined_v1");
+  const refinedTrendCurrent = {
+    ...pullbackCurrent(1),
+    close: 101,
+    ema20: 101.2,
+    ema50: 98,
+    ema20Slope: 0.2,
+    ema50Slope: 0.1,
+    rsi14: 46,
+    macdHist: 0.08,
+    atr14: 4,
+    distanceFromEma20Atr: -0.05,
+    relativeVolume20: 1,
+    daily_ema50AboveEma200: true,
+    daily_priceAboveEma200: true,
+  };
+  const refinedTrend = refinedTrendStrategy?.evaluate({
+    current: refinedTrendCurrent,
+    previous: feature(0, { macdHist: 0.02 }),
+    recent: [],
+    regime: regime("TREND_UP"),
+  });
+  assert("refined trend pullback emits in reliable TREND_UP controlled pullback", refinedTrend?.strategyId === "trend_pullback_refined_v1", refinedTrend);
+  const refinedTrendLowVol = refinedTrendStrategy?.evaluate({
+    current: refinedTrendCurrent,
+    previous: feature(0, { macdHist: 0.02 }),
+    recent: [],
+    regime: regime("LOW_VOL"),
+  });
+  assert("refined trend pullback blocks LOW_VOL", refinedTrendLowVol === null, refinedTrendLowVol);
+  const refinedTrendBroken = refinedTrendStrategy?.evaluate({
+    current: { ...refinedTrendCurrent, close: 94, ema20: 101, ema50: 98, distanceFromEma20Atr: -1.75 },
+    previous: feature(0, { macdHist: 0.02 }),
+    recent: [],
+    regime: regime("TREND_UP"),
+  });
+  assert("refined trend pullback blocks broken trend", refinedTrendBroken === null, refinedTrendBroken);
+
   const trendSetup = trendPullback.evaluate({
     current: { ...pullbackCurrent(1), rsi14: 42, macdHist: 0.1 },
     previous: feature(0, { macdHist: 0.2 }),

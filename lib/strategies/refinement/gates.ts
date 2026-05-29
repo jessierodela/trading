@@ -110,6 +110,27 @@ export const GATE_EVALUATORS: Record<StrategyGateId, GateEvaluator> = {
     return fail("gate macro_trend_confirmed failed");
   },
 
+  strong_macro_trend_confirmed(context) {
+    const { current, daily } = context.input;
+    if (current.daily_ema50AboveEma200 === true && current.daily_priceAboveEma200 === true) {
+      return pass("gate strong_macro_trend_confirmed");
+    }
+    if (current.daily_ema50AboveEma200 === false || current.daily_priceAboveEma200 === false) {
+      return fail("gate strong_macro_trend_confirmed failed: daily flags not aligned");
+    }
+    if (!daily) return pass("gate strong_macro_trend_confirmed unavailable");
+    if (
+      isFiniteNumber(daily.ema50) &&
+      isFiniteNumber(daily.ema200) &&
+      daily.ema50 > daily.ema200 &&
+      daily.close > daily.ema50 &&
+      daily.close > daily.ema200
+    ) {
+      return pass("gate strong_macro_trend_confirmed via daily trend stack");
+    }
+    return fail("gate strong_macro_trend_confirmed failed");
+  },
+
   volatility_expansion_confirmed(context) {
     const { current } = context.input;
     if (isFiniteNumber(current.bbWidth) && isFiniteNumber(current.bbWidthPrev)) {
@@ -162,6 +183,84 @@ export const GATE_EVALUATORS: Record<StrategyGateId, GateEvaluator> = {
       return pass("gate price_near_or_above_breakout_structure via trend stack");
     }
     return fail("gate price_near_or_above_breakout_structure failed");
+  },
+
+  pullback_into_support_zone(context) {
+    const { current } = context.input;
+    if (
+      isFiniteNumber(current.distanceFromEma20Atr) &&
+      current.distanceFromEma20Atr >= -0.35 &&
+      current.distanceFromEma20Atr <= 0.75
+    ) {
+      return pass("gate pullback_into_support_zone");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema20) &&
+      isFiniteNumber(current.atr14) &&
+      Math.abs(current.close - current.ema20) / current.atr14 <= 0.65
+    ) {
+      return pass("gate pullback_into_support_zone via ema20");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema50) &&
+      isFiniteNumber(current.atr14) &&
+      current.close >= current.ema50 &&
+      Math.abs(current.close - current.ema50) / current.atr14 <= 0.75
+    ) {
+      return pass("gate pullback_into_support_zone via ema50");
+    }
+    return fail("gate pullback_into_support_zone failed");
+  },
+
+  trend_not_broken(context) {
+    const { current } = context.input;
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema20) &&
+      isFiniteNumber(current.ema50) &&
+      current.close >= current.ema50 &&
+      current.ema20 >= current.ema50
+    ) {
+      if (isFiniteNumber(current.ema50Slope) && current.ema50Slope < 0) {
+        return fail("gate trend_not_broken failed: ema50 slope negative");
+      }
+      if (isFiniteNumber(current.ema20Slope) && current.ema20Slope < 0 && current.close < current.ema20) {
+        return fail("gate trend_not_broken failed: close below falling ema20");
+      }
+      return pass("gate trend_not_broken");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema20) &&
+      current.close >= current.ema20 &&
+      (!isFiniteNumber(current.ema20Slope) || current.ema20Slope >= 0)
+    ) {
+      return pass("gate trend_not_broken via ema20");
+    }
+    return fail("gate trend_not_broken failed");
+  },
+
+  momentum_reset_without_reversal(context) {
+    const { current } = context.input;
+    const previous = previousFeature(context);
+    if (!isFiniteNumber(current.rsi14) || current.rsi14 < 42 || current.rsi14 > 56) {
+      return fail("gate momentum_reset_without_reversal failed: rsi not reset");
+    }
+    if (isFiniteNumber(current.macdHist) && current.macdHist < -0.15) {
+      return fail("gate momentum_reset_without_reversal failed: macd reversal");
+    }
+    if (
+      previous &&
+      isFiniteNumber(current.macdHist) &&
+      isFiniteNumber(previous.macdHist) &&
+      current.macdHist < previous.macdHist &&
+      current.macdHist < 0
+    ) {
+      return fail("gate momentum_reset_without_reversal failed: macd fading below zero");
+    }
+    return pass("gate momentum_reset_without_reversal");
   },
 
   volatility_compression_confirmed(context) {
