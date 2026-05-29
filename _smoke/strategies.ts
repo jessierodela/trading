@@ -120,6 +120,7 @@ async function testStrategies(): Promise<void> {
   assert("registry includes base and refined strategies", STRATEGY_REGISTRY.length >= 8);
   assert("registry lookup momentum works", getStrategyById("momentum_continuation") === momentumContinuation);
   assert("registry lookup refined momentum works", getStrategyById("momentum_continuation_refined_v1") === REFINED_STRATEGY_VARIANTS[0]);
+  assert("registry lookup refined breakout works", getStrategyById("breakout_expansion_refined_v1") === REFINED_STRATEGY_VARIANTS.find((strategy) => strategy.id === "breakout_expansion_refined_v1"));
   assert("registry includes all refined variants", REFINED_STRATEGY_VARIANTS.every((strategy) => getStrategyById(strategy.id) === strategy));
   assert("registry lookup missing returns null", getStrategyById("missing") === null);
   assert("momentum version matches STRATEGY_VERSIONS", momentumContinuation.version === STRATEGY_VERSIONS.momentumContinuation);
@@ -179,6 +180,42 @@ async function testStrategies(): Promise<void> {
   assert("breakout strategyId stable", breakout?.strategyId === "breakout_expansion");
   assert("breakout stop uses middle band", breakout?.stopLoss === breakoutCurrent(1).bbMiddle);
   if (breakout) assertSignalShape("breakout", breakout);
+
+  const refinedBreakoutStrategy = getStrategyById("breakout_expansion_refined_v1");
+  const refinedBreakoutCurrent = {
+    ...breakoutCurrent(1),
+    ema20: 102,
+    ema50: 98,
+    daily_ema50AboveEma200: true,
+  };
+  const refinedBreakout = refinedBreakoutStrategy?.evaluate({
+    current: refinedBreakoutCurrent,
+    previous: feature(0),
+    recent: [],
+    regime: regime("TREND_UP"),
+  });
+  assert("refined breakout emits in reliable TREND_UP with expansion", refinedBreakout?.strategyId === "breakout_expansion_refined_v1", refinedBreakout);
+  const refinedBreakoutLowVol = refinedBreakoutStrategy?.evaluate({
+    current: refinedBreakoutCurrent,
+    previous: feature(0),
+    recent: [],
+    regime: regime("LOW_VOL"),
+  });
+  assert("refined breakout blocks LOW_VOL", refinedBreakoutLowVol === null, refinedBreakoutLowVol);
+  const refinedBreakoutTrendDown = refinedBreakoutStrategy?.evaluate({
+    current: refinedBreakoutCurrent,
+    previous: feature(0),
+    recent: [],
+    regime: regime("TREND_DOWN"),
+  });
+  assert("refined breakout blocks TREND_DOWN", refinedBreakoutTrendDown === null, refinedBreakoutTrendDown);
+  const refinedBreakoutNoExpansion = refinedBreakoutStrategy?.evaluate({
+    current: { ...refinedBreakoutCurrent, bbWidth: 0.1, bbWidthPrev: 0.1, candleRangeAtr: 0.6 },
+    previous: feature(0),
+    recent: [],
+    regime: regime("HIGH_VOL"),
+  });
+  assert("refined breakout requires volatility expansion in HIGH_VOL", refinedBreakoutNoExpansion === null, refinedBreakoutNoExpansion);
 
   const bounce = meanReversionBounce.evaluate({
     current: bounceCurrent(1),

@@ -64,6 +64,8 @@ interface FullStats {
   avgExpectancy: number | null;
   avgExposure: number | null;
   tradeCount: number;
+  losingTradeCount: number;
+  stopLossExitCount: number;
   noTradeWindows: number;
   avgReturnToDrawdown: number | null;
 }
@@ -842,6 +844,8 @@ function staticStrategyFullStats(base: BacktestInput, windows: RegimeCandidateWi
       avgExpectancy: avg(expectancies),
       avgExposure: avg(exposures),
       tradeCount: allTrades.length,
+      losingTradeCount: allTrades.filter((trade) => trade.pnl < 0).length,
+      stopLossExitCount: allTrades.filter((trade) => trade.reasonExited === "stop_loss").length,
       noTradeWindows: results.filter((r) => r.trades.length === 0).length,
       avgReturnToDrawdown: avg(rtdds),
     };
@@ -865,6 +869,8 @@ function routerFullStatsFromAudit(audit: RouterMetricAudit, routerSummary: Routi
     avgExpectancy: audit.averageExpectancy,
     avgExposure: avg(exposures),
     tradeCount: audit.totalTrades,
+    losingTradeCount: 0,
+    stopLossExitCount: 0,
     noTradeWindows: audit.noTradeWindows,
     avgReturnToDrawdown: routerSummary.avgReturnToDrawdown,
   };
@@ -903,6 +909,8 @@ function portfolioComparisonStats(base: BacktestInput, windows: RegimeCandidateW
       avgExpectancy: avg(expectancies),
       avgExposure: avg(exposures),
       tradeCount: allTrades.length,
+      losingTradeCount: allTrades.filter((trade) => trade.pnl < 0).length,
+      stopLossExitCount: allTrades.filter((trade) => trade.reasonExited === "stop_loss").length,
       noTradeWindows: results.filter((r) => r.trades.length === 0).length,
       avgReturnToDrawdown: avg(rtdds),
     };
@@ -2181,6 +2189,8 @@ function aggregateStrategyStats(summaries: AssetSummary[], strategyId: string): 
     avgExpectancy: avg(rows.map((row) => row.avgExpectancy).filter((value): value is number => value !== null)),
     avgExposure: avg(rows.map((row) => row.avgExposure).filter((value): value is number => value !== null)),
     tradeCount: rows.reduce((sum, row) => sum + row.tradeCount, 0),
+    losingTradeCount: rows.reduce((sum, row) => sum + row.losingTradeCount, 0),
+    stopLossExitCount: rows.reduce((sum, row) => sum + row.stopLossExitCount, 0),
     noTradeWindows: rows.reduce((sum, row) => sum + row.noTradeWindows, 0),
     avgReturnToDrawdown: avg(rows.map((row) => row.avgReturnToDrawdown).filter((value): value is number => value !== null)),
   };
@@ -2228,6 +2238,14 @@ function tradeReduction(baseTrades: number | undefined, refinedTrades: number | 
   return `${reduction} (${fmt(reduction / base * 100)}%)`;
 }
 
+function countReduction(baseCount: number | undefined, refinedCount: number | undefined): string {
+  const base = baseCount ?? 0;
+  const refined = refinedCount ?? 0;
+  if (base === 0) return refined === 0 ? "0 (n/a)" : `${base - refined} (n/a)`;
+  const reduction = base - refined;
+  return `${reduction} (${fmt(reduction / base * 100)}%)`;
+}
+
 function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[] {
   if (summaries.length === 0) return [];
 
@@ -2260,6 +2278,12 @@ function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[
       String(base?.tradeCount ?? 0),
       String(refined?.tradeCount ?? 0),
       tradeReduction(base?.tradeCount, refined?.tradeCount),
+      String(base?.losingTradeCount ?? 0),
+      String(refined?.losingTradeCount ?? 0),
+      countReduction(base?.losingTradeCount, refined?.losingTradeCount),
+      String(base?.stopLossExitCount ?? 0),
+      String(refined?.stopLossExitCount ?? 0),
+      countReduction(base?.stopLossExitCount, refined?.stopLossExitCount),
       fmt(base?.avgExposure),
       fmt(refined?.avgExposure),
       fmt(base?.avgReturnToDrawdown),
@@ -2274,10 +2298,10 @@ function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[
   return [
     "## Strategy Refinement Candidate Comparison",
     "",
-    "Research-only refined variants are registered beside their base strategies and evaluated as separate benchmark candidates. Aggregated metrics below average per-asset full-window strategy stats across the selected crypto universe; walk-forward survival counts use the cross-asset opportunity candidate validation rules.",
+    "Research-only refined variants are registered beside their base strategies and evaluated as separate benchmark candidates. Aggregated metrics below average per-asset full-window strategy stats across the selected crypto universe; walk-forward survival counts use the cross-asset opportunity candidate validation rules. Losing-trade and stop-loss reductions are proxy diagnostics for false-breakout filtering, not live execution labels.",
     "",
     table(
-      ["base", "refined", "base ret%", "refined ret%", "ret delta", "base medRet%", "refined medRet%", "base gPF", "refined gPF", "gPF delta", "base avgPF", "refined avgPF", "base gExpect", "refined gExpect", "expect delta", "base avgExpect", "refined avgExpect", "base maxDD", "refined maxDD", "DD delta", "base trades", "refined trades", "trade reduction", "base exposure", "refined exposure", "base ret/DD", "refined ret/DD", "base validated", "refined validated", "base test pass", "refined test pass"],
+      ["base", "refined", "base ret%", "refined ret%", "ret delta", "base medRet%", "refined medRet%", "base gPF", "refined gPF", "gPF delta", "base avgPF", "refined avgPF", "base gExpect", "refined gExpect", "expect delta", "base avgExpect", "refined avgExpect", "base maxDD", "refined maxDD", "DD delta", "base trades", "refined trades", "trade reduction", "base losses", "refined losses", "loss reduction", "base stops", "refined stops", "stop reduction", "base exposure", "refined exposure", "base ret/DD", "refined ret/DD", "base validated", "refined validated", "base test pass", "refined test pass"],
       rows,
     ),
     "",
@@ -2595,6 +2619,7 @@ async function main(): Promise<void> {
     "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
     "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
     "- Refined momentum_continuation_refined_v1 for Priority 8B with short-term momentum confirmation, medium-trend filtering, macro-not-strongly-bearish gating, volume-not-dead filtering, overextension avoidance, and a tightly gated TREND_DOWN survival experiment.",
+    "- Refined breakout_expansion_refined_v1 for Priority 8C as a TREND_UP/HIGH_VOL specialist with volatility-expansion, volume, breakout-structure, trend, macro-alignment, overextension, and reliability gates.",
     "- Added Momentum Refined Test-Pass Breakdown: refined momentum improved quality metrics but remains NOT VALIDATED because its held-out test-pass candidates did not pass rolling validation.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",

@@ -112,13 +112,56 @@ export const GATE_EVALUATORS: Record<StrategyGateId, GateEvaluator> = {
 
   volatility_expansion_confirmed(context) {
     const { current } = context.input;
-    if (isFiniteNumber(current.bbWidth) && isFiniteNumber(current.bbWidthPrev) && current.bbWidth > current.bbWidthPrev) {
-      return pass("gate volatility_expansion_confirmed");
+    if (isFiniteNumber(current.bbWidth) && isFiniteNumber(current.bbWidthPrev)) {
+      const previousWidth = Math.abs(current.bbWidthPrev);
+      const widthExpansionPct = previousWidth === 0
+        ? (current.bbWidth > 0 ? 1 : 0)
+        : (current.bbWidth - current.bbWidthPrev) / previousWidth;
+      if (widthExpansionPct >= 0.015) {
+        return pass("gate volatility_expansion_confirmed");
+      }
+      if (
+        current.bbWidth > current.bbWidthPrev &&
+        isFiniteNumber(current.candleRangeAtr) &&
+        current.candleRangeAtr >= 0.9 &&
+        current.candleRangeAtr <= 2.25
+      ) {
+        return pass("gate volatility_expansion_confirmed via width/range");
+      }
     }
-    if (isFiniteNumber(current.candleRangeAtr) && current.candleRangeAtr >= 0.8 && current.candleRangeAtr <= 2.5) {
+    if (isFiniteNumber(current.candleRangeAtr) && current.candleRangeAtr >= 1 && current.candleRangeAtr <= 2.25) {
       return pass("gate volatility_expansion_confirmed via range");
     }
     return fail("gate volatility_expansion_confirmed failed");
+  },
+
+  price_near_or_above_breakout_structure(context) {
+    const { current } = context.input;
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.bbUpper) &&
+      current.close >= current.bbUpper
+    ) {
+      return pass("gate price_near_or_above_breakout_structure");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.bbUpper) &&
+      isFiniteNumber(current.atr14) &&
+      current.close >= current.bbUpper - current.atr14 * 0.15
+    ) {
+      return pass("gate price_near_or_above_breakout_structure via near upper band");
+    }
+    if (
+      isFiniteNumber(current.close) &&
+      isFiniteNumber(current.ema20) &&
+      isFiniteNumber(current.ema50) &&
+      current.close > current.ema20 &&
+      current.ema20 > current.ema50
+    ) {
+      return pass("gate price_near_or_above_breakout_structure via trend stack");
+    }
+    return fail("gate price_near_or_above_breakout_structure failed");
   },
 
   volatility_compression_confirmed(context) {

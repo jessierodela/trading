@@ -9,6 +9,7 @@ export type StrategyGateId =
   | "macro_trend_confirmed"
   | "volatility_expansion_confirmed"
   | "volatility_compression_confirmed"
+  | "price_near_or_above_breakout_structure"
   | "volume_confirmed"
   | "volume_not_dead"
   | "volume_not_weak"
