@@ -4,7 +4,7 @@ import { meanReversionBounce } from "../meanReversionBounce";
 import { momentumContinuation } from "../momentumContinuation";
 import { trendPullback } from "../trendPullback";
 import { createGatedStrategy } from "./createGatedStrategy";
-import type { RefinedStrategyPair } from "./types";
+import type { RefinedStrategyPair, RefinedStrategyRuleSummary } from "./types";
 
 export const momentumContinuationRefinedV1 = createGatedStrategy({
   id: "momentum_continuation_refined_v1",
@@ -97,4 +97,31 @@ export const REFINED_STRATEGY_PAIRS: readonly RefinedStrategyPair[] = [
   { baseStrategyId: breakoutExpansion.id, refinedStrategyId: breakoutExpansionRefinedV1.id },
   { baseStrategyId: trendPullback.id, refinedStrategyId: trendPullbackRefinedV1.id },
   { baseStrategyId: meanReversionBounce.id, refinedStrategyId: meanReversionRefinedV1.id },
+];
+
+export const REFINED_STRATEGY_RULE_SUMMARIES: readonly RefinedStrategyRuleSummary[] = [
+  {
+    baseStrategyId: momentumContinuation.id,
+    refinedStrategyId: momentumContinuationRefinedV1.id,
+    allowedRegimes: ["TREND_UP", "LOW_VOL", "TREND_DOWN"],
+    blockedRegimes: ["CHOP", "NEWS_SHOCK"],
+  },
+  {
+    baseStrategyId: breakoutExpansion.id,
+    refinedStrategyId: breakoutExpansionRefinedV1.id,
+    allowedRegimes: ["TREND_UP", "HIGH_VOL"],
+    blockedRegimes: ["LOW_VOL", "TREND_DOWN", "CHOP", "NEWS_SHOCK"],
+  },
+  {
+    baseStrategyId: trendPullback.id,
+    refinedStrategyId: trendPullbackRefinedV1.id,
+    allowedRegimes: ["TREND_UP", "HIGH_VOL"],
+    blockedRegimes: ["TREND_DOWN", "CHOP", "LOW_VOL", "NEWS_SHOCK"],
+  },
+  {
+    baseStrategyId: meanReversionBounce.id,
+    refinedStrategyId: meanReversionRefinedV1.id,
+    allowedRegimes: ["LOW_VOL", "CHOP"],
+    blockedRegimes: ["TREND_DOWN", "TREND_UP", "HIGH_VOL", "NEWS_SHOCK"],
+  },
 ];

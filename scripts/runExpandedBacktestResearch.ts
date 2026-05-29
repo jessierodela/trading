@@ -4,7 +4,7 @@ import { getPgPool, PgBarStore, PgFeatureStore } from "@/lib/storage";
 import { closePgPool } from "@/lib/storage/clients";
 import { FEATURE_VERSION } from "@/lib/versions";
 import type { Bar, Exchange, FeatureSnapshot, RegimeContext, RegimeLabel, Timeframe } from "@/lib/quant/types";
-import { REFINED_STRATEGY_PAIRS } from "@/lib/strategies/refinement/strategyVariants";
+import { REFINED_STRATEGY_PAIRS, REFINED_STRATEGY_RULE_SUMMARIES } from "@/lib/strategies/refinement/strategyVariants";
 import { STRATEGY_REGISTRY } from "@/lib/strategies/strategyRegistry";
 import { runBacktest as runBacktestRaw } from "@/lib/backtest/backtestEngine";
 import { runPortfolioBacktest, type PortfolioBacktestConfig } from "@/lib/backtest/portfolioBacktest";
@@ -2246,6 +2246,153 @@ function countReduction(baseCount: number | undefined, refinedCount: number | un
   return `${reduction} (${fmt(reduction / base * 100)}%)`;
 }
 
+function candidateStatsForStrategy(
+  candidates: OpportunityCandidateValidation[],
+  strategyId: string,
+  period: "train" | "test",
+): OpportunityCandidatePeriodStats {
+  const rows = candidates
+    .filter((candidate) => candidate.strategyId === strategyId)
+    .map((candidate) => candidate[period]);
+  const returns = rows.map((row) => row.avgReturn).filter((value): value is number => value !== null);
+  const pfs = rows.map((row) => row.globalProfitFactor).filter((value): value is number => value !== null);
+  const expectancies = rows.map((row) => row.globalExpectancy).filter((value): value is number => value !== null);
+  const drawdowns = rows.map((row) => row.maxDrawdown).filter((value): value is number => value !== null);
+  return {
+    samples: rows.reduce((sum, row) => sum + row.samples, 0),
+    avgReturn: avg(returns),
+    globalProfitFactor: avg(pfs),
+    globalExpectancy: avg(expectancies),
+    maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+    tradeCount: rows.reduce((sum, row) => sum + row.tradeCount, 0),
+  };
+}
+
+function statsImprove(
+  refined: number | null,
+  base: number | null,
+  direction: "higher" | "lowerOrEqual",
+): boolean {
+  if (refined === null || base === null) return false;
+  return direction === "higher" ? refined > base : refined <= base;
+}
+
+function drawdownWorsenedMaterially(refined: number | null, base: number | null): boolean {
+  if (refined === null || base === null) return false;
+  return refined > base + Math.max(0.25, Math.abs(base) * 0.1);
+}
+
+function refinementRollingFoldCounts(
+  summaries: AssetSummary[],
+  baseStrategyId: string,
+  refinedStrategyId: string,
+): { validated: number; total: number } {
+  let validated = 0;
+  let total = 0;
+  for (const summary of summaries) {
+    for (const fold of summary.opportunityWalkForward?.rollingFolds ?? []) {
+      for (const regime of REQUIRED_REGIMES) {
+        const base = fold.candidates.find((candidate) => candidate.regime === regime && candidate.strategyId === baseStrategyId);
+        const refined = fold.candidates.find((candidate) => candidate.regime === regime && candidate.strategyId === refinedStrategyId);
+        if (!base || !refined) continue;
+        total++;
+        const foldValidated =
+          statsImprove(refined.test.avgReturn, base.test.avgReturn, "higher") &&
+          statsImprove(refined.test.globalProfitFactor, base.test.globalProfitFactor, "higher") &&
+          statsImprove(refined.test.globalExpectancy, base.test.globalExpectancy, "higher") &&
+          statsImprove(refined.test.maxDrawdown, base.test.maxDrawdown, "lowerOrEqual") &&
+          refined.test.tradeCount >= MIN_OPPORTUNITY_TEST_TRADES;
+        if (foldValidated) validated++;
+      }
+    }
+  }
+  return { validated, total };
+}
+
+function refinementVerdict(
+  baseTest: OpportunityCandidatePeriodStats,
+  refinedTest: OpportunityCandidatePeriodStats,
+  folds: { validated: number; total: number },
+): string {
+  const returnImproves = statsImprove(refinedTest.avgReturn, baseTest.avgReturn, "higher");
+  const pfImproves = statsImprove(refinedTest.globalProfitFactor, baseTest.globalProfitFactor, "higher");
+  const expectancyImproves = statsImprove(refinedTest.globalExpectancy, baseTest.globalExpectancy, "higher");
+  const drawdownImproves = statsImprove(refinedTest.maxDrawdown, baseTest.maxDrawdown, "lowerOrEqual");
+  const sufficientTrades = refinedTest.tradeCount >= MIN_OPPORTUNITY_TEST_TRADES;
+  const foldsConsistent = folds.total > 0 && folds.validated === folds.total;
+  if (returnImproves && pfImproves && expectancyImproves && drawdownImproves && sufficientTrades && foldsConsistent) {
+    return "VALIDATED";
+  }
+
+  const improvements = [returnImproves, pfImproves, expectancyImproves, drawdownImproves].filter(Boolean).length;
+  if (
+    improvements > 0 &&
+    (
+      !sufficientTrades ||
+      (folds.total > 0 && folds.validated > 0 && folds.validated < folds.total)
+    )
+  ) {
+    return "NEEDS MORE DATA";
+  }
+
+  if (
+    !returnImproves ||
+    !pfImproves ||
+    !expectancyImproves ||
+    drawdownWorsenedMaterially(refinedTest.maxDrawdown, baseTest.maxDrawdown) ||
+    (folds.total > 0 && folds.validated === 0)
+  ) {
+    return "NOT VALIDATED";
+  }
+
+  return "NEEDS MORE DATA";
+}
+
+function strategyRefinementCandidateResultsSection(summaries: AssetSummary[]): string[] {
+  if (summaries.length === 0) return [];
+  const candidates = summaries.flatMap((summary) => summary.opportunityWalkForward?.candidates ?? []);
+  const rows = REFINED_STRATEGY_RULE_SUMMARIES.map((rule) => {
+    const baseFull = aggregateStrategyStats(summaries, rule.baseStrategyId);
+    const refinedFull = aggregateStrategyStats(summaries, rule.refinedStrategyId);
+    const baseTest = candidateStatsForStrategy(candidates, rule.baseStrategyId, "test");
+    const refinedTest = candidateStatsForStrategy(candidates, rule.refinedStrategyId, "test");
+    const folds = refinementRollingFoldCounts(summaries, rule.baseStrategyId, rule.refinedStrategyId);
+    return [
+      rule.baseStrategyId,
+      rule.refinedStrategyId,
+      rule.allowedRegimes.join(", "),
+      rule.blockedRegimes.join(", "),
+      fmt(baseTest.avgReturn),
+      fmt(refinedTest.avgReturn),
+      fmt(baseTest.globalProfitFactor),
+      fmt(refinedTest.globalProfitFactor),
+      fmt(baseTest.globalExpectancy, 4),
+      fmt(refinedTest.globalExpectancy, 4),
+      fmt(baseTest.maxDrawdown),
+      fmt(refinedTest.maxDrawdown),
+      String(baseTest.tradeCount),
+      String(refinedTest.tradeCount),
+      tradeReduction(baseTest.tradeCount, refinedTest.tradeCount),
+      fmt(baseFull?.avgExposure),
+      fmt(refinedFull?.avgExposure),
+      `${folds.validated}/${folds.total}`,
+      refinementVerdict(baseTest, refinedTest, folds),
+    ];
+  });
+
+  return [
+    "## Strategy Refinement Candidate Results",
+    "",
+    "This section uses held-out 70/30 test-window candidate metrics for base-vs-refined comparison, plus rolling expanding-window fold checks. Verdicts are conservative: a variant is VALIDATED only when held-out return, profit factor, expectancy, drawdown, trade sufficiency, and all rolling-fold checks beat the base strategy. These are research verdicts only.",
+    "",
+    table(
+      ["strategy", "variant", "allowed regimes", "blocked regimes", "base avg return", "refined avg return", "base global PF", "refined global PF", "base global expectancy", "refined global expectancy", "base max drawdown", "refined max drawdown", "base trades", "refined trades", "trade reduction %", "base exposure", "refined exposure", "folds validated", "verdict"],
+      rows,
+    ),
+    "",
+  ];
+}
+
 function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[] {
   if (summaries.length === 0) return [];
 
@@ -2585,6 +2732,7 @@ async function main(): Promise<void> {
         ...crossAssetOpportunityWalkForwardSection(summaries),
         ...crossAssetValidatedCandidateSummarySection(summaries),
         ...momentumRefinedTestPassBreakdownSection(summaries),
+        ...strategyRefinementCandidateResultsSection(summaries),
         ...strategyRefinementComparisonSection(summaries),
         ...crossAssetRouterValidationSection(summaries),
       ]
@@ -2622,6 +2770,7 @@ async function main(): Promise<void> {
     "- Refined breakout_expansion_refined_v1 for Priority 8C as a TREND_UP/HIGH_VOL specialist with volatility-expansion, volume, breakout-structure, trend, macro-alignment, overextension, and reliability gates.",
     "- Refined trend_pullback_refined_v1 for Priority 8D as a TREND_UP/HIGH_VOL specialist with strong macro-trend, support-zone pullback, intact-trend, momentum-reset, volume, overextension, and reliability gates.",
     "- Refined mean_reversion_refined_v1 for Priority 8E as a LOW_VOL/CHOP defensive range specialist with oversold, range-bound, non-aggressive-volatility, mean-stretch, reversion-target, and reliability gates.",
+    "- Added Strategy Refinement Candidate Results: refined variants are compared against their base strategies on held-out test-window metrics and rolling fold consistency before receiving conservative research verdicts.",
     "- Added Momentum Refined Test-Pass Breakdown: refined momentum improved quality metrics but remains NOT VALIDATED because its held-out test-pass candidates did not pass rolling validation.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",

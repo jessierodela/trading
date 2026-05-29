@@ -56,3 +56,8 @@ export interface RefinedStrategyPair {
   baseStrategyId: string;
   refinedStrategyId: string;
 }
+
+export interface RefinedStrategyRuleSummary extends RefinedStrategyPair {
+  allowedRegimes: readonly RegimeLabel[];
+  blockedRegimes: readonly RegimeLabel[];
+}
