@@ -266,6 +266,158 @@ function currentConclusion(): string[] {
   ];
 }
 
+function priority8gImplementationCompletenessAudit(reports: ReportSpec[]): string[] {
+  const hasSection = (title: string) => reports.some((report) => extractSection(report.markdown, title));
+  const hasReport = (key: string) => reports.some((report) => report.key === key && !!report.markdown);
+  const hasText = (needle: string) => reports.some((report) => report.markdown.includes(needle));
+  const reportingHardening = reports.find((report) => report.key === "reporting-hardening" && !!report.markdown);
+  const results8f = reports.find((report) => report.key === "results8f" && !!report.markdown);
+
+  const rows = [
+    [
+      "Cross-Asset Opportunity Walk-Forward Validation exists",
+      hasSection("Cross-Asset Opportunity Walk-Forward Validation") ? "complete" : "missing",
+      hasSection("Cross-Asset Opportunity Walk-Forward Validation")
+        ? "Cross-Asset Opportunity Walk-Forward Validation section extracted from versioned P5 reports"
+        : "No matching section found",
+      "Candidate-level validation is still directional and sample-limited",
+      "Keep using held-out plus rolling folds before treating opportunities as edge",
+    ],
+    [
+      "Reusable strategy refinement / gating framework exists",
+      hasText("research-only strategy refinement variants") || hasText("Gate Availability Diagnostics") ? "complete" : "needs review",
+      "Refined variants, gate diagnostics, and base-vs-refined report sections are present",
+      "Gate diagnostics are report-level observability, not a replacement for causal strategy research",
+      "Keep framework stable while planning v3 experiments",
+    ],
+    [
+      "momentum_continuation_refined_v1 exists, is versioned, registered, and smoke-tested",
+      hasText("momentum_continuation_refined_v1") ? "complete" : "missing",
+      "Appears in refinement comparison/results, strategy versions, and momentum test-pass breakdown",
+      "Improved quality metrics but failed rolling folds",
+      "Keep as main v3 investigation candidate; do not promote",
+    ],
+    [
+      "breakout_expansion_refined_v1 exists, is versioned, registered, and smoke-tested",
+      hasText("breakout_expansion_refined_v1") ? "complete" : "missing",
+      "Appears in breakout8c and later comparison reports",
+      "Safer/lower frequency but not validated and weak on expectancy/PF",
+      "Pause tuning unless specifically studying false-breakout reduction",
+    ],
+    [
+      "trend_pullback_refined_v1 exists, is versioned, registered, and smoke-tested",
+      hasText("trend_pullback_refined_v1") ? "complete" : "missing",
+      "Appears in trend8d and later comparison reports",
+      "Strong quality pocket but over-filtered with too few trades",
+      "Plan v3 loosening experiment without touching router defaults",
+    ],
+    [
+      "mean_reversion_refined_v1 exists, is versioned, registered, and smoke-tested",
+      hasText("mean_reversion_refined_v1") ? "complete" : "missing",
+      "Appears in mean8e and later comparison reports",
+      "Current v2 underperforms in held-out/refinement evidence",
+      "Rethink setup thesis before further tuning",
+    ],
+    [
+      "Strategy Refinement Candidate Results exists",
+      hasSection("Strategy Refinement Candidate Results") ? "complete" : "missing",
+      results8f ? `Present from ${reportPathFor(results8f)} onward` : "No results8f/reporting-hardening section found",
+      "Earlier snapshots do not contain this section by design",
+      "Keep using latest report schema for future comparisons",
+    ],
+    [
+      "Cross-report comparison exists",
+      "complete",
+      "This generated comparison report extracts the required cross-report sections",
+      "Source versioned reports may remain local artifacts",
+      "Keep comparison tooling and add machine-readable export",
+    ],
+    [
+      "Base vs refined strategies are compared across assets, regimes, and walk-forward folds",
+      hasSection("Strategy Refinement Candidate Comparison") && hasSection("Strategy Refinement Candidate Results") ? "complete" : "partial",
+      "Comparison/results sections include multi-asset aggregate metrics, held-out candidate rows, and fold counts",
+      "Candidate metrics are directional and not pooled proof by themselves",
+      "Use pooled stats plus candidate rows together",
+    ],
+    [
+      "Reporting separates hypothesis discovery from held-out/rolling validation",
+      hasText("hypothesis") && hasText("held-out") ? "complete" : "needs review",
+      "Reports label in-sample discovery, held-out tests, rolling folds, and conservative verdicts",
+      "Markdown wording must stay disciplined as new experiments are added",
+      "Preserve discovery-vs-validation language in every future report",
+    ],
+    [
+      "No strategy/router/candidate is incorrectly promoted as production-valid edge",
+      reportingHardening && !reportingHardening.markdown.includes("final verdict | VALIDATED") ? "complete" : "needs review",
+      "Current conclusion states no validated edge and no router/default promotion",
+      "This is a report audit, not a production safety control",
+      "Keep promotion guardrails explicit until validation improves",
+    ],
+  ];
+
+  return [
+    "## Priority 8G Implementation Completeness Audit",
+    "",
+    table(["priority item", "status", "evidence", "remaining gap", "next action"], rows),
+    "",
+  ];
+}
+
+function priority8gNextRefinementPlan(): string[] {
+  return [
+    "## Priority 8G Next Refinement Plan",
+    "",
+    "### Momentum Continuation",
+    "",
+    "- Best balanced improvement among the refined variants.",
+    "- Keep `momentum_continuation_refined_v1` as the main candidate for a future v3 investigation.",
+    "- Do not promote yet because rolling folds failed.",
+    "",
+    "### Trend Pullback",
+    "",
+    "- Strongest quality pocket, but likely over-filtered.",
+    "- Future v3 should test loosening gates carefully to increase trade count while preserving profit factor and drawdown behavior.",
+    "",
+    "### Breakout Expansion",
+    "",
+    "- Safer after refinement but still weak.",
+    "- Pause further tuning unless specifically studying false-breakout reduction.",
+    "",
+    "### Mean Reversion",
+    "",
+    "- Current v2 underperforms.",
+    "- Rethink setup logic before further tuning.",
+    "- Do not simply loosen gates without a new thesis.",
+    "",
+  ];
+}
+
+function promotionGuardrails(): string[] {
+  return [
+    "## Promotion Guardrails",
+    "",
+    "- Do not promote any refined strategy into router defaults unless it passes held-out and rolling-fold validation.",
+    "- Do not move to risk engine, paper trading, broker integration, order manager, or live execution based on current results.",
+    "- Treat current findings as research hypotheses only.",
+    "- Require more windows, more assets, and stronger fold consistency before production conclusions.",
+    "",
+  ];
+}
+
+function recommendedNextEngineeringTasks(): string[] {
+  return [
+    "## Recommended Next Engineering Tasks",
+    "",
+    "- Keep strict/missing-source warnings in `compareP5RefinementReports.ts`; this is already implemented via missing snapshot warnings, `COMPARE_P5_STRICT=1`, and optional `P5_COMPARE_REPORTS`.",
+    "- Keep report comparison tooling as part of the research workflow.",
+    "- Add optional CSV/JSON summary export from the comparison report so future analysis can be parsed without scraping Markdown.",
+    "- Add daily feature readiness before equity/ETF expansion.",
+    "- Add equity/ETF ingestion later for SPY, QQQ, AAPL, MSFT, and NVDA.",
+    "- Plan, but do not implement yet, Momentum v3 and Trend Pullback v3 experiments.",
+    "",
+  ];
+}
+
 function regimeClarificationNote(): string[] {
   return [
     "## Regime Interpretation Note",
@@ -303,6 +455,10 @@ function main(): void {
     "",
     ...missingReportsSection(reports),
     ...currentConclusion(),
+    ...priority8gImplementationCompletenessAudit(reports),
+    ...priority8gNextRefinementPlan(),
+    ...promotionGuardrails(),
+    ...recommendedNextEngineeringTasks(),
     ...regimeClarificationNote(),
     ...gateDiagnosticsSummary(reports),
     ...selectedSectionExtracts(reports),
