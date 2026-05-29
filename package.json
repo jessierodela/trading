@@ -24,7 +24,8 @@
     "regimes:asset:bulk": "dotenv -e .env.local -- tsx scripts/computeAssetRegimesBulk.ts",
     "research:p5": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts",
     "research:p5:expanded": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts",
-    "research:p5:multiasset": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts"
+    "research:p5:multiasset": "dotenv -e .env.local -- tsx scripts/runExpandedBacktestResearch.ts",
+    "research:p5:compare": "tsx scripts/compareP5RefinementReports.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",

@@ -7,6 +7,7 @@ import { InMemoryBacktestReportStore } from "../lib/backtest/reportStore";
 import { applyEntrySlippage, applyExitSlippage, feeForNotional } from "../lib/backtest/slippage";
 import { defaultA6RegimeRouter } from "../lib/backtest/strategyRouter";
 import type { BacktestConfig, BacktestInput, SimulatedTrade } from "../lib/backtest/types";
+import { getStrategyById } from "../lib/strategies/strategyRegistry";
 import { STRATEGY_VERSIONS } from "../lib/versions";
 
 let passed = 0;
@@ -429,6 +430,34 @@ function testDeterminismAndPurity(): void {
 
 function testResearchRoutingAndPortfolio(): void {
   console.log("\n=== research routing and portfolio ===");
+  const refinedMomentum = getStrategyById("momentum_continuation_refined_v1");
+  assert("refined momentum strategy is registered", refinedMomentum !== null);
+  const refinedSignal = refinedMomentum?.evaluate({
+    current: signalFeature(1, {
+      ema50: 96,
+      relativeVolume20: 1.05,
+      distanceFromEma20Atr: 1,
+      daily_ema50AboveEma200: true,
+      daily_priceAboveEma200: true,
+    }),
+    previous: prevFeature(0),
+    recent: [prevFeature(0), signalFeature(1)],
+    regime: regime("TREND_UP", 1),
+  });
+  assert("refined momentum emits gated signal", refinedSignal?.strategyId === "momentum_continuation_refined_v1");
+  const blockedRefinedSignal = refinedMomentum?.evaluate({
+    current: signalFeature(1, {
+      ema50: 96,
+      relativeVolume20: 1.05,
+      distanceFromEma20Atr: 1,
+      daily_ema50AboveEma200: true,
+    }),
+    previous: prevFeature(0),
+    recent: [prevFeature(0), signalFeature(1)],
+    regime: regime("NEWS_SHOCK", 1),
+  });
+  assert("refined momentum respects regime gates", blockedRefinedSignal === null);
+
   const routed = runBacktest({
     ...targetWinInput({ regimes: [regime("TREND_UP", 0)] }),
     config: config({ strategyId: "a6_regime_router", endTs: ts(5) }),

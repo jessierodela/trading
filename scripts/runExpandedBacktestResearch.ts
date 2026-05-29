@@ -1,11 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { getPgPool, PgBarStore, PgFeatureStore } from "@/lib/storage";
 import { closePgPool } from "@/lib/storage/clients";
 import { FEATURE_VERSION } from "@/lib/versions";
 import type { Bar, Exchange, FeatureSnapshot, RegimeContext, RegimeLabel, Timeframe } from "@/lib/quant/types";
+import { GATE_EVALUATORS } from "@/lib/strategies/refinement/gates";
+import {
+  REFINED_STRATEGY_CONFIGS,
+  REFINED_STRATEGY_PAIRS,
+  REFINED_STRATEGY_RULE_SUMMARIES,
+} from "@/lib/strategies/refinement/strategyVariants";
 import { STRATEGY_REGISTRY } from "@/lib/strategies/strategyRegistry";
-import { runBacktest } from "@/lib/backtest/backtestEngine";
+import type { StrategyGateId } from "@/lib/strategies/refinement/types";
+import { runBacktest as runBacktestRaw } from "@/lib/backtest/backtestEngine";
 import { runPortfolioBacktest, type PortfolioBacktestConfig } from "@/lib/backtest/portfolioBacktest";
 import {
   createRegimeStrategyRouter,
@@ -28,6 +36,8 @@ import {
   type RegimeWindowBacktest,
 } from "@/lib/backtest/regimeValidation";
 import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics, SimulatedTrade } from "@/lib/backtest/types";
+
+type BacktestRunResult = ReturnType<typeof runBacktestRaw>;
 
 interface InstrumentArg {
   symbol: string;
@@ -61,6 +71,8 @@ interface FullStats {
   avgExpectancy: number | null;
   avgExposure: number | null;
   tradeCount: number;
+  losingTradeCount: number;
+  stopLossExitCount: number;
   noTradeWindows: number;
   avgReturnToDrawdown: number | null;
 }
@@ -134,6 +146,11 @@ const MIN_PROXY_WINDOW_BARS = 72;
 const DEFAULT_PROXY_WINDOW_BARS = 144;
 const NEAR_ZERO_TRADES_PER_WINDOW = 0.25;
 const TINY_GROSS_LOSS_USD = 1;
+const CROSS_ASSET_OPPORTUNITY_TOP_N = 30;
+const MIN_OPPORTUNITY_TEST_TRADES = 5;
+const EQUITY_WATCHLIST = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"];
+const DAY_MS = 24 * 60 * 60 * 1000;
+const backtestResultCache = new Map<string, BacktestRunResult>();
 
 const PORTFOLIO_REGIME_WEIGHTS: NonNullable<PortfolioBacktestConfig["regimeWeights"]> = {
   TREND_UP: { breakout_expansion: 0.6, momentum_continuation: 0.4 },
@@ -179,6 +196,94 @@ interface DiscoveryRow {
   featureCoveragePct: number;
   regimeCount: number;
   regimeCoveragePct: number;
+  exclusionReasons: string[];
+}
+
+interface DiscoveryFilters {
+  minAssetBars: number;
+  minFeatureCoveragePct: number;
+  requireRegimeSnapshots: boolean;
+  maxAssets: number | null;
+  exchange: string | null;
+}
+
+interface DiscoveryResult {
+  filters: DiscoveryFilters;
+  candidates: DiscoveryRow[];
+  selected: DiscoveryRow[];
+  excluded: DiscoveryRow[];
+}
+
+interface InstrumentResolution {
+  source: "explicit_symbols" | "dynamic_discovery" | "single_asset_default";
+  instruments: InstrumentArg[];
+  discovery: DiscoveryResult | null;
+}
+
+interface OpportunityCandidatePeriodStats {
+  samples: number;
+  avgReturn: number | null;
+  globalProfitFactor: number | null;
+  globalExpectancy: number | null;
+  maxDrawdown: number | null;
+  tradeCount: number;
+}
+
+interface OpportunityCandidateValidation {
+  symbol: string;
+  regime: RegimeLabel;
+  strategyId: string;
+  train: OpportunityCandidatePeriodStats;
+  test: OpportunityCandidatePeriodStats;
+  testPass: boolean;
+}
+
+interface OpportunityRollingFold {
+  trainEnd: number;
+  testEnd: number;
+  candidates: OpportunityCandidateValidation[];
+}
+
+interface OpportunityWalkForwardData {
+  trainWindows: RegimeCandidateWindow[];
+  testWindows: RegimeCandidateWindow[];
+  candidates: OpportunityCandidateValidation[];
+  rollingFolds: OpportunityRollingFold[];
+}
+
+interface TradePoolStats {
+  grossProfit: number;
+  grossLossAbs: number;
+  pooledProfitFactor: number | null;
+  pooledExpectancy: number | null;
+  tradeCount: number;
+}
+
+interface GateDiagnosticRow {
+  strategyId: string;
+  gate: StrategyGateId;
+  passes: number;
+  fails: number;
+  unavailablePasses: number;
+}
+
+interface RefinementFoldCounts {
+  validated: number;
+  comparable: number;
+  missingBase: number;
+  missingRefined: number;
+}
+
+interface RunMetadata {
+  branch: string;
+  commitSha: string;
+  runTimestamp: string;
+  reportPath: string;
+  strategyVersions: Record<string, string>;
+  featureVersion: string;
+  windowConfig: string;
+  symbolsDiscovered: string[];
+  p5ReportPathEnv: string;
 }
 
 function parseSymbolList(raw: string): string[] {
@@ -232,6 +337,18 @@ function envPositiveNumber(name: string, fallback: number): number {
   return parsed;
 }
 
+function envPositiveInteger(name: string, fallback: number): number {
+  const parsed = envPositiveNumber(name, fallback);
+  if (!Number.isInteger(parsed)) throw new Error(`${name} must be a positive integer`);
+  return parsed;
+}
+
+function envPercentage(name: string, fallback: number): number {
+  const parsed = envPositiveNumber(name, fallback);
+  if (parsed > 100) throw new Error(`${name} must be greater than 0 and less than or equal to 100`);
+  return parsed;
+}
+
 function envBoolean(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
@@ -241,17 +358,14 @@ function envBoolean(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be true/false or 1/0`);
 }
 
-async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
+async function discoverStoredInstruments(): Promise<DiscoveryResult> {
   const pool = getPgPool();
   const exchangeFilter = process.env.EXCHANGE?.trim();
   const maxAssetsRaw = process.env.MAX_ASSETS;
-  const minAssetBars = envPositiveNumber("MIN_ASSET_BARS", 1000);
-  const minFeatureCoveragePct = envPositiveNumber("MIN_FEATURE_COVERAGE_PCT", 95);
+  const minAssetBars = envPositiveInteger("MIN_ASSET_BARS", 1000);
+  const minFeatureCoveragePct = envPercentage("MIN_FEATURE_COVERAGE_PCT", 95);
   const requireRegimeSnapshots = envBoolean("REQUIRE_REGIME_SNAPSHOTS", false);
-  const maxAssets = maxAssetsRaw ? Number(maxAssetsRaw) : null;
-  if (maxAssets !== null && (!Number.isFinite(maxAssets) || maxAssets <= 0)) {
-    throw new Error("MAX_ASSETS must be a positive number when set");
-  }
+  const maxAssets = maxAssetsRaw ? envPositiveInteger("MAX_ASSETS", 1) : null;
 
   const params: unknown[] = ["1h", FEATURE_VERSION];
   const exchangeClause = exchangeFilter ? "and b.exchange = $3" : "";
@@ -309,26 +423,46 @@ async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
     params,
   );
 
+  const filters: DiscoveryFilters = {
+    minAssetBars,
+    minFeatureCoveragePct,
+    requireRegimeSnapshots,
+    maxAssets,
+    exchange: exchangeFilter || null,
+  };
   const diagnostics: DiscoveryRow[] = rows.map((row) => {
     const barCount = Number(row.bar_count);
     const featureCount = Number(row.feature_count);
     const regimeCount = Number(row.regime_count);
+    const featureCoveragePct = barCount === 0 ? 0 : featureCount / barCount * 100;
+    const regimeCoveragePct = barCount === 0 ? 0 : regimeCount / barCount * 100;
+    const exclusionReasons: string[] = [];
+    if (barCount < minAssetBars) exclusionReasons.push(`bars ${barCount} < ${minAssetBars}`);
+    if (featureCoveragePct < minFeatureCoveragePct) {
+      exclusionReasons.push(`feature coverage ${featureCoveragePct.toFixed(2)}% < ${minFeatureCoveragePct}%`);
+    }
+    if (requireRegimeSnapshots && regimeCoveragePct < minFeatureCoveragePct) {
+      exclusionReasons.push(`regime coverage ${regimeCoveragePct.toFixed(2)}% < ${minFeatureCoveragePct}%`);
+    }
     return {
       symbol: row.symbol,
       exchange: row.exchange,
       barCount,
       featureCount,
-      featureCoveragePct: barCount === 0 ? 0 : featureCount / barCount * 100,
+      featureCoveragePct,
       regimeCount,
-      regimeCoveragePct: barCount === 0 ? 0 : regimeCount / barCount * 100,
+      regimeCoveragePct,
+      exclusionReasons,
     };
   });
-  const readyRows = diagnostics.filter((row) =>
-    row.barCount >= minAssetBars &&
-    row.featureCoveragePct >= minFeatureCoveragePct &&
-    (!requireRegimeSnapshots || row.regimeCoveragePct >= minFeatureCoveragePct),
-  );
+  const readyRows = diagnostics.filter((row) => row.exclusionReasons.length === 0);
   const selectedRows = maxAssets === null ? readyRows : readyRows.slice(0, maxAssets);
+  const selectedKeys = new Set(selectedRows.map((row) => `${row.symbol}:${row.exchange}`));
+  const excludedRows = diagnostics
+    .filter((row) => row.exclusionReasons.length > 0)
+    .concat(readyRows
+      .filter((row) => !selectedKeys.has(`${row.symbol}:${row.exchange}`))
+      .map((row) => ({ ...row, exclusionReasons: [`MAX_ASSETS cap (${maxAssets})`] })));
 
   console.log(
     `[research:p5] discovery filters: MIN_ASSET_BARS=${minAssetBars}, ` +
@@ -347,32 +481,41 @@ async function discoverStoredInstruments(): Promise<InstrumentArg[]> {
     ).join("; ") || "none"}`,
   );
 
-  return selectedRows.map((row) => instrumentFor(row.symbol, row.exchange));
+  return { filters, candidates: diagnostics, selected: selectedRows, excluded: excludedRows };
 }
 
-async function resolveInstruments(): Promise<InstrumentArg[]> {
+async function resolveInstruments(): Promise<InstrumentResolution> {
   const symbols = explicitSymbols();
   if (symbols) {
     const exchange = (process.env.EXCHANGE ?? "COINBASE") as Exchange;
     if (process.env.ASSET_TYPE && symbols.length > 1) {
       console.log("[research:p5] ignoring ASSET_TYPE override because SYMBOLS contains multiple symbols; asset types will be inferred per symbol.");
     }
-    return symbols.map((symbol) => instrumentFor(symbol, exchange, symbols.length === 1));
+    return {
+      source: "explicit_symbols",
+      instruments: symbols.map((symbol) => instrumentFor(symbol, exchange, symbols.length === 1)),
+      discovery: null,
+    };
   }
 
   if (isMultiAssetRun()) {
     if (process.env.ASSET_TYPE) {
       console.log("[research:p5] ignoring ASSET_TYPE override during dynamic multi-asset discovery; asset types will be inferred per symbol.");
     }
-    const discovered = await discoverStoredInstruments();
+    const discovery = await discoverStoredInstruments();
+    const discovered = discovery.selected.map((row) => instrumentFor(row.symbol, row.exchange));
     console.log(
       `[research:p5] discovered ${discovered.length} stored 1h instrument(s): ` +
       `${discovered.map((instrument) => `${instrument.symbol}@${instrument.exchange}`).join(", ") || "none"}`,
     );
-    return discovered;
+    return { source: "dynamic_discovery", instruments: discovered, discovery };
   }
 
-  return [instrumentFor("BTC-USD", (process.env.EXCHANGE ?? "COINBASE") as Exchange)];
+  return {
+    source: "single_asset_default",
+    instruments: [instrumentFor("BTC-USD", (process.env.EXCHANGE ?? "COINBASE") as Exchange)],
+    discovery: null,
+  };
 }
 
 function avg(values: number[]): number | null {
@@ -391,6 +534,112 @@ function fmt(value: number | null | undefined, digits = 2): string {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 }
 
+function pctFmt(value: number | null | undefined, digits = 2): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(digits)}%` : "n/a";
+}
+
+function gitValue(args: string): string {
+  try {
+    return execSync(`git ${args}`, { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function csvEscape(value: string | number | null | undefined): string {
+  const raw = value === null || value === undefined ? "" : String(value);
+  return /[",\r\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
+}
+
+function strategyVersionSummary(): Record<string, string> {
+  return Object.fromEntries(STRATEGY_REGISTRY.map((strategy) => [strategy.id, strategy.version]));
+}
+
+function strategyVersionsText(strategyVersions: Record<string, string>): string {
+  return Object.entries(strategyVersions)
+    .map(([id, version]) => `${id}=${version}`)
+    .join("; ");
+}
+
+function windowConfigText(): string {
+  return [
+    `WINDOWS_PER_REGIME=${process.env.WINDOWS_PER_REGIME ?? "10"}`,
+    `WINDOW_BARS=${process.env.WINDOW_BARS ?? String(DEFAULT_PROXY_WINDOW_BARS)}`,
+    `MIN_PROXY_WINDOW_BARS=${MIN_PROXY_WINDOW_BARS}`,
+    `RUN_CONFIGS=${RUN_CONFIGS.map((config) => `${config.windowBars}b/${config.minDominantRegimePct}%`).join(",")}`,
+    `MIN_OPPORTUNITY_TEST_TRADES=${MIN_OPPORTUNITY_TEST_TRADES}`,
+  ].join("; ");
+}
+
+function runMetadataSection(metadata: RunMetadata): string[] {
+  return [
+    "## Run Metadata",
+    "",
+    table(
+      ["field", "value"],
+      [
+        ["branch", metadata.branch],
+        ["commit sha", metadata.commitSha],
+        ["run timestamp", metadata.runTimestamp],
+        ["report path", metadata.reportPath],
+        ["feature version", metadata.featureVersion],
+        ["window config", metadata.windowConfig],
+        ["symbols discovered", metadata.symbolsDiscovered.join(", ") || "none"],
+        ["P5_REPORT_PATH", metadata.p5ReportPathEnv || "unset"],
+      ],
+    ),
+    "",
+    "Strategy versions:",
+    "",
+    table(
+      ["strategy", "version"],
+      Object.entries(metadata.strategyVersions).map(([strategy, version]) => [strategy, version]),
+    ),
+    "",
+  ];
+}
+
+function appendReportIndex(args: {
+  timestamp: string;
+  branch: string;
+  commit: string;
+  reportPath: string;
+  logPath: string;
+  exitCode: number;
+  assetsAnalyzed: string[];
+  strategyVersions: Record<string, string>;
+  notes: string;
+}): void {
+  const indexPath = path.join(process.cwd(), "reports", "p5", "index.csv");
+  fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+  const header = [
+    "timestamp",
+    "branch",
+    "commit",
+    "report_path",
+    "log_path",
+    "exit_code",
+    "assets_analyzed",
+    "strategy_versions",
+    "notes",
+  ];
+  if (!fs.existsSync(indexPath) || fs.readFileSync(indexPath, "utf8").trim().length === 0) {
+    fs.writeFileSync(indexPath, `${header.join(",")}\n`);
+  }
+  const row = [
+    args.timestamp,
+    args.branch,
+    args.commit,
+    args.reportPath,
+    args.logPath,
+    args.exitCode,
+    args.assetsAnalyzed.join(";"),
+    strategyVersionsText(args.strategyVersions),
+    args.notes,
+  ].map(csvEscape).join(",");
+  fs.appendFileSync(indexPath, `${row}\n`);
+}
+
 async function fetchBounds(symbol: string, exchange: Exchange, timeframe: Timeframe): Promise<{ startTs: string; endTs: string } | null> {
   const pool = getPgPool();
   const { rows } = await pool.query<{ min_ts: Date | null; max_ts: Date | null }>(
@@ -405,6 +654,39 @@ async function fetchBounds(symbol: string, exchange: Exchange, timeframe: Timefr
     startTs: row.min_ts.toISOString(),
     endTs: new Date(row.max_ts.getTime() + 60 * 60 * 1000).toISOString(),
   };
+}
+
+async function skippedEquityAssetsSection(): Promise<string[]> {
+  const pool = getPgPool();
+  const { rows } = await pool.query<{ symbol: string; bar_count: string }>(
+    `select symbol, count(*)::text as bar_count
+     from market_bars
+     where timeframe = '1h' and symbol = any($1)
+     group by symbol`,
+    [EQUITY_WATCHLIST],
+  );
+  const counts = new Map(rows.map((row) => [row.symbol.toUpperCase(), Number(row.bar_count)]));
+  const skipped = EQUITY_WATCHLIST
+    .filter((symbol) => (counts.get(symbol) ?? 0) === 0)
+    .map((symbol) => [symbol, "No stored equity bars available"]);
+
+  if (skipped.length === 0) {
+    return [
+      "## Skipped Assets",
+      "",
+      "No equity watchlist assets were skipped for missing stored 1h bars.",
+      "",
+    ];
+  }
+
+  return [
+    "## Skipped Assets",
+    "",
+    "Equity/ETF watchlist assets are listed here when they are not part of the research-ready universe because stored 1h bars are missing.",
+    "",
+    table(["asset", "reason"], skipped),
+    "",
+  ];
 }
 
 async function fetchRegimes(symbol: string, exchange: Exchange, startTs: string, endTs: string): Promise<PersistedRegimeContext[]> {
@@ -473,6 +755,58 @@ function sliceInput(
   };
 }
 
+function backtestCacheKey(input: BacktestInput): string {
+  const strategyVersion = input.strategyRouter?.version ??
+    STRATEGY_REGISTRY.find((strategy) => strategy.id === input.config.strategyId)?.version ??
+    "unknown";
+  const firstBar = input.bars[0]?.ts ?? "none";
+  const lastBar = input.bars[input.bars.length - 1]?.ts ?? "none";
+  return JSON.stringify({
+    config: {
+      symbol: input.config.symbol,
+      exchange: input.config.exchange,
+      assetType: input.config.assetType ?? "UNKNOWN",
+      dataSource: input.config.dataSource ?? "unknown",
+      timeframe: input.config.timeframe,
+      strategyId: input.config.strategyId,
+      strategyVersion,
+      featureVersion: input.config.featureVersion,
+      startTs: input.config.startTs,
+      endTs: input.config.endTs,
+      initialCapital: input.config.initialCapital,
+      riskPerTradePct: input.config.riskPerTradePct,
+      maxPositionPct: input.config.maxPositionPct,
+      maxConcurrentPositions: input.config.maxConcurrentPositions,
+      allowShorts: input.config.allowShorts ?? false,
+      feeBps: input.config.feeBps,
+      slippageBps: input.config.slippageBps,
+      defaultRewardRisk: input.config.defaultRewardRisk ?? null,
+      closeOpenPositionAtEnd: input.config.closeOpenPositionAtEnd,
+      enterOnNextBarOpen: input.config.enterOnNextBarOpen,
+      sameBarStopFirst: input.config.sameBarStopFirst,
+      routerId: input.strategyRouter?.id ?? null,
+      routerVersion: input.strategyRouter?.version ?? null,
+    },
+    data: {
+      bars: input.bars.length,
+      firstBar,
+      lastBar,
+      features: input.features.length,
+      dailyFeatures: input.dailyFeatures?.length ?? 0,
+      regimes: input.regimes?.length ?? 0,
+    },
+  });
+}
+
+function runBacktest(input: BacktestInput): BacktestRunResult {
+  const key = backtestCacheKey(input);
+  const cached = backtestResultCache.get(key);
+  if (cached) return cached;
+  const result = runBacktestRaw(input);
+  backtestResultCache.set(key, result);
+  return result;
+}
+
 function summarizeMetrics(label: string, metrics: BacktestMetrics[]): RoutingSummary {
   return {
     label,
@@ -499,6 +833,41 @@ function profitFactorFromTrades(trades: SimulatedTrade[]): number | null {
   const losses = grossLossAbs(trades);
   if (losses === 0) return null;
   return grossProfit(trades) / losses;
+}
+
+function tradePoolStats(trades: SimulatedTrade[]): TradePoolStats {
+  const profit = grossProfit(trades);
+  const lossAbs = grossLossAbs(trades);
+  return {
+    grossProfit: profit,
+    grossLossAbs: lossAbs,
+    pooledProfitFactor: lossAbs === 0 ? null : profit / lossAbs,
+    pooledExpectancy: trades.length === 0 ? null : trades.reduce((sum, trade) => sum + trade.pnl, 0) / trades.length,
+    tradeCount: trades.length,
+  };
+}
+
+function latestRegimeAtOrBefore(regimes: RegimeContext[] | undefined, ts: string): RegimeContext | null {
+  if (!regimes || regimes.length === 0) return null;
+  let latest: RegimeContext | null = null;
+  for (const regime of regimes) {
+    if (regime.ts <= ts) latest = regime;
+    if (regime.ts > ts) break;
+  }
+  return latest;
+}
+
+function latestClosedDailyFor(dailyFeatures: FeatureSnapshot[] | undefined, current: FeatureSnapshot): FeatureSnapshot | null {
+  if (!dailyFeatures || dailyFeatures.length === 0) return null;
+  const currentMs = Date.parse(current.ts);
+  let latest: FeatureSnapshot | null = null;
+  for (const candidate of dailyFeatures) {
+    const openMs = Date.parse(candidate.ts);
+    if (candidate.symbol !== current.symbol || candidate.exchange !== current.exchange || candidate.timeframe !== "1d") continue;
+    if (openMs + DAY_MS <= currentMs) latest = candidate;
+    if (openMs > currentMs) break;
+  }
+  return latest;
 }
 
 function sourceDisplayFor(regimeSource: RegimeValidationSource, persistedRegimes: PersistedRegimeContext[]): RegimeSourceDisplay {
@@ -613,11 +982,12 @@ function routingSummaries(base: BacktestInput, windows: RegimeCandidateWindow[])
 
 function portfolioSummaries(base: BacktestInput, windows: RegimeCandidateWindow[]): RoutingSummary[] {
   const strategyIds = STRATEGY_REGISTRY.map((strategy) => strategy.id);
+  const customWeight = strategyIds.length === 0 ? 0 : 1 / strategyIds.length;
   const equal: PortfolioBacktestConfig = { mode: "equal_weight", strategyIds };
   const custom: PortfolioBacktestConfig = {
     mode: "custom_weight",
     strategyIds,
-    weights: Object.fromEntries(strategyIds.map((strategyId) => [strategyId, 0.25])),
+    weights: Object.fromEntries(strategyIds.map((strategyId) => [strategyId, customWeight])),
   };
   const regime: PortfolioBacktestConfig = {
     mode: "regime_weight",
@@ -658,6 +1028,8 @@ function staticStrategyFullStats(base: BacktestInput, windows: RegimeCandidateWi
       avgExpectancy: avg(expectancies),
       avgExposure: avg(exposures),
       tradeCount: allTrades.length,
+      losingTradeCount: allTrades.filter((trade) => trade.pnl < 0).length,
+      stopLossExitCount: allTrades.filter((trade) => trade.reasonExited === "stop_loss").length,
       noTradeWindows: results.filter((r) => r.trades.length === 0).length,
       avgReturnToDrawdown: avg(rtdds),
     };
@@ -681,6 +1053,8 @@ function routerFullStatsFromAudit(audit: RouterMetricAudit, routerSummary: Routi
     avgExpectancy: audit.averageExpectancy,
     avgExposure: avg(exposures),
     tradeCount: audit.totalTrades,
+    losingTradeCount: 0,
+    stopLossExitCount: 0,
     noTradeWindows: audit.noTradeWindows,
     avgReturnToDrawdown: routerSummary.avgReturnToDrawdown,
   };
@@ -719,6 +1093,8 @@ function portfolioComparisonStats(base: BacktestInput, windows: RegimeCandidateW
       avgExpectancy: avg(expectancies),
       avgExposure: avg(exposures),
       tradeCount: allTrades.length,
+      losingTradeCount: allTrades.filter((trade) => trade.pnl < 0).length,
+      stopLossExitCount: allTrades.filter((trade) => trade.reasonExited === "stop_loss").length,
       noTradeWindows: results.filter((r) => r.trades.length === 0).length,
       avgReturnToDrawdown: avg(rtdds),
     };
@@ -802,6 +1178,74 @@ function table(headers: string[], rows: string[][]): string {
     `| ${headers.map(() => "---").join(" |")} |`,
     ...rows.map((row) => `| ${row.join(" |")} |`),
   ].join("\n");
+}
+
+function resolvedAssetLine(resolution: InstrumentResolution, summaries: AssetSummary[]): string {
+  const analyzed = summaries.map((summary) => summary.symbol).join(", ") || "none";
+  if (resolution.source === "explicit_symbols") {
+    return `Assets analyzed: ${summaries.length} of ${resolution.instruments.length} requested assets (${analyzed}).`;
+  }
+  if (resolution.source === "dynamic_discovery") {
+    return `Assets analyzed: ${summaries.length} of ${resolution.instruments.length} selected/discovered assets (${analyzed}).`;
+  }
+  return `Assets analyzed: ${summaries.length} of ${resolution.instruments.length} resolved default assets (${analyzed}).`;
+}
+
+function discoveryReadinessSection(discovery: DiscoveryResult | null): string[] {
+  if (!discovery) return [];
+  const { filters, selected, excluded } = discovery;
+  return [
+    "## Discovery Readiness Diagnostics",
+    "",
+    "Dynamic discovery includes only stored 1h instruments that pass the readiness filters below. Persisted regime snapshots are counted for visibility but are optional unless `REQUIRE_REGIME_SNAPSHOTS=true`, because OHLCV fallback labels can still support research runs.",
+    "",
+    table(
+      ["filter", "value"],
+      [
+        ["MIN_ASSET_BARS", String(filters.minAssetBars)],
+        ["MIN_FEATURE_COVERAGE_PCT", fmt(filters.minFeatureCoveragePct)],
+        ["REQUIRE_REGIME_SNAPSHOTS", String(filters.requireRegimeSnapshots)],
+        ["MAX_ASSETS", filters.maxAssets === null ? "none" : String(filters.maxAssets)],
+        ["EXCHANGE", filters.exchange ?? "any"],
+      ],
+    ),
+    "",
+    "Selected assets:",
+    "",
+    table(
+      ["asset", "exchange", "bars", "features", "featureCoverage", "regimes", "regimeCoverage"],
+      selected.length > 0
+        ? selected.map((row) => [
+            row.symbol,
+            row.exchange,
+            String(row.barCount),
+            String(row.featureCount),
+            `${fmt(row.featureCoveragePct)}%`,
+            String(row.regimeCount),
+            `${fmt(row.regimeCoveragePct)}%`,
+          ])
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"]],
+    ),
+    "",
+    "Excluded assets:",
+    "",
+    table(
+      ["asset", "exchange", "bars", "features", "featureCoverage", "regimes", "regimeCoverage", "reason"],
+      excluded.length > 0
+        ? excluded.map((row) => [
+            row.symbol,
+            row.exchange,
+            String(row.barCount),
+            String(row.featureCount),
+            `${fmt(row.featureCoveragePct)}%`,
+            String(row.regimeCount),
+            `${fmt(row.regimeCoveragePct)}%`,
+            row.exclusionReasons.join("; "),
+          ])
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "none"]],
+    ),
+    "",
+  ];
 }
 
 function aggregateTable(aggregates: AggregatedRegimeMetrics[]): string {
@@ -1201,6 +1645,177 @@ function crossAssetRegimeStrategyStats(
   return out;
 }
 
+function opportunityCandidateKey(candidate: Pick<OpportunityCandidateValidation, "symbol" | "regime" | "strategyId">): string {
+  return `${candidate.symbol}|${candidate.regime}|${candidate.strategyId}`;
+}
+
+function opportunityPeriodStats(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+  regime: RegimeLabel,
+  strategyId: string,
+): OpportunityCandidatePeriodStats {
+  const regimeWindows = windows.filter((window) => window.regime === regime);
+  const results = regimeWindows.map((window) => runBacktest(sliceInput(base, window, strategyId)));
+  const allTrades = results.flatMap((result) => result.trades);
+  const returns = results.map((result) => result.metrics.totalReturnPct);
+  const drawdowns = results.map((result) => result.metrics.maxDrawdownPct);
+  const lossAbs = grossLossAbs(allTrades);
+  return {
+    samples: regimeWindows.length,
+    avgReturn: avg(returns),
+    globalProfitFactor: lossAbs === 0 ? null : grossProfit(allTrades) / lossAbs,
+    globalExpectancy: allTrades.length === 0 ? null : allTrades.reduce((sum, trade) => sum + trade.pnl, 0) / allTrades.length,
+    maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+    tradeCount: allTrades.length,
+  };
+}
+
+function opportunityCandidatePass(stats: OpportunityCandidatePeriodStats): boolean {
+  return (
+    stats.avgReturn !== null &&
+    stats.avgReturn > 0 &&
+    stats.globalProfitFactor !== null &&
+    stats.globalProfitFactor > 1 &&
+    stats.globalExpectancy !== null &&
+    stats.globalExpectancy > 0 &&
+    stats.tradeCount >= MIN_OPPORTUNITY_TEST_TRADES
+  );
+}
+
+function heldoutTradeStatsByStrategy(
+  base: BacktestInput,
+  testWindows: RegimeCandidateWindow[],
+): Record<string, TradePoolStats> {
+  return Object.fromEntries(STRATEGY_REGISTRY.map((strategy) => {
+    const trades = testWindows.flatMap((window) => runBacktest(sliceInput(base, window, strategy.id)).trades);
+    return [strategy.id, tradePoolStats(trades)];
+  }));
+}
+
+function gateDiagnosticsForWindows(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+): GateDiagnosticRow[] {
+  const rows = new Map<string, GateDiagnosticRow>();
+  const featuresByTs = new Map(base.features.map((feature) => [feature.ts, feature]));
+  const sortedFeatures = base.features;
+  const featureIndexByTs = new Map(sortedFeatures.map((feature, index) => [feature.ts, index]));
+
+  for (const config of REFINED_STRATEGY_CONFIGS) {
+    for (const gate of config.gates ?? []) {
+      rows.set(`${config.id}|${gate}`, { strategyId: config.id, gate, passes: 0, fails: 0, unavailablePasses: 0 });
+    }
+  }
+
+  for (const window of windows) {
+    const windowFeatures = base.bars
+      .filter((bar) => bar.ts >= window.startTs && bar.ts <= window.endTs)
+      .map((bar) => featuresByTs.get(bar.ts))
+      .filter((feature): feature is FeatureSnapshot => feature !== undefined);
+
+    for (const current of windowFeatures) {
+      const featureIndex = featureIndexByTs.get(current.ts);
+      if (featureIndex === undefined) continue;
+      const input = {
+        current,
+        previous: featureIndex > 0 ? sortedFeatures[featureIndex - 1] : undefined,
+        recent: sortedFeatures.slice(Math.max(0, featureIndex - 50), featureIndex + 1),
+        daily: latestClosedDailyFor(base.dailyFeatures, current),
+        regime: latestRegimeAtOrBefore(base.regimes, current.ts),
+      };
+
+      for (const config of REFINED_STRATEGY_CONFIGS) {
+        const baseSignal = config.baseStrategy.evaluate(input);
+        if (!baseSignal) continue;
+        const { regime } = input;
+        if (config.allowedRegimes && (!regime || !config.allowedRegimes.includes(regime.regime))) continue;
+        if (regime && config.blockedRegimes?.includes(regime.regime)) continue;
+        if (config.minRegimeReliability !== undefined && (!regime || regime.reliability < config.minRegimeReliability)) continue;
+
+        for (const gate of config.gates ?? []) {
+          const key = `${config.id}|${gate}`;
+          const row = rows.get(key);
+          if (!row) continue;
+          const result = GATE_EVALUATORS[gate]({ input, signal: baseSignal });
+          if (result.passed) {
+            row.passes++;
+            if (result.reason.toLowerCase().includes("unavailable")) row.unavailablePasses++;
+          } else {
+            row.fails++;
+          }
+        }
+      }
+    }
+  }
+
+  return [...rows.values()];
+}
+
+function opportunityFinalVerdict(candidate: OpportunityCandidateValidation, foldsValidated: number, totalFolds: number): string {
+  if (candidate.test.samples === 0 || candidate.test.tradeCount < MIN_OPPORTUNITY_TEST_TRADES) return "NEEDS MORE DATA";
+  if (candidate.testPass && totalFolds > 0 && foldsValidated === totalFolds) return "VALIDATED";
+  if (candidate.testPass || foldsValidated > 0) return "NEEDS MORE DATA";
+  return "NOT VALIDATED";
+}
+
+function opportunityCandidatesForWindows(
+  symbol: string,
+  base: BacktestInput,
+  trainWindows: RegimeCandidateWindow[],
+  testWindows: RegimeCandidateWindow[],
+): OpportunityCandidateValidation[] {
+  const strategyIds = STRATEGY_REGISTRY.map((strategy) => strategy.id);
+  const candidates: OpportunityCandidateValidation[] = [];
+  for (const regime of REQUIRED_REGIMES) {
+    for (const strategyId of strategyIds) {
+      const train = opportunityPeriodStats(base, trainWindows, regime, strategyId);
+      const test = opportunityPeriodStats(base, testWindows, regime, strategyId);
+      candidates.push({
+        symbol,
+        regime,
+        strategyId,
+        train,
+        test,
+        testPass: opportunityCandidatePass(test),
+      });
+    }
+  }
+  return candidates;
+}
+
+function computeOpportunityWalkForward(
+  symbol: string,
+  base: BacktestInput,
+  selectedWindows: RegimeCandidateWindow[],
+): OpportunityWalkForwardData | null {
+  const sorted = [...selectedWindows].sort((a, b) => a.startTs.localeCompare(b.startTs));
+  if (sorted.length < 10) return null;
+
+  const splitIndex = Math.floor(sorted.length * 0.7);
+  const trainWindows = sorted.slice(0, splitIndex);
+  const testWindows = sorted.slice(splitIndex);
+  const candidates = opportunityCandidatesForWindows(symbol, base, trainWindows, testWindows);
+  const rollingBoundaries: Array<{ trainEnd: number; testEnd: number }> = [
+    { trainEnd: Math.floor(sorted.length * 0.4), testEnd: Math.floor(sorted.length * 0.6) },
+    { trainEnd: Math.floor(sorted.length * 0.6), testEnd: Math.floor(sorted.length * 0.8) },
+    { trainEnd: Math.floor(sorted.length * 0.8), testEnd: sorted.length },
+  ].filter((boundary) => boundary.trainEnd > 0 && boundary.testEnd > boundary.trainEnd);
+
+  const rollingFolds = rollingBoundaries.map((boundary) => ({
+    trainEnd: boundary.trainEnd,
+    testEnd: boundary.testEnd,
+    candidates: opportunityCandidatesForWindows(
+      symbol,
+      base,
+      sorted.slice(0, boundary.trainEnd),
+      sorted.slice(boundary.trainEnd, boundary.testEnd),
+    ),
+  }));
+
+  return { trainWindows, testWindows, candidates, rollingFolds };
+}
+
 function routerConfigComparisonSection(
   allRouterStats: FullStats[],
   staticFull: FullStats[],
@@ -1503,8 +2118,12 @@ interface AssetSummary {
   avgPurity: number | null;
   bestStaticByReturn: { label: string; value: number | null };
   bestStaticByRtDD: { label: string; value: number | null };
+  strategyFullStats: FullStats[];
   regimeStrategyStats: RegimeStrategyStat[];
+  heldoutTradeStatsByStrategy: Record<string, TradePoolStats>;
+  gateDiagnostics: GateDiagnosticRow[];
   walkForward: WalkForwardSummary | null;
+  opportunityWalkForward: OpportunityWalkForwardData | null;
 }
 
 // Conservative final verdict combining the 70/30 test result with rolling-fold robustness.
@@ -1586,7 +2205,7 @@ function crossAssetOpportunitySection(summaries: AssetSummary[]): string[] {
   return [
     "## Cross-Asset Opportunity Ranking",
     "",
-    "Every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.",
+    "IN-SAMPLE HYPOTHESIS DISCOVERY ONLY: every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe, but it is not validated edge. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.",
     "",
     table(
       ["#", "asset", "regime", "strategy", "samples", "med purity%", "avg ret%", "global PF", "global expectancy ($)", "max DD%", "ret/DD", "trades"],
@@ -1604,6 +2223,597 @@ function crossAssetOpportunitySection(summaries: AssetSummary[]): string[] {
         fmt(r.avgReturnToDrawdown),
         String(r.tradeCount),
       ]),
+    ),
+    "",
+  ];
+}
+
+function trainRankedOpportunityCandidates(summaries: AssetSummary[]): OpportunityCandidateValidation[] {
+  return summaries
+    .flatMap((summary) => summary.opportunityWalkForward?.candidates ?? [])
+    .filter((candidate) => candidate.train.tradeCount > 0 && candidate.train.globalExpectancy !== null)
+    .sort((a, b) => {
+      const expectancyDelta = (b.train.globalExpectancy ?? Number.NEGATIVE_INFINITY) -
+        (a.train.globalExpectancy ?? Number.NEGATIVE_INFINITY);
+      if (expectancyDelta !== 0) return expectancyDelta;
+      return (b.train.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.train.avgReturn ?? Number.NEGATIVE_INFINITY);
+    });
+}
+
+function opportunityFoldValidationCounts(summaries: AssetSummary[]): { totalFolds: number; counts: Map<string, number> } {
+  const totalFolds = Math.max(...summaries.map((summary) => summary.opportunityWalkForward?.rollingFolds.length ?? 0), 0);
+  const counts = new Map<string, number>();
+  for (let foldIndex = 0; foldIndex < totalFolds; foldIndex += 1) {
+    const foldCandidates = summaries.flatMap((summary) =>
+      summary.opportunityWalkForward?.rollingFolds[foldIndex]?.candidates ?? [],
+    );
+    const selected = foldCandidates
+      .filter((candidate) => candidate.train.tradeCount > 0 && candidate.train.globalExpectancy !== null)
+      .sort((a, b) =>
+        (b.train.globalExpectancy ?? Number.NEGATIVE_INFINITY) -
+        (a.train.globalExpectancy ?? Number.NEGATIVE_INFINITY),
+      )
+      .slice(0, CROSS_ASSET_OPPORTUNITY_TOP_N);
+    for (const candidate of selected) {
+      if (!candidate.testPass) continue;
+      const key = opportunityCandidateKey(candidate);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return { totalFolds, counts };
+}
+
+function crossAssetOpportunityWalkForwardSection(summaries: AssetSummary[]): string[] {
+  const ranked = trainRankedOpportunityCandidates(summaries).slice(0, CROSS_ASSET_OPPORTUNITY_TOP_N);
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const firstWalkForward = summaries.find((summary) => summary.opportunityWalkForward !== null)?.opportunityWalkForward;
+
+  if (ranked.length === 0 || !firstWalkForward) {
+    return [
+      "## Cross-Asset Opportunity Walk-Forward Validation",
+      "",
+      "No train-ranked asset/regime/strategy candidates produced trades, so opportunity walk-forward validation was skipped.",
+      "",
+    ];
+  }
+
+  return [
+    "## Cross-Asset Opportunity Walk-Forward Validation",
+    "",
+    `OUT-OF-SAMPLE: candidates are ranked using train windows only, then the same asset/regime/strategy candidate is scored on held-out test windows. Each asset uses a chronological 70/30 split by selected window start time. Candidate validation requires test avg return > 0, test global PF > 1, test global expectancy > 0, at least ${MIN_OPPORTUNITY_TEST_TRADES} held-out trades, and validation in every rolling fold where the cross-asset top ${CROSS_ASSET_OPPORTUNITY_TOP_N} is re-derived from the train prefix. Rows below are the top ${CROSS_ASSET_OPPORTUNITY_TOP_N} train-ranked candidates.`,
+    "",
+    `Primary split example from ${ranked[0].symbol}: train = ${firstWalkForward.trainWindows.length} windows, test = ${firstWalkForward.testWindows.length} windows. Rolling folds available: ${totalFolds}.`,
+    "",
+    table(
+      ["#", "asset", "regime", "strategy", "train ret%", "test ret%", "train gPF", "test gPF", "train gExpect", "test gExpect", "test max DD%", "train trades", "test trades", "folds ok", "final verdict"],
+      ranked.map((candidate, index) => {
+        const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+        return [
+          String(index + 1),
+          candidate.symbol,
+          candidate.regime,
+          candidate.strategyId,
+          fmt(candidate.train.avgReturn),
+          fmt(candidate.test.avgReturn),
+          fmt(candidate.train.globalProfitFactor),
+          fmt(candidate.test.globalProfitFactor),
+          fmt(candidate.train.globalExpectancy, 4),
+          fmt(candidate.test.globalExpectancy, 4),
+          fmt(candidate.test.maxDrawdown),
+          String(candidate.train.tradeCount),
+          String(candidate.test.tradeCount),
+          `${foldsValidated}/${totalFolds}`,
+          opportunityFinalVerdict(candidate, foldsValidated, totalFolds),
+        ];
+      }),
+    ),
+    "",
+  ];
+}
+
+function crossAssetValidatedCandidateSummarySection(summaries: AssetSummary[]): string[] {
+  const ranked = trainRankedOpportunityCandidates(summaries).slice(0, CROSS_ASSET_OPPORTUNITY_TOP_N);
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+
+  if (ranked.length === 0) {
+    return [
+      "## Cross-Asset Validated Candidate Summary",
+      "",
+      "No candidates had enough train-period signal to summarize.",
+      "",
+    ];
+  }
+
+  const rows = ranked
+    .map((candidate) => {
+      const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+      return {
+        candidate,
+        foldsValidated,
+        verdict: opportunityFinalVerdict(candidate, foldsValidated, totalFolds),
+      };
+    })
+    .sort((a, b) => {
+      const order = (verdict: string) => verdict === "VALIDATED" ? 0 : verdict === "NEEDS MORE DATA" ? 1 : 2;
+      const verdictDelta = order(a.verdict) - order(b.verdict);
+      if (verdictDelta !== 0) return verdictDelta;
+      return (b.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY) -
+        (a.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY);
+    });
+
+  return [
+    "## Cross-Asset Validated Candidate Summary",
+    "",
+    "This summary is intentionally conservative. VALIDATED means the candidate passed the held-out 70/30 test and every rolling expanding-window fold. NEEDS MORE DATA means some out-of-sample evidence exists but the full strict standard was not met.",
+    "",
+    table(
+      ["asset", "regime", "strategy", "test return", "test global PF", "test expectancy", "test max drawdown", "test trades", "folds validated", "final verdict"],
+      rows.map(({ candidate, foldsValidated, verdict }) => [
+        candidate.symbol,
+        candidate.regime,
+        candidate.strategyId,
+        fmt(candidate.test.avgReturn),
+        fmt(candidate.test.globalProfitFactor),
+        fmt(candidate.test.globalExpectancy, 4),
+        fmt(candidate.test.maxDrawdown),
+        String(candidate.test.tradeCount),
+        `${foldsValidated}/${totalFolds}`,
+        verdict,
+      ]),
+    ),
+    "",
+  ];
+}
+
+function momentumRefinedFailureReason(candidate: OpportunityCandidateValidation, foldsValidated: number, totalFolds: number): string {
+  const reasons: string[] = [];
+  if (candidate.test.avgReturn === null || candidate.test.avgReturn <= 0) reasons.push("test return not positive");
+  if (candidate.test.globalProfitFactor === null || candidate.test.globalProfitFactor <= 1) reasons.push("test PF <= 1 or unavailable");
+  if (candidate.test.globalExpectancy === null || candidate.test.globalExpectancy <= 0) reasons.push("test expectancy not positive");
+  if (candidate.test.tradeCount < MIN_OPPORTUNITY_TEST_TRADES) {
+    reasons.push(`test trades ${candidate.test.tradeCount} < ${MIN_OPPORTUNITY_TEST_TRADES}`);
+  }
+  if (foldsValidated < totalFolds) reasons.push(`rolling validation failed (${foldsValidated}/${totalFolds})`);
+  return reasons.join("; ") || "none";
+}
+
+function momentumRefinedFinalVerdict(candidate: OpportunityCandidateValidation, foldsValidated: number, totalFolds: number): string {
+  return candidate.testPass && totalFolds > 0 && foldsValidated === totalFolds ? "VALIDATED" : "NOT VALIDATED";
+}
+
+function momentumRefinedTestPassBreakdownSection(summaries: AssetSummary[]): string[] {
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const rows = summaries
+    .flatMap((summary) => summary.opportunityWalkForward?.candidates ?? [])
+    .filter((candidate) =>
+      candidate.strategyId === "momentum_continuation_refined_v1" &&
+      candidate.train.tradeCount > 0 &&
+      candidate.train.globalExpectancy !== null &&
+      candidate.testPass,
+    )
+    .map((candidate) => {
+      const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+      return { candidate, foldsValidated };
+    })
+    .sort((a, b) => (b.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY));
+
+  return [
+    "## Momentum Refined Test-Pass Breakdown",
+    "",
+    `momentum_continuation_refined_v1 remains **NOT VALIDATED**. These rows passed the held-out 70/30 test gates but did not pass the full rolling-validation requirement, so none are promoted to validated edge or router defaults.`,
+    "",
+    table(
+      ["asset", "regime", "train return", "test return", "test global PF", "test expectancy", "test trades", "folds validated", "final verdict", "failure reason"],
+      rows.length > 0
+        ? rows.map(({ candidate, foldsValidated }) => [
+            candidate.symbol,
+            candidate.regime,
+            fmt(candidate.train.avgReturn),
+            fmt(candidate.test.avgReturn),
+            fmt(candidate.test.globalProfitFactor),
+            fmt(candidate.test.globalExpectancy, 4),
+            String(candidate.test.tradeCount),
+            `${foldsValidated}/${totalFolds}`,
+            momentumRefinedFinalVerdict(candidate, foldsValidated, totalFolds),
+            momentumRefinedFailureReason(candidate, foldsValidated, totalFolds),
+          ])
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", `0/${totalFolds}`, "NOT VALIDATED", "no held-out test-pass candidates"]],
+    ),
+    "",
+  ];
+}
+
+function aggregateStrategyStats(summaries: AssetSummary[], strategyId: string): FullStats | null {
+  const rows = summaries
+    .map((summary) => summary.strategyFullStats.find((stats) => stats.label === strategyId))
+    .filter((stats): stats is FullStats => stats !== undefined);
+  if (rows.length === 0) return null;
+  return {
+    label: strategyId,
+    samples: rows.reduce((sum, row) => sum + row.samples, 0),
+    avgReturn: avg(rows.map((row) => row.avgReturn).filter((value): value is number => value !== null)),
+    medianReturn: avg(rows.map((row) => row.medianReturn).filter((value): value is number => value !== null)),
+    maxDrawdown: rows
+      .map((row) => row.maxDrawdown)
+      .filter((value): value is number => value !== null)
+      .reduce((max, value) => Math.max(max, value), 0),
+    avgDrawdown: avg(rows.map((row) => row.avgDrawdown).filter((value): value is number => value !== null)),
+    globalProfitFactor: avg(rows.map((row) => row.globalProfitFactor).filter((value): value is number => value !== null)),
+    avgProfitFactor: avg(rows.map((row) => row.avgProfitFactor).filter((value): value is number => value !== null)),
+    globalExpectancy: avg(rows.map((row) => row.globalExpectancy).filter((value): value is number => value !== null)),
+    avgExpectancy: avg(rows.map((row) => row.avgExpectancy).filter((value): value is number => value !== null)),
+    avgExposure: avg(rows.map((row) => row.avgExposure).filter((value): value is number => value !== null)),
+    tradeCount: rows.reduce((sum, row) => sum + row.tradeCount, 0),
+    losingTradeCount: rows.reduce((sum, row) => sum + row.losingTradeCount, 0),
+    stopLossExitCount: rows.reduce((sum, row) => sum + row.stopLossExitCount, 0),
+    noTradeWindows: rows.reduce((sum, row) => sum + row.noTradeWindows, 0),
+    avgReturnToDrawdown: avg(rows.map((row) => row.avgReturnToDrawdown).filter((value): value is number => value !== null)),
+  };
+}
+
+function strategyCandidateSurvival(
+  summaries: AssetSummary[],
+  strategyId: string,
+): { eligible: number; testPass: number; validated: number; needsMoreData: number; notValidated: number } {
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const candidates = summaries
+    .flatMap((summary) => summary.opportunityWalkForward?.candidates ?? [])
+    .filter((candidate) =>
+      candidate.strategyId === strategyId &&
+      candidate.train.tradeCount > 0 &&
+      candidate.train.globalExpectancy !== null,
+    );
+  const verdicts = candidates.map((candidate) => {
+    const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+    return {
+      testPass: candidate.testPass,
+      verdict: opportunityFinalVerdict(candidate, foldsValidated, totalFolds),
+    };
+  });
+  return {
+    eligible: candidates.length,
+    testPass: verdicts.filter((entry) => entry.testPass).length,
+    validated: verdicts.filter((entry) => entry.verdict === "VALIDATED").length,
+    needsMoreData: verdicts.filter((entry) => entry.verdict === "NEEDS MORE DATA").length,
+    notValidated: verdicts.filter((entry) => entry.verdict === "NOT VALIDATED").length,
+  };
+}
+
+function deltaFmt(refined: number | null | undefined, base: number | null | undefined, digits = 2): string {
+  if (typeof refined !== "number" || typeof base !== "number") return "n/a";
+  const delta = refined - base;
+  return `${delta >= 0 ? "+" : ""}${delta.toFixed(digits)}`;
+}
+
+function tradeReduction(baseTrades: number | undefined, refinedTrades: number | undefined): string {
+  const base = baseTrades ?? 0;
+  const refined = refinedTrades ?? 0;
+  if (base === 0) return refined === 0 ? "0 (n/a)" : `${base - refined} (n/a)`;
+  const reduction = base - refined;
+  return `${reduction} (${fmt(reduction / base * 100)}%)`;
+}
+
+function tradeReductionCount(baseTrades: number | undefined, refinedTrades: number | undefined): string {
+  return String((baseTrades ?? 0) - (refinedTrades ?? 0));
+}
+
+function tradeReductionPct(baseTrades: number | undefined, refinedTrades: number | undefined): string {
+  const base = baseTrades ?? 0;
+  if (base === 0) return "n/a";
+  return pctFmt(((base - (refinedTrades ?? 0)) / base) * 100);
+}
+
+function countReduction(baseCount: number | undefined, refinedCount: number | undefined): string {
+  const base = baseCount ?? 0;
+  const refined = refinedCount ?? 0;
+  if (base === 0) return refined === 0 ? "0 (n/a)" : `${base - refined} (n/a)`;
+  const reduction = base - refined;
+  return `${reduction} (${fmt(reduction / base * 100)}%)`;
+}
+
+function candidateStatsForStrategy(
+  candidates: OpportunityCandidateValidation[],
+  strategyId: string,
+  period: "train" | "test",
+): OpportunityCandidatePeriodStats {
+  const rows = candidates
+    .filter((candidate) => candidate.strategyId === strategyId)
+    .map((candidate) => candidate[period]);
+  const returns = rows.map((row) => row.avgReturn).filter((value): value is number => value !== null);
+  const pfs = rows.map((row) => row.globalProfitFactor).filter((value): value is number => value !== null);
+  const expectancies = rows.map((row) => row.globalExpectancy).filter((value): value is number => value !== null);
+  const drawdowns = rows.map((row) => row.maxDrawdown).filter((value): value is number => value !== null);
+  return {
+    samples: rows.reduce((sum, row) => sum + row.samples, 0),
+    avgReturn: avg(returns),
+    globalProfitFactor: avg(pfs),
+    globalExpectancy: avg(expectancies),
+    maxDrawdown: drawdowns.length === 0 ? null : Math.max(...drawdowns),
+    tradeCount: rows.reduce((sum, row) => sum + row.tradeCount, 0),
+  };
+}
+
+function statsImprove(
+  refined: number | null,
+  base: number | null,
+  direction: "higher" | "lowerOrEqual",
+): boolean {
+  if (refined === null || base === null) return false;
+  return direction === "higher" ? refined > base : refined <= base;
+}
+
+function drawdownWorsenedMaterially(refined: number | null, base: number | null): boolean {
+  if (refined === null || base === null) return false;
+  return refined > base + Math.max(0.25, Math.abs(base) * 0.1);
+}
+
+function refinementRollingFoldCounts(
+  summaries: AssetSummary[],
+  baseStrategyId: string,
+  refinedStrategyId: string,
+): RefinementFoldCounts {
+  let validated = 0;
+  let comparable = 0;
+  let missingBase = 0;
+  let missingRefined = 0;
+  for (const summary of summaries) {
+    for (const fold of summary.opportunityWalkForward?.rollingFolds ?? []) {
+      for (const regime of REQUIRED_REGIMES) {
+        const base = fold.candidates.find((candidate) => candidate.regime === regime && candidate.strategyId === baseStrategyId);
+        const refined = fold.candidates.find((candidate) => candidate.regime === regime && candidate.strategyId === refinedStrategyId);
+        const hasBase = !!base && base.test.samples > 0;
+        const hasRefined = !!refined && refined.test.samples > 0;
+        if (!hasBase) missingBase++;
+        if (!hasRefined) missingRefined++;
+        if (!hasBase || !hasRefined || !base || !refined) continue;
+        comparable++;
+        const foldValidated =
+          statsImprove(refined.test.avgReturn, base.test.avgReturn, "higher") &&
+          statsImprove(refined.test.globalProfitFactor, base.test.globalProfitFactor, "higher") &&
+          statsImprove(refined.test.globalExpectancy, base.test.globalExpectancy, "higher") &&
+          statsImprove(refined.test.maxDrawdown, base.test.maxDrawdown, "lowerOrEqual") &&
+          refined.test.tradeCount >= MIN_OPPORTUNITY_TEST_TRADES;
+        if (foldValidated) validated++;
+      }
+    }
+  }
+  return { validated, comparable, missingBase, missingRefined };
+}
+
+function refinementVerdict(
+  baseTest: OpportunityCandidatePeriodStats,
+  refinedTest: OpportunityCandidatePeriodStats,
+  folds: RefinementFoldCounts,
+): string {
+  const returnImproves = statsImprove(refinedTest.avgReturn, baseTest.avgReturn, "higher");
+  const pfImproves = statsImprove(refinedTest.globalProfitFactor, baseTest.globalProfitFactor, "higher");
+  const expectancyImproves = statsImprove(refinedTest.globalExpectancy, baseTest.globalExpectancy, "higher");
+  const drawdownImproves = statsImprove(refinedTest.maxDrawdown, baseTest.maxDrawdown, "lowerOrEqual");
+  const sufficientTrades = refinedTest.tradeCount >= MIN_OPPORTUNITY_TEST_TRADES;
+  const foldsConsistent = folds.comparable > 0 && folds.validated === folds.comparable;
+  if (returnImproves && pfImproves && expectancyImproves && drawdownImproves && sufficientTrades && foldsConsistent) {
+    return "VALIDATED";
+  }
+
+  const improvements = [returnImproves, pfImproves, expectancyImproves, drawdownImproves].filter(Boolean).length;
+  if (
+    improvements > 0 &&
+    (
+      !sufficientTrades ||
+      (folds.comparable > 0 && folds.validated > 0 && folds.validated < folds.comparable)
+    )
+  ) {
+    return "NEEDS MORE DATA";
+  }
+
+  if (
+    !returnImproves ||
+    !pfImproves ||
+    !expectancyImproves ||
+    drawdownWorsenedMaterially(refinedTest.maxDrawdown, baseTest.maxDrawdown) ||
+    (folds.comparable > 0 && folds.validated === 0)
+  ) {
+    return "NOT VALIDATED";
+  }
+
+  return "NEEDS MORE DATA";
+}
+
+function pooledHeldoutStatsForStrategy(summaries: AssetSummary[], strategyId: string): TradePoolStats {
+  const grossProfitTotal = summaries.reduce((sum, summary) => sum + (summary.heldoutTradeStatsByStrategy[strategyId]?.grossProfit ?? 0), 0);
+  const grossLossAbsTotal = summaries.reduce((sum, summary) => sum + (summary.heldoutTradeStatsByStrategy[strategyId]?.grossLossAbs ?? 0), 0);
+  const tradeCount = summaries.reduce((sum, summary) => sum + (summary.heldoutTradeStatsByStrategy[strategyId]?.tradeCount ?? 0), 0);
+  const pnlTotal = summaries.reduce((sum, summary) => {
+    const stats = summary.heldoutTradeStatsByStrategy[strategyId];
+    return sum + (stats?.pooledExpectancy === null || stats === undefined ? 0 : stats.pooledExpectancy * stats.tradeCount);
+  }, 0);
+  return {
+    grossProfit: grossProfitTotal,
+    grossLossAbs: grossLossAbsTotal,
+    pooledProfitFactor: grossLossAbsTotal === 0 ? null : grossProfitTotal / grossLossAbsTotal,
+    pooledExpectancy: tradeCount === 0 ? null : pnlTotal / tradeCount,
+    tradeCount,
+  };
+}
+
+function refinementWarnings(
+  refinedTest: OpportunityCandidatePeriodStats,
+  baseTest: OpportunityCandidatePeriodStats,
+  folds: RefinementFoldCounts,
+): string {
+  const warnings: string[] = [];
+  if (refinedTest.tradeCount < MIN_OPPORTUNITY_TEST_TRADES) {
+    warnings.push(`refined test trades ${refinedTest.tradeCount} < ${MIN_OPPORTUNITY_TEST_TRADES}`);
+  }
+  const baseTrades = baseTest.tradeCount;
+  if (baseTrades > 0 && (baseTrades - refinedTest.tradeCount) / baseTrades > 0.9) {
+    warnings.push("trade reduction > 90%");
+  }
+  if (folds.comparable === 0) warnings.push("no comparable rolling folds");
+  return warnings.join("; ") || "none";
+}
+
+function aggregateGateDiagnostics(summaries: AssetSummary[]): GateDiagnosticRow[] {
+  const rows = new Map<string, GateDiagnosticRow>();
+  for (const summary of summaries) {
+    for (const row of summary.gateDiagnostics) {
+      const key = `${row.strategyId}|${row.gate}`;
+      const existing = rows.get(key) ?? { strategyId: row.strategyId, gate: row.gate, passes: 0, fails: 0, unavailablePasses: 0 };
+      existing.passes += row.passes;
+      existing.fails += row.fails;
+      existing.unavailablePasses += row.unavailablePasses;
+      rows.set(key, existing);
+    }
+  }
+  return [...rows.values()].sort((a, b) => a.strategyId.localeCompare(b.strategyId) || a.gate.localeCompare(b.gate));
+}
+
+function gateAvailabilityDiagnosticsSection(summaries: AssetSummary[]): string[] {
+  const rows = aggregateGateDiagnostics(summaries);
+  if (rows.length === 0) return [];
+  return [
+    "## Gate Availability Diagnostics",
+    "",
+    "Diagnostics evaluate each configured gate independently across base-strategy signal contexts that pass the refined variant's regime and reliability filters. `unavailable passes` are pass-open cases where a gate reason includes unavailable source data; they are useful for spotting indicators that are not actually constraining a variant.",
+    "",
+    table(
+      ["strategy", "gate", "passes", "fails", "unavailable passes", "unavailable pass %"],
+      rows.map((row) => {
+        const attempts = row.passes + row.fails;
+        const unavailablePct = row.passes === 0 ? null : row.unavailablePasses / row.passes * 100;
+        return [
+          row.strategyId,
+          row.gate,
+          String(row.passes),
+          String(row.fails),
+          String(row.unavailablePasses),
+          attempts === 0 ? "n/a" : pctFmt(unavailablePct),
+        ];
+      }),
+    ),
+    "",
+  ];
+}
+
+function strategyRefinementCandidateResultsSection(summaries: AssetSummary[]): string[] {
+  if (summaries.length === 0) return [];
+  const candidates = summaries.flatMap((summary) => summary.opportunityWalkForward?.candidates ?? []);
+  const rows = REFINED_STRATEGY_RULE_SUMMARIES.map((rule) => {
+    const baseFull = aggregateStrategyStats(summaries, rule.baseStrategyId);
+    const refinedFull = aggregateStrategyStats(summaries, rule.refinedStrategyId);
+    const baseTest = candidateStatsForStrategy(candidates, rule.baseStrategyId, "test");
+    const refinedTest = candidateStatsForStrategy(candidates, rule.refinedStrategyId, "test");
+    const basePooled = pooledHeldoutStatsForStrategy(summaries, rule.baseStrategyId);
+    const refinedPooled = pooledHeldoutStatsForStrategy(summaries, rule.refinedStrategyId);
+    const folds = refinementRollingFoldCounts(summaries, rule.baseStrategyId, rule.refinedStrategyId);
+    return [
+      rule.baseStrategyId,
+      rule.refinedStrategyId,
+      rule.allowedRegimes.join(", "),
+      rule.blockedRegimes.join(", "),
+      fmt(baseTest.avgReturn),
+      fmt(refinedTest.avgReturn),
+      fmt(baseTest.globalProfitFactor),
+      fmt(refinedTest.globalProfitFactor),
+      fmt(baseTest.globalExpectancy, 4),
+      fmt(refinedTest.globalExpectancy, 4),
+      fmt(baseTest.maxDrawdown),
+      fmt(refinedTest.maxDrawdown),
+      String(baseTest.tradeCount),
+      String(refinedTest.tradeCount),
+      tradeReductionCount(baseTest.tradeCount, refinedTest.tradeCount),
+      tradeReductionPct(baseTest.tradeCount, refinedTest.tradeCount),
+      fmt(baseFull?.avgExposure),
+      fmt(refinedFull?.avgExposure),
+      fmt(basePooled.grossProfit),
+      fmt(refinedPooled.grossProfit),
+      fmt(basePooled.grossLossAbs),
+      fmt(refinedPooled.grossLossAbs),
+      fmt(basePooled.pooledProfitFactor),
+      fmt(refinedPooled.pooledProfitFactor),
+      fmt(basePooled.pooledExpectancy, 4),
+      fmt(refinedPooled.pooledExpectancy, 4),
+      String(basePooled.tradeCount),
+      String(refinedPooled.tradeCount),
+      String(folds.comparable),
+      String(folds.missingBase),
+      String(folds.missingRefined),
+      String(folds.validated),
+      refinementVerdict(baseTest, refinedTest, folds),
+      refinementWarnings(refinedTest, baseTest, folds),
+    ];
+  });
+
+  return [
+    "## Strategy Refinement Candidate Results",
+    "",
+    "This section uses held-out 70/30 test-window candidate metrics for base-vs-refined comparison, plus rolling expanding-window fold checks. Candidate metrics are averaged across held-out asset/regime candidate rows, so they are directional research evidence, not pooled trade-level proof. Pooled held-out trade stats are included separately where trades exist. Verdicts are conservative: a variant is VALIDATED only when held-out return, profit factor, expectancy, drawdown, trade sufficiency, and all comparable rolling-fold checks beat the base strategy. These are research verdicts only.",
+    "",
+    table(
+      ["strategy", "variant", "allowed regimes", "blocked regimes", "base avg return", "refined avg return", "base global PF", "refined global PF", "base global expectancy", "refined global expectancy", "base max drawdown", "refined max drawdown", "base trades", "refined trades", "trade reduction count", "trade reduction %", "base exposure", "refined exposure", "base gross profit", "refined gross profit", "base gross loss", "refined gross loss", "base pooled PF", "refined pooled PF", "base pooled expectancy", "refined pooled expectancy", "base pooled trades", "refined pooled trades", "comparable folds", "missing base folds", "missing refined folds", "validated folds", "verdict", "warnings"],
+      rows,
+    ),
+    "",
+  ];
+}
+
+function strategyRefinementComparisonSection(summaries: AssetSummary[]): string[] {
+  if (summaries.length === 0) return [];
+
+  const rows = REFINED_STRATEGY_PAIRS.map((pair) => {
+    const base = aggregateStrategyStats(summaries, pair.baseStrategyId);
+    const refined = aggregateStrategyStats(summaries, pair.refinedStrategyId);
+    const baseSurvival = strategyCandidateSurvival(summaries, pair.baseStrategyId);
+    const refinedSurvival = strategyCandidateSurvival(summaries, pair.refinedStrategyId);
+    return [
+      pair.baseStrategyId,
+      pair.refinedStrategyId,
+      fmt(base?.avgReturn),
+      fmt(refined?.avgReturn),
+      deltaFmt(refined?.avgReturn, base?.avgReturn),
+      fmt(base?.medianReturn),
+      fmt(refined?.medianReturn),
+      fmt(base?.globalProfitFactor),
+      fmt(refined?.globalProfitFactor),
+      deltaFmt(refined?.globalProfitFactor, base?.globalProfitFactor),
+      fmt(base?.avgProfitFactor),
+      fmt(refined?.avgProfitFactor),
+      fmt(base?.globalExpectancy, 4),
+      fmt(refined?.globalExpectancy, 4),
+      deltaFmt(refined?.globalExpectancy, base?.globalExpectancy, 4),
+      fmt(base?.avgExpectancy, 4),
+      fmt(refined?.avgExpectancy, 4),
+      fmt(base?.maxDrawdown),
+      fmt(refined?.maxDrawdown),
+      deltaFmt(refined?.maxDrawdown, base?.maxDrawdown),
+      String(base?.tradeCount ?? 0),
+      String(refined?.tradeCount ?? 0),
+      tradeReduction(base?.tradeCount, refined?.tradeCount),
+      String(base?.losingTradeCount ?? 0),
+      String(refined?.losingTradeCount ?? 0),
+      countReduction(base?.losingTradeCount, refined?.losingTradeCount),
+      String(base?.stopLossExitCount ?? 0),
+      String(refined?.stopLossExitCount ?? 0),
+      countReduction(base?.stopLossExitCount, refined?.stopLossExitCount),
+      fmt(base?.avgExposure),
+      fmt(refined?.avgExposure),
+      fmt(base?.avgReturnToDrawdown),
+      fmt(refined?.avgReturnToDrawdown),
+      `${baseSurvival.validated}/${baseSurvival.eligible}`,
+      `${refinedSurvival.validated}/${refinedSurvival.eligible}`,
+      `${baseSurvival.testPass}/${baseSurvival.eligible}`,
+      `${refinedSurvival.testPass}/${refinedSurvival.eligible}`,
+    ];
+  });
+
+  return [
+    "## Strategy Refinement Candidate Comparison",
+    "",
+    "Research-only refined variants are registered beside their base strategies and evaluated as separate benchmark candidates. Aggregated metrics below average per-asset full-window strategy stats across the selected crypto universe; walk-forward survival counts use the cross-asset opportunity candidate validation rules. Losing-trade and stop-loss reductions are proxy diagnostics for false-breakout filtering, not live execution labels.",
+    "",
+    table(
+      ["base", "refined", "base ret%", "refined ret%", "ret delta", "base medRet%", "refined medRet%", "base gPF", "refined gPF", "gPF delta", "base avgPF", "refined avgPF", "base gExpect", "refined gExpect", "expect delta", "base avgExpect", "refined avgExpect", "base maxDD", "refined maxDD", "DD delta", "base trades", "refined trades", "trade reduction", "base losses", "refined losses", "loss reduction", "base stops", "refined stops", "stop reduction", "base exposure", "refined exposure", "base ret/DD", "refined ret/DD", "base validated", "refined validated", "base test pass", "refined test pass"],
+      rows,
     ),
     "",
   ];
@@ -1695,6 +2905,7 @@ interface InstrumentReport {
 }
 
 async function runInstrument(instrument: InstrumentArg): Promise<InstrumentReport> {
+  backtestResultCache.clear();
   const timeframe: Timeframe = "1h";
   const bounds = process.env.START_TS && process.env.END_TS
     ? { startTs: process.env.START_TS, endTs: process.env.END_TS }
@@ -1776,6 +2987,9 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
   const allRouterStats = [routerFull, ...expStats];
   const walkForwardData = computeWalkForward(baseInput, validation.selectedWindows);
   const regimeStrategyStats = crossAssetRegimeStrategyStats(instrument.symbol, baseInput, validation.selectedWindows);
+  const opportunityWalkForward = computeOpportunityWalkForward(instrument.symbol, baseInput, validation.selectedWindows);
+  const heldoutTradeStats = heldoutTradeStatsByStrategy(baseInput, opportunityWalkForward?.testWindows ?? []);
+  const gateDiagnostics = gateDiagnosticsForWindows(baseInput, validation.selectedWindows);
   const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
   const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
   const summary: AssetSummary = {
@@ -1789,8 +3003,12 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     avgPurity: primaryResult.purity.avgDominantRegimePct,
     bestStaticByReturn: { label: bestByReturn?.label ?? "n/a", value: bestByReturn?.avgReturn ?? null },
     bestStaticByRtDD: { label: bestByRtDD?.label ?? "n/a", value: bestByRtDD?.avgReturnToDrawdown ?? null },
+    strategyFullStats: staticFull,
     regimeStrategyStats,
+    heldoutTradeStatsByStrategy: heldoutTradeStats,
+    gateDiagnostics,
     walkForward: summarizeWalkForward(walkForwardData),
+    opportunityWalkForward,
   };
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
@@ -1866,7 +3084,15 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
 async function main(): Promise<void> {
   const sections: string[] = [];
   const summaries: AssetSummary[] = [];
-  const instruments = await resolveInstruments();
+  const configuredReportPath = process.env.P5_REPORT_PATH?.trim();
+  const reportPath = configuredReportPath
+    ? path.resolve(process.cwd(), configuredReportPath)
+    : path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
+  const runTimestamp = new Date().toISOString();
+  const strategyVersions = strategyVersionSummary();
+  const resolution = await resolveInstruments();
+  const skippedEquitySections = await skippedEquityAssetsSection();
+  const { instruments } = resolution;
   for (const instrument of instruments) {
     const result = await runInstrument(instrument);
     sections.push(result.markdown);
@@ -1877,18 +3103,37 @@ async function main(): Promise<void> {
     ? [
         ...multiAssetCoverageSection(summaries),
         ...crossAssetOpportunitySection(summaries),
+        ...crossAssetOpportunityWalkForwardSection(summaries),
+        ...crossAssetValidatedCandidateSummarySection(summaries),
+        ...momentumRefinedTestPassBreakdownSection(summaries),
+        ...strategyRefinementCandidateResultsSection(summaries),
+        ...gateAvailabilityDiagnosticsSection(summaries),
+        ...strategyRefinementComparisonSection(summaries),
         ...crossAssetRouterValidationSection(summaries),
       ]
     : ["## Multi-Asset Data Coverage", "", "No assets had sufficient stored data to analyze.", ""];
+
+  const metadata: RunMetadata = {
+    branch: gitValue("rev-parse --abbrev-ref HEAD"),
+    commitSha: gitValue("rev-parse HEAD"),
+    runTimestamp,
+    reportPath,
+    strategyVersions,
+    featureVersion: FEATURE_VERSION,
+    windowConfig: windowConfigText(),
+    symbolsDiscovered: instruments.map((instrument) => `${instrument.symbol}@${instrument.exchange}`),
+    p5ReportPathEnv: process.env.P5_REPORT_PATH ?? "",
+  };
 
   const report = [
     "# P5 Multi-Asset Strategy Research Report",
     "",
     "Generated by `scripts/runExpandedBacktestResearch.ts` (`npm run research:p5:multiasset`).",
     "",
-    `Assets analyzed: ${summaries.length} of ${instruments.length} requested (${summaries.map((s) => s.symbol).join(", ") || "none"}).`,
+    resolvedAssetLine(resolution, summaries),
     "The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_ROUTING_REPORT.md`.",
     "",
+    ...runMetadataSection(metadata),
     "## Implementation Summary",
     "",
     "- Expanded P4 metrics with expectancy, win/loss averages, streaks, exposure, duration, Sharpe/Sortino aliases, profit per bar, return-to-drawdown, and trade frequency.",
@@ -1907,7 +3152,17 @@ async function main(): Promise<void> {
     "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
     "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
     "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
+    "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
+    "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
+    "- Refined momentum_continuation_refined_v1 for Priority 8B with short-term momentum confirmation, medium-trend filtering, macro-not-strongly-bearish gating, volume-not-dead filtering, overextension avoidance, and a tightly gated TREND_DOWN survival experiment.",
+    "- Refined breakout_expansion_refined_v1 for Priority 8C as a TREND_UP/HIGH_VOL specialist with volatility-expansion, volume, breakout-structure, trend, macro-alignment, overextension, and reliability gates.",
+    "- Refined trend_pullback_refined_v1 for Priority 8D as a TREND_UP/HIGH_VOL specialist with strong macro-trend, support-zone pullback, intact-trend, momentum-reset, volume, overextension, and reliability gates.",
+    "- Refined mean_reversion_refined_v1 for Priority 8E as a LOW_VOL/CHOP defensive range specialist with oversold, range-bound, non-aggressive-volatility, mean-stretch, reversion-target, and reliability gates.",
+    "- Added Strategy Refinement Candidate Results: refined variants are compared against their base strategies on held-out test-window metrics and rolling fold consistency before receiving conservative research verdicts.",
+    "- Added P5 report run metadata, `reports/p5/index.csv` append-only report indexing, pooled held-out trade stats, fold denominator transparency, over-filtering warnings, and Gate Availability Diagnostics.",
+    "- Added Momentum Refined Test-Pass Breakdown: refined momentum improved quality metrics but remains NOT VALIDATED because its held-out test-pass candidates did not pass rolling validation.",
     "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
+    "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
     "",
     "## Strategy Analytics",
     "",
@@ -1941,6 +3196,8 @@ async function main(): Promise<void> {
     "- Statistical confidence depends on available persisted bars, features, and A6 regime snapshots. Proxy mode improves coverage but is not a substitute for persisted A6 labels.",
     "- staticStrategyFullStats and portfolioComparisonStats re-run backtests independently of routingSummaries and portfolioSummaries; this is intentional to keep the comparison section isolated but doubles computation.",
     "",
+    ...discoveryReadinessSection(resolution.discovery),
+    ...skippedEquitySections,
     ...crossAssetSections,
     "## Per-Asset Detail",
     "",
@@ -1955,8 +3212,19 @@ async function main(): Promise<void> {
     "",
   ].join("\n");
 
-  const reportPath = path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, report);
+  appendReportIndex({
+    timestamp: runTimestamp,
+    branch: metadata.branch,
+    commit: metadata.commitSha,
+    reportPath,
+    logPath: process.env.P5_LOG_PATH ?? "",
+    exitCode: 0,
+    assetsAnalyzed: summaries.map((summary) => summary.symbol),
+    strategyVersions,
+    notes: process.env.P5_RUN_NOTES ?? "generated by scripts/runExpandedBacktestResearch.ts",
+  });
   console.log(`wrote ${reportPath}`);
 }
 

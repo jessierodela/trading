@@ -73,11 +73,35 @@ export const FEATURE_VERSION = "features.2026-05-20.v3";
 //   strategy.*.2026-05-21.v1 - P3 deterministic strategy layer. Strategies
 //                              consume FeatureSnapshot + RegimeContext only
 //                              and emit versioned StrategySignal rows.
+//   strategy.*_refined_v1.2026-05-26.v1
+//                            - P5 research-only gated variants. They wrap
+//                              base strategies with regime/feature gates for
+//                              controlled out-of-sample refinement tests.
+//   strategy.momentum_continuation_refined_v1.2026-05-27.v2
+//                            - P5 8B: add short-term momentum, medium trend,
+//                              macro-not-bearish, volume-not-dead, and
+//                              TREND_DOWN survival-experiment gating.
+//   strategy.breakout_expansion_refined_v1.2026-05-29.v2
+//                            - P5 8C: specialize breakout expansion for
+//                              TREND_UP/HIGH_VOL only with volatility expansion,
+//                              volume, breakout-structure, trend, and macro gates.
+//   strategy.trend_pullback_refined_v1.2026-05-29.v2
+//                            - P5 8D: specialize trend pullback for TREND_UP
+//                              and macro-confirmed HIGH_VOL with support-zone,
+//                              intact-trend, momentum-reset, and reliability gates.
+//   strategy.mean_reversion_refined_v1.2026-05-29.v2
+//                            - P5 8E: specialize mean reversion for LOW_VOL/CHOP
+//                              with oversold, range-bound, non-aggressive-vol,
+//                              mean-stretch, target, and reliability gates.
 export const STRATEGY_VERSIONS = {
   momentumContinuation: "strategy.momentum_continuation.2026-05-21.v1",
   trendPullback: "strategy.trend_pullback.2026-05-21.v1",
   breakoutExpansion: "strategy.breakout_expansion.2026-05-21.v1",
   meanReversionBounce: "strategy.mean_reversion_bounce.2026-05-21.v1",
+  momentumContinuationRefinedV1: "strategy.momentum_continuation_refined_v1.2026-05-27.v2",
+  breakoutExpansionRefinedV1: "strategy.breakout_expansion_refined_v1.2026-05-29.v2",
+  trendPullbackRefinedV1: "strategy.trend_pullback_refined_v1.2026-05-29.v2",
+  meanReversionRefinedV1: "strategy.mean_reversion_refined_v1.2026-05-29.v2",
 } as const;
 
 export const MOMENTUM_CONTINUATION_VERSION = STRATEGY_VERSIONS.momentumContinuation;

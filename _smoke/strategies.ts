@@ -3,6 +3,11 @@ import { InMemorySignalStore } from "../lib/storage";
 import { breakoutExpansion } from "../lib/strategies/breakoutExpansion";
 import { meanReversionBounce } from "../lib/strategies/meanReversionBounce";
 import { momentumContinuation } from "../lib/strategies/momentumContinuation";
+import {
+  REFINED_STRATEGY_CONFIGS,
+  REFINED_STRATEGY_RULE_SUMMARIES,
+  REFINED_STRATEGY_VARIANTS,
+} from "../lib/strategies/refinement/strategyVariants";
 import { runStrategyWindow } from "../lib/strategies/runStrategyWindow";
 import { runStrategies, STRATEGY_REGISTRY, getStrategyById } from "../lib/strategies/strategyRegistry";
 import { trendPullback } from "../lib/strategies/trendPullback";
@@ -116,8 +121,27 @@ function assertSignalShape(prefix: string, signal: StrategySignal): void {
 
 async function testStrategies(): Promise<void> {
   console.log("\n=== strategy definitions ===");
-  assert("registry has four strategies", STRATEGY_REGISTRY.length === 4);
+  assert("registry includes base and refined strategies", STRATEGY_REGISTRY.length >= 8);
   assert("registry lookup momentum works", getStrategyById("momentum_continuation") === momentumContinuation);
+  assert("registry lookup refined momentum works", getStrategyById("momentum_continuation_refined_v1") === REFINED_STRATEGY_VARIANTS[0]);
+  assert("registry lookup refined breakout works", getStrategyById("breakout_expansion_refined_v1") === REFINED_STRATEGY_VARIANTS.find((strategy) => strategy.id === "breakout_expansion_refined_v1"));
+  assert("registry includes all refined variants", REFINED_STRATEGY_VARIANTS.every((strategy) => getStrategyById(strategy.id) === strategy));
+  assert("refined rule summaries match config count", REFINED_STRATEGY_RULE_SUMMARIES.length === REFINED_STRATEGY_CONFIGS.length);
+  for (const config of REFINED_STRATEGY_CONFIGS) {
+    const summary = REFINED_STRATEGY_RULE_SUMMARIES.find((entry) => entry.refinedStrategyId === config.id);
+    assert(`rule summary exists for ${config.id}`, !!summary, summary);
+    assert(`rule summary base matches ${config.id}`, summary?.baseStrategyId === config.baseStrategyId, summary);
+    assert(
+      `rule summary allowed regimes match ${config.id}`,
+      JSON.stringify(summary?.allowedRegimes ?? []) === JSON.stringify(config.allowedRegimes ?? []),
+      summary,
+    );
+    assert(
+      `rule summary blocked regimes match ${config.id}`,
+      JSON.stringify(summary?.blockedRegimes ?? []) === JSON.stringify(config.blockedRegimes ?? []),
+      summary,
+    );
+  }
   assert("registry lookup missing returns null", getStrategyById("missing") === null);
   assert("momentum version matches STRATEGY_VERSIONS", momentumContinuation.version === STRATEGY_VERSIONS.momentumContinuation);
   assert("trend version matches STRATEGY_VERSIONS", trendPullback.version === STRATEGY_VERSIONS.trendPullback);
@@ -160,6 +184,44 @@ async function testStrategies(): Promise<void> {
   assert("trend stop below ema20", typeof trend?.stopLoss === "number" && trend.stopLoss < pullbackCurrent(1).ema20!);
   if (trend) assertSignalShape("trend", trend);
 
+  const refinedTrendStrategy = getStrategyById("trend_pullback_refined_v1");
+  const refinedTrendCurrent = {
+    ...pullbackCurrent(1),
+    close: 101,
+    ema20: 101.2,
+    ema50: 98,
+    ema20Slope: 0.2,
+    ema50Slope: 0.1,
+    rsi14: 46,
+    macdHist: 0.08,
+    atr14: 4,
+    distanceFromEma20Atr: -0.05,
+    relativeVolume20: 1,
+    daily_ema50AboveEma200: true,
+    daily_priceAboveEma200: true,
+  };
+  const refinedTrend = refinedTrendStrategy?.evaluate({
+    current: refinedTrendCurrent,
+    previous: feature(0, { macdHist: 0.02 }),
+    recent: [],
+    regime: regime("TREND_UP"),
+  });
+  assert("refined trend pullback emits in reliable TREND_UP controlled pullback", refinedTrend?.strategyId === "trend_pullback_refined_v1", refinedTrend);
+  const refinedTrendLowVol = refinedTrendStrategy?.evaluate({
+    current: refinedTrendCurrent,
+    previous: feature(0, { macdHist: 0.02 }),
+    recent: [],
+    regime: regime("LOW_VOL"),
+  });
+  assert("refined trend pullback blocks LOW_VOL", refinedTrendLowVol === null, refinedTrendLowVol);
+  const refinedTrendBroken = refinedTrendStrategy?.evaluate({
+    current: { ...refinedTrendCurrent, close: 94, ema20: 101, ema50: 98, distanceFromEma20Atr: -1.75 },
+    previous: feature(0, { macdHist: 0.02 }),
+    recent: [],
+    regime: regime("TREND_UP"),
+  });
+  assert("refined trend pullback blocks broken trend", refinedTrendBroken === null, refinedTrendBroken);
+
   const trendSetup = trendPullback.evaluate({
     current: { ...pullbackCurrent(1), rsi14: 42, macdHist: 0.1 },
     previous: feature(0, { macdHist: 0.2 }),
@@ -177,6 +239,42 @@ async function testStrategies(): Promise<void> {
   assert("breakout stop uses middle band", breakout?.stopLoss === breakoutCurrent(1).bbMiddle);
   if (breakout) assertSignalShape("breakout", breakout);
 
+  const refinedBreakoutStrategy = getStrategyById("breakout_expansion_refined_v1");
+  const refinedBreakoutCurrent = {
+    ...breakoutCurrent(1),
+    ema20: 102,
+    ema50: 98,
+    daily_ema50AboveEma200: true,
+  };
+  const refinedBreakout = refinedBreakoutStrategy?.evaluate({
+    current: refinedBreakoutCurrent,
+    previous: feature(0),
+    recent: [],
+    regime: regime("TREND_UP"),
+  });
+  assert("refined breakout emits in reliable TREND_UP with expansion", refinedBreakout?.strategyId === "breakout_expansion_refined_v1", refinedBreakout);
+  const refinedBreakoutLowVol = refinedBreakoutStrategy?.evaluate({
+    current: refinedBreakoutCurrent,
+    previous: feature(0),
+    recent: [],
+    regime: regime("LOW_VOL"),
+  });
+  assert("refined breakout blocks LOW_VOL", refinedBreakoutLowVol === null, refinedBreakoutLowVol);
+  const refinedBreakoutTrendDown = refinedBreakoutStrategy?.evaluate({
+    current: refinedBreakoutCurrent,
+    previous: feature(0),
+    recent: [],
+    regime: regime("TREND_DOWN"),
+  });
+  assert("refined breakout blocks TREND_DOWN", refinedBreakoutTrendDown === null, refinedBreakoutTrendDown);
+  const refinedBreakoutNoExpansion = refinedBreakoutStrategy?.evaluate({
+    current: { ...refinedBreakoutCurrent, bbWidth: 0.1, bbWidthPrev: 0.1, candleRangeAtr: 0.6 },
+    previous: feature(0),
+    recent: [],
+    regime: regime("HIGH_VOL"),
+  });
+  assert("refined breakout requires volatility expansion in HIGH_VOL", refinedBreakoutNoExpansion === null, refinedBreakoutNoExpansion);
+
   const bounce = meanReversionBounce.evaluate({
     current: bounceCurrent(1),
     previous: feature(0, { rsi14: 32, macdHist: -1.2 }),
@@ -186,6 +284,48 @@ async function testStrategies(): Promise<void> {
   assert("mean reversion strategyId stable", bounce?.strategyId === "mean_reversion_bounce");
   assert("mean reversion confidence capped", typeof bounce?.confidence === "number" && bounce.confidence <= 0.65);
   if (bounce) assertSignalShape("bounce", bounce);
+
+  const refinedMeanStrategy = getStrategyById("mean_reversion_refined_v1");
+  const refinedMeanCurrent = {
+    ...bounceCurrent(1),
+    rsi14: 34,
+    macdHist: -0.4,
+    atrPct: 2,
+    candleRangeAtr: 1.2,
+    bbWidth: 0.08,
+    bbWidthPrev: 0.09,
+    bbLower: 94,
+    bbMiddle: 100,
+    distanceFromEma20Atr: -2,
+  };
+  const refinedMean = refinedMeanStrategy?.evaluate({
+    current: refinedMeanCurrent,
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("CHOP"),
+  });
+  assert("refined mean reversion emits in reliable CHOP oversold range", refinedMean?.strategyId === "mean_reversion_refined_v1", refinedMean);
+  const refinedMeanTrendDown = refinedMeanStrategy?.evaluate({
+    current: refinedMeanCurrent,
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("TREND_DOWN"),
+  });
+  assert("refined mean reversion blocks TREND_DOWN", refinedMeanTrendDown === null, refinedMeanTrendDown);
+  const refinedMeanHighVol = refinedMeanStrategy?.evaluate({
+    current: refinedMeanCurrent,
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("HIGH_VOL"),
+  });
+  assert("refined mean reversion blocks HIGH_VOL", refinedMeanHighVol === null, refinedMeanHighVol);
+  const refinedMeanNoStretch = refinedMeanStrategy?.evaluate({
+    current: { ...refinedMeanCurrent, close: 99, distanceFromEma20Atr: -0.25 },
+    previous: feature(0, { rsi14: 32, macdHist: -0.8 }),
+    recent: [],
+    regime: regime("LOW_VOL"),
+  });
+  assert("refined mean reversion requires price stretched from mean", refinedMeanNoStretch === null, refinedMeanNoStretch);
 
   console.log("\n=== regime handling ===");
   const newsBlocked = runStrategies({
