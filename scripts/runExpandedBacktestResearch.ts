@@ -148,7 +148,13 @@ const NEAR_ZERO_TRADES_PER_WINDOW = 0.25;
 const TINY_GROSS_LOSS_USD = 1;
 const CROSS_ASSET_OPPORTUNITY_TOP_N = 30;
 const MIN_OPPORTUNITY_TEST_TRADES = 5;
-const EQUITY_WATCHLIST = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"];
+const EQUITY_WATCHLIST_TARGETS: Array<{ symbol: string; assetType: BacktestAssetType; missingBarsReason: string }> = [
+  { symbol: "SPY", assetType: "ETF", missingBarsReason: "no stored equity/ETF bars available" },
+  { symbol: "QQQ", assetType: "ETF", missingBarsReason: "no stored equity/ETF bars available" },
+  { symbol: "AAPL", assetType: "EQUITY", missingBarsReason: "no stored equity bars available" },
+  { symbol: "MSFT", assetType: "EQUITY", missingBarsReason: "no stored equity bars available" },
+  { symbol: "NVDA", assetType: "EQUITY", missingBarsReason: "no stored equity bars available" },
+];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const backtestResultCache = new Map<string, BacktestRunResult>();
 
@@ -187,6 +193,8 @@ const RUN_CONFIGS: RunConfig[] = [
 ];
 
 const ETF_SYMBOLS = new Set(["DIA", "IWM", "QQQ", "SPY", "VOO", "VTI"]);
+const BASE_STRATEGY_IDS = new Set<string>(REFINED_STRATEGY_PAIRS.map((pair) => pair.baseStrategyId));
+const REFINED_STRATEGY_IDS = new Set<string>(REFINED_STRATEGY_PAIRS.map((pair) => pair.refinedStrategyId));
 
 interface DiscoveryRow {
   symbol: string;
@@ -538,6 +546,14 @@ function pctFmt(value: number | null | undefined, digits = 2): string {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(digits)}%` : "n/a";
 }
 
+function pctOf(part: number, total: number): number | null {
+  return total > 0 ? part / total * 100 : null;
+}
+
+function dateOnly(ts: string | null | undefined): string {
+  return ts ? ts.slice(0, 10) : "n/a";
+}
+
 function gitValue(args: string): string {
   try {
     return execSync(`git ${args}`, { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || "unknown";
@@ -663,12 +679,12 @@ async function skippedEquityAssetsSection(): Promise<string[]> {
      from market_bars
      where timeframe = '1h' and symbol = any($1)
      group by symbol`,
-    [EQUITY_WATCHLIST],
+    [EQUITY_WATCHLIST_TARGETS.map((target) => target.symbol)],
   );
   const counts = new Map(rows.map((row) => [row.symbol.toUpperCase(), Number(row.bar_count)]));
-  const skipped = EQUITY_WATCHLIST
-    .filter((symbol) => (counts.get(symbol) ?? 0) === 0)
-    .map((symbol) => [symbol, "No stored equity bars available"]);
+  const skipped = EQUITY_WATCHLIST_TARGETS
+    .filter((target) => (counts.get(target.symbol) ?? 0) === 0)
+    .map((target) => [target.symbol, target.assetType, target.missingBarsReason]);
 
   if (skipped.length === 0) {
     return [
@@ -684,7 +700,7 @@ async function skippedEquityAssetsSection(): Promise<string[]> {
     "",
     "Equity/ETF watchlist assets are listed here when they are not part of the research-ready universe because stored 1h bars are missing.",
     "",
-    table(["asset", "reason"], skipped),
+    table(["asset", "type", "reason"], skipped),
     "",
   ];
 }
@@ -1191,8 +1207,106 @@ function resolvedAssetLine(resolution: InstrumentResolution, summaries: AssetSum
   return `Assets analyzed: ${summaries.length} of ${resolution.instruments.length} resolved default assets (${analyzed}).`;
 }
 
+function topInSampleOpportunitySummary(summaries: AssetSummary[]): string {
+  const top = summaries
+    .flatMap((summary) => summary.regimeStrategyStats)
+    .filter((row) => row.tradeCount > 0 && row.globalExpectancy !== null)
+    .sort((a, b) => (b.globalExpectancy ?? Number.NEGATIVE_INFINITY) - (a.globalExpectancy ?? Number.NEGATIVE_INFINITY))
+    .slice(0, 5)
+    .map((row) =>
+      `${row.symbol} ${row.regime} ${row.strategyId} (` +
+      `expectancy ${fmt(row.globalExpectancy, 4)}, avg return ${fmt(row.avgReturn)}%, trades ${row.tradeCount})`,
+    );
+  return top.length > 0 ? top.join("; ") : "none";
+}
+
+function opportunityValidationSummary(summaries: AssetSummary[]): string {
+  const ranked = trainRankedOpportunityCandidates(summaries).slice(0, CROSS_ASSET_OPPORTUNITY_TOP_N);
+  if (ranked.length === 0) return "No train-ranked opportunity candidates were available.";
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const rows = ranked.map((candidate) => ({
+    candidate,
+    verdict: opportunityFinalVerdict(candidate, counts.get(opportunityCandidateKey(candidate)) ?? 0, totalFolds),
+  }));
+  const validated = rows.filter((row) => row.verdict === "VALIDATED");
+  const needsMoreData = rows.filter((row) => row.verdict === "NEEDS MORE DATA").length;
+  const notValidated = rows.filter((row) => row.verdict === "NOT VALIDATED").length;
+  if (validated.length === 0) {
+    return `None yet; ${needsMoreData} need more data and ${notValidated} are not validated across the top ${ranked.length} train-ranked candidates.`;
+  }
+  return validated
+    .slice(0, 5)
+    .map(({ candidate }) => `${candidate.symbol} ${candidate.regime} ${candidate.strategyId}`)
+    .join("; ");
+}
+
+function routerValidationSummary(summaries: AssetSummary[]): string {
+  if (summaries.length === 0) return "No assets had enough data for router validation.";
+  const validated = summaries.filter((summary) => summary.walkForward?.finalVerdict === "VALIDATED").length;
+  const needsMoreData = summaries.filter((summary) => summary.walkForward?.finalVerdict === "NEEDS MORE DATA").length;
+  const notValidated = summaries.filter((summary) => summary.walkForward?.finalVerdict === "NOT VALIDATED").length;
+  const insufficient = summaries.length - validated - needsMoreData - notValidated;
+  return `${validated} validated, ${needsMoreData} need more data, ${notValidated} not validated, ${insufficient} insufficient.`;
+}
+
+function executiveSummarySection(resolution: InstrumentResolution, summaries: AssetSummary[]): string[] {
+  const totalBars = summaries.reduce((sum, summary) => sum + summary.dataCoverage.bars, 0);
+  const totalFeatures = summaries.reduce((sum, summary) => sum + summary.dataCoverage.features, 0);
+  const totalRegimes = summaries.reduce((sum, summary) => sum + summary.dataCoverage.regimes, 0);
+  const regimeSources = [...new Set(summaries.map((summary) => summary.regimeSourceLabel))].join(", ") || "none";
+  const focusAssets = ["SOL-USD", "ETH-USD", "LINK-USD", "AVAX-USD"]
+    .filter((symbol) => summaries.some((summary) => summary.symbol === symbol))
+    .map((symbol) => symbol.replace("-USD", ""))
+    .join(", ");
+  const conclusion = summaries.length === 0
+    ? "No research-ready assets were available in this run."
+    : `No router or cross-asset candidate should be treated as validated production edge yet. Current evidence supports further research into refined momentum-continuation strategies in TREND_UP conditions${focusAssets ? `, especially across ${focusAssets}` : ""}.`;
+
+  return [
+    "## Executive Summary",
+    "",
+    table(
+      ["item", "summary"],
+      [
+        ["assets analyzed", resolvedAssetLine(resolution, summaries).replace(/^Assets analyzed: /, "")],
+        ["data coverage", `${totalBars} stored bars, ${totalFeatures} 1h feature rows, ${totalRegimes} regime labels used across analyzed assets`],
+        ["regime source", regimeSources],
+        ["best in-sample opportunity candidates", topInSampleOpportunitySummary(summaries)],
+        ["validated candidates", opportunityValidationSummary(summaries)],
+        ["router validation status", routerValidationSummary(summaries)],
+        ["strategy refinement direction", "Keep refined variants beside base strategies and promote only variants that survive held-out and rolling-fold validation."],
+        ["main conclusion", conclusion],
+        ["next action", "Use the validation and refinement summaries below to decide the next research experiment; do not move to risk engine or execution work from this evidence alone."],
+      ],
+    ),
+    "",
+  ];
+}
+
+function regimeSourceExplanationSection(): string[] {
+  return [
+    "## Regime Source Explanation",
+    "",
+    "`gpt_a6_detector_snapshots` are persisted labels produced by the A6/GPT regime detector.",
+    "",
+    "`deterministic_proxy_research_snapshots` are deterministic research labels generated to support repeatable backtesting and validation. They are useful for controlled research but should not be described as GPT/A6 validation.",
+    "",
+    "`ohlcv_fallback_labels` are temporary in-memory labels built directly from OHLCV and feature data when persisted regime snapshots are unavailable.",
+    "",
+    "Report rule: Do not describe deterministic proxy snapshots or OHLCV fallback labels as GPT/A6 detector validation.",
+    "",
+  ];
+}
+
 function discoveryReadinessSection(discovery: DiscoveryResult | null): string[] {
-  if (!discovery) return [];
+  if (!discovery) {
+    return [
+      "## Discovery Readiness Diagnostics",
+      "",
+      "Dynamic discovery was not used for this run. Assets were resolved from explicit symbols or the single-asset default.",
+      "",
+    ];
+  }
   const { filters, selected, excluded } = discovery;
   return [
     "## Discovery Readiness Diagnostics",
@@ -1244,6 +1358,128 @@ function discoveryReadinessSection(discovery: DiscoveryResult | null): string[] 
           ])
         : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "none"]],
     ),
+    "",
+  ];
+}
+
+function strategyRecommendationSummarySection(): string[] {
+  return [
+    "## Strategy Recommendation Summary",
+    "",
+    table(
+      ["strategy", "current finding", "research action"],
+      [
+        ["momentum_continuation", "Primary base-strategy investigation candidate, especially in TREND_UP conditions.", "Continue refining confidence, entry-quality, and rolling-fold survival filters. Do not promote yet."],
+        ["momentum_continuation_refined_v1", "Research-only refined variant with directional quality improvement, but not validated production edge.", "Keep research-only until held-out and rolling-fold criteria pass."],
+        ["trend_pullback_refined_v1", "Possible high-PF niche, but current gates appear over-filtered and sample-limited.", "Investigate v3 loosening carefully without replacing the base strategy. Do not promote."],
+        ["breakout_expansion_refined_v1", "TREND_UP / volatility-expansion specialist candidate, not broadly validated.", "Pause broad tuning unless specifically studying false-breakout reduction."],
+        ["mean_reversion_refined_v1", "Needs a cleaner setup thesis; current refinement underperforms and gating alone is not enough.", "Rethink the setup thesis before further tuning. Do not simply loosen gates."],
+      ],
+    ),
+    "",
+  ];
+}
+
+function knownLimitationsSection(): string[] {
+  return [
+    "## Known Limitations",
+    "",
+    "- This remains research only; no live execution, broker integration, order manager, or capital deployment path is introduced.",
+    "- Regime labels are deterministic proxy research snapshots unless GPT/A6 snapshots are explicitly present.",
+    "- Deterministic proxy regimes are not GPT/A6 detector validation.",
+    "- OHLCV fallback labels are temporary in-memory research labels, not persisted detector output.",
+    "- Portfolio equity realizes scaled simulated trade PnL at exits and does not model full broker-grade portfolio accounting or intra-trade capital contention.",
+    "- Strategy simulations preserve the current long-only/default P4 assumptions unless explicitly configured otherwise.",
+    "- Sample sizes are limited by selected windows, available bars, features, and regime labels.",
+    "- Some high-expectancy candidates have too few trades to trust.",
+    "- Candidate rankings are not validated until held-out and rolling-fold validation passes.",
+    "- Equity/ETF research is skipped until bars, features, and regimes are ingested.",
+    "- staticStrategyFullStats and portfolioComparisonStats re-run backtests independently of routingSummaries and portfolioSummaries; this is intentional to keep comparison sections isolated but doubles computation.",
+    "",
+  ];
+}
+
+function nextActionListSection(): string[] {
+  return [
+    "## Next Action List",
+    "",
+    "1. Keep Cross-Asset Opportunity Walk-Forward Validation as the gate before treating any candidate as edge.",
+    "2. Use Cross-Asset Validated Candidate Summary as the promotion checkpoint for candidate research.",
+    "3. Keep the Skipped Assets section for SPY, QQQ, AAPL, MSFT, and NVDA until equity/ETF bars are ingested.",
+    "4. Add or revise refined strategy variants without replacing base strategies.",
+    "5. Compare base vs refined variants across assets, regimes, held-out windows, and rolling folds.",
+    "6. Promote only variants that survive held-out and rolling-fold validation.",
+    "7. Add equity/ETF ingestion after the crypto research layer is stable.",
+    "8. Do not start risk engine or execution work until the research layer identifies validated candidates.",
+    "",
+  ];
+}
+
+function implementationSummarySection(heading = "### Implementation Summary"): string[] {
+  return [
+    heading,
+    "",
+    "- Expanded P4 metrics with expectancy, win/loss averages, streaks, exposure, duration, Sharpe/Sortino aliases, profit per bar, return-to-drawdown, and trade frequency.",
+    "- Added configurable A6 regime routing via `lib/backtest/strategyRouter.ts`; the engine accepts a router but does not hardcode mappings.",
+    "- Added portfolio research composition via `lib/backtest/portfolioBacktest.ts` with equal, custom, and regime-weighted allocations.",
+    "- Added multi-window regime validation via `lib/backtest/regimeValidation.ts` with non-overlapping regime windows and stability rankings.",
+    "- Tuned deterministic proxy regime classification toward 144-bar research windows, including shock clusters, high-volatility clusters, and range-bound CHOP behavior.",
+    "- Added OHLCV proxy regime fallback for TREND_UP, TREND_DOWN, HIGH_VOL, LOW_VOL, NEWS_SHOCK, and CHOP when persisted A6 snapshots are unavailable.",
+    "- Report regime source labels now distinguish GPT/A6 detector snapshots, deterministic proxy research snapshots, and OHLCV fallback labels.",
+    "- Added a Router Metric Audit section to cross-check average profit factor, global profit factor, no-trade windows, and per-window routed trades.",
+    "- Added a Best Strategy By Regime leaderboard using multi-metric ordinal ranks.",
+    "- Proxy validation uses meaningful windows by default: 144 bars preferred and 72 bars minimum. Coverage is reported honestly when fewer than the requested windows are available.",
+    "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
+    "- Added Router vs Best Static Strategy comparison with median return, max drawdown, global profit factor, global expectancy, trade count, and no-trade windows. Router verdict is VALIDATED only if it beats best-static-by-avg-return, best-static-by-ret/DD, equal-weight, and regime-weight simultaneously.",
+    "- Added regime-window purity diagnostics reporting min, median, and avg dominantRegimePct overall and per regime.",
+    "- Added Validation Configuration Comparison: side-by-side runs across windowBars in {144, 336} x minDominantRegimePct in {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
+    "- Added Router Configuration Comparison (In-Sample Discovery): experimental router configs are evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
+    "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows.",
+    "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
+    "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
+    "- Added Strategy Refinement Candidate Results: refined variants are compared against their base strategies on held-out test-window metrics and rolling fold consistency before receiving conservative research verdicts.",
+    "- Added P5 report run metadata, `reports/p5/index.csv` append-only report indexing, pooled held-out trade stats, fold denominator transparency, over-filtering warnings, and Gate Availability Diagnostics.",
+    "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
+    "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
+    "",
+  ];
+}
+
+function strategyAnalyticsSection(heading = "### Strategy Analytics"): string[] {
+  return [
+    heading,
+    "",
+    "New metrics now emitted by `BacktestMetrics`: `expectancy`, `avgWin`, `avgLoss`, `maxWinningStreak`, `maxLosingStreak`, `exposurePct`, `avgTradeDurationBars`, `avgTradeDurationMs`, `medianTradeDurationBars`, `medianTradeDurationMs`, `sharpeRatio`, `sortinoRatio`, `profitPerBar`, `returnToDrawdown`, and `tradeFrequency`.",
+    "",
+    "Backward-compatible P4 names remain in place: `averageWinner`, `averageLoser`, `expectancyPerTrade`, `sharpeApprox`, `sortinoApprox`, `exposureTimePct`, `averageHoldHours`, and `maxConsecutiveLosses`.",
+    "",
+    "Validation coverage added in `_smoke/backtest.ts`: zero trades, one trade, all winners, all losers, mixed outcomes, A6 routed research runs, and portfolio allocation safety.",
+    "",
+  ];
+}
+
+function architectureChangesSection(heading = "### Architecture Changes"): string[] {
+  return [
+    heading,
+    "",
+    "- A6 routing is configuration-driven through `createRegimeStrategyRouter`; the engine receives a router interface and does not know the regime map.",
+    "- Regime validation prefers persisted snapshots, but the report labels whether those rows came from the GPT/A6 detector or deterministic proxy research generation. If none exist, it builds in-memory OHLCV fallback labels.",
+    "- `regime -> []` and missing regime mappings produce no trade, allowing future capital-preservation experiments.",
+    "- Portfolio research validates `sum(weights) <= 100%` and rejects implicit leverage.",
+    "- Validation tooling accepts `symbol`, `exchange`, `assetType`, and `dataSource` for multi-asset expansion.",
+    "- PORTFOLIO_REGIME_WEIGHTS extracted as a module-level constant shared by portfolio summaries and comparison stats.",
+    "",
+  ];
+}
+
+function issuesFoundSection(heading = "### Issues Found"): string[] {
+  return [
+    heading,
+    "",
+    "- Deterministic proxy research snapshots and OHLCV fallback labels are not described as GPT/A6 detector validation.",
+    "- BTC-USD data coverage is reported per run as bars, executable bars, 1h features, daily features, and persisted regimes. If any coverage falls short, the report keeps sample counts lower rather than manufacturing windows.",
+    "- If meaningful proxy windows cannot provide the requested windows per regime, the report intentionally keeps lower sample counts rather than shrinking to 1-2 bar windows.",
+    "- Current portfolio research uses scaled simulated trade PnL and should not be treated as a full broker-grade portfolio accounting engine.",
     "",
   ];
 }
@@ -1357,7 +1593,7 @@ function routerMetricAuditSection(audit: RouterMetricAudit): string[] {
     .map(([strategyId, count]) => `${strategyId}: ${count}`)
     .join(", ") || "none";
   return [
-    "### Router Metric Audit",
+    "#### Router Metric Audit",
     "",
     "Router profit factor in the summary is the arithmetic average of non-null per-window profit factors. Windows with no losing trades have `null` profit factor and are excluded from that average, so the global trade-level profit factor below is included as a cross-check.",
     "",
@@ -1440,7 +1676,7 @@ function routerVsStaticSection(
     : "Router verdict: **NOT VALIDATED** — router does not beat all four benchmarks (best static by avg return, best static by ret/DD, equal-weight, regime-weight). Do not claim A6 routing outperforms until all four are exceeded.";
 
   return [
-    "### Router vs Best Static Strategy Comparison",
+    "#### Router vs Best Static Strategy Comparison",
     "",
     "All contestants evaluated across the same non-overlapping regime windows. ret/DD is the average of per-window (totalReturnPct / maxDrawdownPct) ratios; windows with zero drawdown are excluded from that average. Global profit factor and global expectancy aggregate all trades across all windows combined.",
     "",
@@ -1460,7 +1696,7 @@ function routerVsStaticSection(
 function regimePuritySection(selectedWindows: RegimeCandidateWindow[], minDominantRegimePct: number): string[] {
   const purity = computeRegimePurity(selectedWindows);
   return [
-    "### Regime-Window Purity Diagnostics",
+    "#### Regime-Window Purity Diagnostics",
     "",
     "dominantRegimePct is the share of bars in a window labeled with the window's dominant regime. All selected windows pass the configured minimum threshold.",
     "",
@@ -1855,7 +2091,7 @@ function routerConfigComparisonSection(
   ]);
 
   return [
-    "### Router Configuration Comparison (In-Sample Discovery)",
+    "#### Router Configuration Comparison (In-Sample Discovery)",
     "",
     "IN-SAMPLE: router maps are derived from the same primary-config windows they are evaluated on, so these results are hypothesis discovery, not validation. See Walk-Forward Router Validation below for out-of-sample evidence. " +
     "Five experimental router configurations evaluated against the default A6 router on the same primary-config windows. " +
@@ -1921,7 +2157,7 @@ function validationConfigComparisonSection(results: ConfigRunResult[], primaryLa
     ];
   });
   return [
-    "### Validation Configuration Comparison",
+    "#### Validation Configuration Comparison",
     "",
     "Side-by-side results across windowBars ∈ {144, 336} and minDominantRegimePct ∈ {50%, 65%}. ★ marks the primary config (most selected windows; tie-breaks: lower purity threshold, then smaller window). Regime column order: TU/TD/HV/LV/NS/CH. Router verdict is YES only if the router simultaneously beats best-static-by-avg-return, best-static-by-ret/DD, equal-weight, and regime-weight.",
     "",
@@ -2020,7 +2256,7 @@ function computeWalkForward(base: BacktestInput, selectedWindows: RegimeCandidat
 function walkForwardRouterSection(data: WalkForwardData | null): string[] {
   if (!data) {
     return [
-      "### Walk-Forward Router Validation",
+      "#### Walk-Forward Router Validation",
       "",
       "Fewer than 10 selected windows are available; at least 10 are needed for a meaningful chronological train/test split. Walk-forward validation skipped.",
       "",
@@ -2062,7 +2298,7 @@ function walkForwardRouterSection(data: WalkForwardData | null): string[] {
   });
 
   return [
-    "### Walk-Forward Router Validation",
+    "#### Walk-Forward Router Validation",
     "",
     "OUT-OF-SAMPLE: router maps are derived from train windows only, then the fixed maps are scored on held-out test windows. This is the honest test of whether the in-sample router improvements survive. Windows are split chronologically by start time (no shuffling). Verdict compares each router's test-period stats against test-period benchmarks (best static by avg return, best static by ret/DD, equal-weight, regime-weight); VALIDATED requires beating all four.",
     "",
@@ -2107,15 +2343,39 @@ interface WalkForwardSummary {
   finalVerdict: string;
 }
 
+interface RouterAuditSummary {
+  avgReturn: number | null;
+  globalProfitFactor: number | null;
+  globalExpectancy: number | null;
+}
+
+interface PortfolioReturnSummary {
+  equalWeightAvgReturn: number | null;
+  regimeWeightAvgReturn: number | null;
+}
+
 interface AssetSummary {
   symbol: string;
+  exchange: Exchange;
   assetType: string;
   regimeSourceLabel: string;
-  dataCoverage: { bars: number; features: number; dailyFeatures: number; regimes: number };
+  dataCoverage: {
+    startTs: string | null;
+    endTs: string | null;
+    bars: number;
+    executableBars: number;
+    features: number;
+    featureCoveragePct: number | null;
+    dailyFeatures: number;
+    regimes: number;
+    regimeCoveragePct: number | null;
+  };
   selectedWindows: number;
   windowsByRegime: Record<RegimeLabel, number>;
   medianPurity: number | null;
   avgPurity: number | null;
+  routerAuditSummary: RouterAuditSummary;
+  portfolioReturnSummary: PortfolioReturnSummary;
   bestStaticByReturn: { label: string; value: number | null };
   bestStaticByRtDD: { label: string; value: number | null };
   strategyFullStats: FullStats[];
@@ -2164,17 +2424,42 @@ function multiAssetCoverageSection(summaries: AssetSummary[]): string[] {
     "## Multi-Asset Data Coverage",
     "",
     "Per-asset data depth and window selection at the primary config. Assets with no stored bars are reported as skipped elsewhere and omitted here.",
+    "Windows by regime are ordered TREND_UP/TREND_DOWN/HIGH_VOL/LOW_VOL/NEWS_SHOCK/CHOP.",
     "",
     table(
-      ["asset", "type", "regime source", "bars", "features", "dailyFeat", "regimes", "windows", "by regime TU/TD/HV/LV/NS/CH", "med purity%", "avg purity%"],
+      [
+        "asset",
+        "type",
+        "exchange",
+        "start",
+        "end",
+        "bars",
+        "executable bars",
+        "features",
+        "feature coverage %",
+        "daily features",
+        "regimes",
+        "regime coverage %",
+        "regime source",
+        "windows",
+        "windows by regime",
+        "median purity %",
+        "average purity %",
+      ],
       summaries.map((s) => [
         s.symbol,
         s.assetType,
-        s.regimeSourceLabel,
+        s.exchange,
+        dateOnly(s.dataCoverage.startTs),
+        dateOnly(s.dataCoverage.endTs),
         String(s.dataCoverage.bars),
+        String(s.dataCoverage.executableBars),
         String(s.dataCoverage.features),
+        pctFmt(s.dataCoverage.featureCoveragePct),
         String(s.dataCoverage.dailyFeatures),
         String(s.dataCoverage.regimes),
+        pctFmt(s.dataCoverage.regimeCoveragePct),
+        s.regimeSourceLabel,
         String(s.selectedWindows),
         REQUIRED_REGIMES.map((r) => String(s.windowsByRegime[r])).join("/"),
         fmt(s.medianPurity),
@@ -2205,7 +2490,9 @@ function crossAssetOpportunitySection(summaries: AssetSummary[]): string[] {
   return [
     "## Cross-Asset Opportunity Ranking",
     "",
-    "IN-SAMPLE HYPOTHESIS DISCOVERY ONLY: every asset/regime/strategy combination with at least one trade, ranked by global expectancy (trade-level, pooled within each regime's windows). This identifies where strategy edge may exist across the opportunity universe, but it is not validated edge. Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.",
+    "IN-SAMPLE HYPOTHESIS DISCOVERY ONLY.",
+    "",
+    "This section ranks asset/regime/strategy combinations using the selected research windows. It is useful for finding candidates to investigate, but it should not be treated as validated edge. Validation requires the Cross-Asset Opportunity Walk-Forward Validation section below. Rows are ranked by global expectancy (trade-level, pooled within each regime's windows). Global PF and global expectancy aggregate all trades; purity is the median dominantRegimePct of that regime's windows. Top 30 shown.",
     "",
     table(
       ["#", "asset", "regime", "strategy", "samples", "med purity%", "avg ret%", "global PF", "global expectancy ($)", "max DD%", "ret/DD", "trades"],
@@ -2398,7 +2685,7 @@ function momentumRefinedTestPassBreakdownSection(summaries: AssetSummary[]): str
     .sort((a, b) => (b.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.candidate.test.avgReturn ?? Number.NEGATIVE_INFINITY));
 
   return [
-    "## Momentum Refined Test-Pass Breakdown",
+    "### Momentum Refined Test-Pass Breakdown",
     "",
     `momentum_continuation_refined_v1 remains **NOT VALIDATED**. These rows passed the held-out 70/30 test gates but did not pass the full rolling-validation requirement, so none are promoted to validated edge or router defaults.`,
     "",
@@ -2672,7 +2959,7 @@ function gateAvailabilityDiagnosticsSection(summaries: AssetSummary[]): string[]
   const rows = aggregateGateDiagnostics(summaries);
   if (rows.length === 0) return [];
   return [
-    "## Gate Availability Diagnostics",
+    "### Gate Availability Diagnostics",
     "",
     "Diagnostics evaluate each configured gate independently across base-strategy signal contexts that pass the refined variant's regime and reliability filters. `unavailable passes` are pass-open cases where a gate reason includes unavailable source data; they are useful for spotting indicators that are not actually constraining a variant.",
     "",
@@ -2696,7 +2983,14 @@ function gateAvailabilityDiagnosticsSection(summaries: AssetSummary[]): string[]
 }
 
 function strategyRefinementCandidateResultsSection(summaries: AssetSummary[]): string[] {
-  if (summaries.length === 0) return [];
+  if (summaries.length === 0) {
+    return [
+      "## Strategy Refinement Candidate Results",
+      "",
+      "No assets had sufficient stored data for strategy refinement candidate analysis.",
+      "",
+    ];
+  }
   const candidates = summaries.flatMap((summary) => summary.opportunityWalkForward?.candidates ?? []);
   const rows = REFINED_STRATEGY_RULE_SUMMARIES.map((rule) => {
     const baseFull = aggregateStrategyStats(summaries, rule.baseStrategyId);
@@ -2849,6 +3143,128 @@ function crossAssetRouterValidationSection(summaries: AssetSummary[]): string[] 
   ];
 }
 
+function routerAuditSummarySection(summaries: AssetSummary[]): string[] {
+  if (summaries.length === 0) {
+    return [
+      "## Router Audit Summary",
+      "",
+      "No assets had enough data for router audit summarization.",
+      "",
+    ];
+  }
+
+  return [
+    "## Router Audit Summary",
+    "",
+    "Primary-window router audit metrics are in-sample diagnostics from the selected research windows. Test verdict, folds validated, and final verdict come from out-of-sample walk-forward validation. A router is not validated unless it beats best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight benchmarks out-of-sample.",
+    "",
+    table(
+      ["asset", "router avg return", "router global PF", "router global expectancy", "best static by return", "best static by ret/DD", "equal-weight return", "regime-weight return", "test verdict", "folds validated", "final verdict"],
+      summaries.map((s) => {
+        const wf = s.walkForward;
+        return [
+          s.symbol,
+          fmt(s.routerAuditSummary.avgReturn),
+          fmt(s.routerAuditSummary.globalProfitFactor),
+          fmt(s.routerAuditSummary.globalExpectancy, 4),
+          `${s.bestStaticByReturn.label} (${fmt(s.bestStaticByReturn.value)}%)`,
+          `${s.bestStaticByRtDD.label} (${fmt(s.bestStaticByRtDD.value)})`,
+          fmt(s.portfolioReturnSummary.equalWeightAvgReturn),
+          fmt(s.portfolioReturnSummary.regimeWeightAvgReturn),
+          wf ? (wf.bestRouterTestVerdict ? "VALIDATED" : "NOT VALIDATED") : "n/a",
+          wf ? `${wf.foldsValidated}/${wf.totalFolds}` : "n/a",
+          wf ? wf.finalVerdict : "INSUFFICIENT WINDOWS",
+        ];
+      }),
+    ),
+    "",
+  ];
+}
+
+function rankMetric(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+function compareRegimeStrategyStats(a: RegimeStrategyStat, b: RegimeStrategyStat): number {
+  const expectancyDelta = rankMetric(b.globalExpectancy) - rankMetric(a.globalExpectancy);
+  if (expectancyDelta !== 0) return expectancyDelta;
+  const returnDelta = rankMetric(b.avgReturn) - rankMetric(a.avgReturn);
+  if (returnDelta !== 0) return returnDelta;
+  const pfDelta = rankMetric(b.globalProfitFactor) - rankMetric(a.globalProfitFactor);
+  if (pfDelta !== 0) return pfDelta;
+  return b.tradeCount - a.tradeCount;
+}
+
+function bestRegimeStrategyStat(rows: RegimeStrategyStat[]): RegimeStrategyStat | null {
+  const eligible = rows.filter((row) => row.tradeCount > 0 && row.globalExpectancy !== null);
+  if (eligible.length === 0) return null;
+  return [...eligible].sort(compareRegimeStrategyStats)[0];
+}
+
+function strategyStatLabel(stat: RegimeStrategyStat | null): string {
+  return stat?.strategyId ?? "none";
+}
+
+function bestStrategyByRegimeVerdict(
+  summary: AssetSummary,
+  leader: RegimeStrategyStat | null,
+  counts: Map<string, number>,
+  totalFolds: number,
+): string {
+  if (!leader) return "NO TRADE SIGNAL";
+  const candidate = summary.opportunityWalkForward?.candidates.find((row) =>
+    row.regime === leader.regime && row.strategyId === leader.strategyId,
+  );
+  if (!candidate) return "IN-SAMPLE ONLY";
+  const foldsValidated = counts.get(opportunityCandidateKey(candidate)) ?? 0;
+  return opportunityFinalVerdict(candidate, foldsValidated, totalFolds);
+}
+
+function bestStrategyByRegimeSummarySection(summaries: AssetSummary[]): string[] {
+  if (summaries.length === 0) {
+    return [
+      "## Best Strategy By Regime Summary",
+      "",
+      "No assets had enough data for per-regime strategy summarization.",
+      "",
+    ];
+  }
+
+  const { totalFolds, counts } = opportunityFoldValidationCounts(summaries);
+  const rows = summaries.flatMap((summary) =>
+    REQUIRED_REGIMES.map((regime) => {
+      const regimeStats = summary.regimeStrategyStats.filter((row) => row.regime === regime);
+      const bestBase = bestRegimeStrategyStat(regimeStats.filter((row) => BASE_STRATEGY_IDS.has(row.strategyId)));
+      const bestRefined = bestRegimeStrategyStat(regimeStats.filter((row) => REFINED_STRATEGY_IDS.has(row.strategyId)));
+      const leaders = [bestBase, bestRefined].filter((row): row is RegimeStrategyStat => row !== null);
+      const leader = leaders.length > 0 ? [...leaders].sort(compareRegimeStrategyStats)[0] : null;
+      return [
+        summary.symbol,
+        regime,
+        strategyStatLabel(bestBase),
+        strategyStatLabel(bestRefined),
+        fmt(leader?.avgReturn),
+        fmt(leader?.globalProfitFactor),
+        fmt(leader?.globalExpectancy, 4),
+        String(leader?.tradeCount ?? 0),
+        bestStrategyByRegimeVerdict(summary, leader, counts, totalFolds),
+      ];
+    }),
+  );
+
+  return [
+    "## Best Strategy By Regime Summary",
+    "",
+    "One row per analyzed asset/regime. Best base and best refined strategies are selected from in-sample selected-window results using global expectancy, then average return, global profit factor, and trade count as tie-breakers. Metric and verdict columns describe the stronger of the best base and best refined candidates; verdicts use the existing opportunity walk-forward validation when available.",
+    "",
+    table(
+      ["asset", "regime", "best base strategy", "best refined strategy", "avg return", "global PF", "global expectancy", "trade count", "verdict"],
+      rows,
+    ),
+    "",
+  ];
+}
+
 function featureAlignedBars(bars: Bar[], features: FeatureSnapshot[]): Bar[] {
   if (features.length === 0) return [];
   const featureTs = new Set(features.map((feature) => feature.ts));
@@ -2912,7 +3328,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     : await fetchBounds(instrument.symbol, instrument.exchange, timeframe);
   if (!bounds) {
     const markdown = [
-      `## ${instrument.symbol}`,
+      `### ${instrument.symbol}`,
       "",
       `Instrument: symbol=${instrument.symbol}, exchange=${instrument.exchange}, assetType=${instrument.assetType}, dataSource=${instrument.dataSource}`,
       "",
@@ -2992,15 +3408,39 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
   const gateDiagnostics = gateDiagnosticsForWindows(baseInput, validation.selectedWindows);
   const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
   const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
+  const equalWeightPortfolio = portfolioFull.find((row) => row.label === "equal_weight");
+  const regimeWeightPortfolio = portfolioFull.find((row) => row.label === "regime_weight");
+  const coverageStartTs = bars[0]?.ts ?? bounds.startTs;
+  const coverageEndTs = bars[bars.length - 1]?.ts ?? bounds.endTs;
   const summary: AssetSummary = {
     symbol: instrument.symbol,
+    exchange: instrument.exchange,
     assetType: instrument.assetType,
     regimeSourceLabel: sourceDisplayLabel(regimeSourceDisplay),
-    dataCoverage: { bars: bars.length, features: features.length, dailyFeatures: dailyFeatures.length, regimes: persistedRegimes.length },
+    dataCoverage: {
+      startTs: coverageStartTs,
+      endTs: coverageEndTs,
+      bars: bars.length,
+      executableBars: executableBars.length,
+      features: features.length,
+      featureCoveragePct: pctOf(features.length, bars.length),
+      dailyFeatures: dailyFeatures.length,
+      regimes: regimes.length,
+      regimeCoveragePct: pctOf(regimes.length, bars.length),
+    },
     selectedWindows: validation.selectedWindows.length,
     windowsByRegime: coverageCounts(validation.selectedWindows),
     medianPurity: primaryResult.purity.medianDominantRegimePct,
     avgPurity: primaryResult.purity.avgDominantRegimePct,
+    routerAuditSummary: {
+      avgReturn: routerAudit.averageReturnPct,
+      globalProfitFactor: routerAudit.globalProfitFactor,
+      globalExpectancy: routerAudit.globalExpectancy,
+    },
+    portfolioReturnSummary: {
+      equalWeightAvgReturn: equalWeightPortfolio?.avgReturn ?? null,
+      regimeWeightAvgReturn: regimeWeightPortfolio?.avgReturn ?? null,
+    },
     bestStaticByReturn: { label: bestByReturn?.label ?? "n/a", value: bestByReturn?.avgReturn ?? null },
     bestStaticByRtDD: { label: bestByRtDD?.label ?? "n/a", value: bestByRtDD?.avgReturnToDrawdown ?? null },
     strategyFullStats: staticFull,
@@ -3024,7 +3464,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     .join(", ");
 
   const markdown = [
-    `## ${instrument.symbol}`,
+    `### ${instrument.symbol}`,
     "",
     `Instrument: symbol=${instrument.symbol}, exchange=${instrument.exchange}, assetType=${instrument.assetType}, dataSource=${instrument.dataSource}`,
     `Range: ${bounds.startTs} to ${bounds.endTs}`,
@@ -3036,24 +3476,24 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     `Purity: median=${fmt(primaryResult.purity.medianDominantRegimePct)}%, avg=${fmt(primaryResult.purity.avgDominantRegimePct)}%`,
     sourceCaution(regimeSourceDisplay) ?? "",
     warnings.length > 0 ? "" : "",
-    warnings.length > 0 ? "### Validation Warnings" : "",
+    warnings.length > 0 ? "#### Validation Warnings" : "",
     ...warnings.map((warning) => `- ${warning}`),
     "",
-    "### Multi-Window Results",
+    "#### Multi-Window Results",
     aggregateTable(validation.aggregates),
     "",
-    "### Best Strategy By Regime",
+    "#### Best Strategy By Regime",
     "",
     "Composite score is the average ordinal rank across avg return, median return, max drawdown, expectancy, profit factor, win rate, exposure, and return-to-drawdown. Lower score is better; drawdown and exposure are ranked low-to-high.",
     "",
     bestStrategyByRegimeTable(validation.aggregates),
     "",
-    "### A6 Routing Results",
+    "#### A6 Routing Results",
     summaryTable(routing),
     "",
     ...routerMetricAuditSection(routerAudit),
     "",
-    "### Portfolio Results",
+    "#### Portfolio Results",
     summaryTable(portfolios),
     "",
     ...routerVsStaticSection(staticFull, routerFull, portfolioFull),
@@ -3061,7 +3501,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     ...walkForwardRouterSection(walkForwardData),
     ...regimePuritySection(validation.selectedWindows, minPurityPct),
     ...validationConfigComparisonSection(configResults, primaryResult.config.label),
-    "### Stability Rankings",
+    "#### Stability Rankings",
     table(
       ["regime", "strategy", "samples", "score", "returnStd", "drawdownStd", "profitFactorStd", "expectancyStd"],
       validation.stabilityRankings.map((row) => [
@@ -3105,13 +3545,22 @@ async function main(): Promise<void> {
         ...crossAssetOpportunitySection(summaries),
         ...crossAssetOpportunityWalkForwardSection(summaries),
         ...crossAssetValidatedCandidateSummarySection(summaries),
-        ...momentumRefinedTestPassBreakdownSection(summaries),
-        ...strategyRefinementCandidateResultsSection(summaries),
-        ...gateAvailabilityDiagnosticsSection(summaries),
-        ...strategyRefinementComparisonSection(summaries),
         ...crossAssetRouterValidationSection(summaries),
+        ...routerAuditSummarySection(summaries),
+        ...bestStrategyByRegimeSummarySection(summaries),
       ]
-    : ["## Multi-Asset Data Coverage", "", "No assets had sufficient stored data to analyze.", ""];
+    : [
+        "## Multi-Asset Data Coverage",
+        "",
+        "No assets had sufficient stored data to analyze.",
+        "",
+        ...crossAssetOpportunitySection(summaries),
+        ...crossAssetOpportunityWalkForwardSection(summaries),
+        ...crossAssetValidatedCandidateSummarySection(summaries),
+        ...crossAssetRouterValidationSection(summaries),
+        ...routerAuditSummarySection(summaries),
+        ...bestStrategyByRegimeSummarySection(summaries),
+      ];
 
   const metadata: RunMetadata = {
     branch: gitValue("rev-parse --abbrev-ref HEAD"),
@@ -3133,83 +3582,28 @@ async function main(): Promise<void> {
     resolvedAssetLine(resolution, summaries),
     "The historical BTC-only report remains at `P4_EXPANDED_STRATEGY_ANALYTICS_AND_ROUTING_REPORT.md`.",
     "",
-    ...runMetadataSection(metadata),
-    "## Implementation Summary",
-    "",
-    "- Expanded P4 metrics with expectancy, win/loss averages, streaks, exposure, duration, Sharpe/Sortino aliases, profit per bar, return-to-drawdown, and trade frequency.",
-    "- Added configurable A6 regime routing via `lib/backtest/strategyRouter.ts`; the engine accepts a router but does not hardcode mappings.",
-    "- Added portfolio research composition via `lib/backtest/portfolioBacktest.ts` with equal, custom, and regime-weighted allocations.",
-    "- Added multi-window regime validation via `lib/backtest/regimeValidation.ts` with non-overlapping regime windows and stability rankings.",
-    "- Tuned deterministic proxy regime classification toward 144-bar research windows, including shock clusters, high-volatility clusters, and range-bound CHOP behavior.",
-    "- Added OHLCV proxy regime fallback for TREND_UP, TREND_DOWN, HIGH_VOL, LOW_VOL, NEWS_SHOCK, and CHOP when persisted A6 snapshots are unavailable.",
-    "- Report regime source labels now distinguish GPT/A6 detector snapshots, deterministic proxy research snapshots, and OHLCV fallback labels.",
-    "- Added a Router Metric Audit section to cross-check average profit factor, global profit factor, no-trade windows, and per-window routed trades.",
-    "- Added a Best Strategy By Regime leaderboard using multi-metric ordinal ranks.",
-    "- Proxy validation uses meaningful windows by default: 144 bars preferred and 72 bars minimum. Coverage is reported honestly when fewer than the requested windows are available.",
-    "- Kept persistence schema unchanged because run metrics are stored as JSONB.",
-    "- Added Router vs Best Static Strategy comparison with median return, max drawdown, global profit factor, global expectancy, trade count, and no-trade windows. Router verdict is VALIDATED only if it beats best-static-by-avg-return, best-static-by-ret/DD, equal-weight, and regime-weight simultaneously.",
-    "- Added regime-window purity diagnostics reporting min, median, and avg dominantRegimePct overall and per regime.",
-    "- Added Validation Configuration Comparison: side-by-side runs across windowBars ∈ {144, 336} × minDominantRegimePct ∈ {50%, 65%}. Primary config (most windows) drives the detailed sections; all four configs appear in the comparison table.",
-    "- Added Router Configuration Comparison (In-Sample Discovery): five experimental router configs (conservative, momentum_only, top_by_regime_return, top_by_regime_retdd, no_trade_in_bad_regimes) evaluated against the default A6 router and static benchmarks on the primary-config windows. Maps are derived at runtime from the primary validation aggregates and explicitly labeled as in-sample hypothesis discovery.",
-    "- Added Walk-Forward Router Validation: chronological 70/30 train/test split plus rolling expanding-window folds. Router maps are derived from train windows only and scored on held-out test windows; verdict requires beating best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on the test period.",
-    "- Added Cross-Asset Opportunity Walk-Forward Validation: asset/regime/strategy candidates are ranked from train windows only, scored on held-out test windows, and checked across rolling expanding-window folds before any candidate can be called validated.",
-    "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
-    "- Refined momentum_continuation_refined_v1 for Priority 8B with short-term momentum confirmation, medium-trend filtering, macro-not-strongly-bearish gating, volume-not-dead filtering, overextension avoidance, and a tightly gated TREND_DOWN survival experiment.",
-    "- Refined breakout_expansion_refined_v1 for Priority 8C as a TREND_UP/HIGH_VOL specialist with volatility-expansion, volume, breakout-structure, trend, macro-alignment, overextension, and reliability gates.",
-    "- Refined trend_pullback_refined_v1 for Priority 8D as a TREND_UP/HIGH_VOL specialist with strong macro-trend, support-zone pullback, intact-trend, momentum-reset, volume, overextension, and reliability gates.",
-    "- Refined mean_reversion_refined_v1 for Priority 8E as a LOW_VOL/CHOP defensive range specialist with oversold, range-bound, non-aggressive-volatility, mean-stretch, reversion-target, and reliability gates.",
-    "- Added Strategy Refinement Candidate Results: refined variants are compared against their base strategies on held-out test-window metrics and rolling fold consistency before receiving conservative research verdicts.",
-    "- Added P5 report run metadata, `reports/p5/index.csv` append-only report indexing, pooled held-out trade stats, fold denominator transparency, over-filtering warnings, and Gate Availability Diagnostics.",
-    "- Added Momentum Refined Test-Pass Breakdown: refined momentum improved quality metrics but remains NOT VALIDATED because its held-out test-pass candidates did not pass rolling validation.",
-    "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
-    "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
-    "",
-    "## Strategy Analytics",
-    "",
-    "New metrics now emitted by `BacktestMetrics`: `expectancy`, `avgWin`, `avgLoss`, `maxWinningStreak`, `maxLosingStreak`, `exposurePct`, `avgTradeDurationBars`, `avgTradeDurationMs`, `medianTradeDurationBars`, `medianTradeDurationMs`, `sharpeRatio`, `sortinoRatio`, `profitPerBar`, `returnToDrawdown`, and `tradeFrequency`.",
-    "",
-    "Backward-compatible P4 names remain in place: `averageWinner`, `averageLoser`, `expectancyPerTrade`, `sharpeApprox`, `sortinoApprox`, `exposureTimePct`, `averageHoldHours`, and `maxConsecutiveLosses`.",
-    "",
-    "Validation coverage added in `_smoke/backtest.ts`: zero trades, one trade, all winners, all losers, mixed outcomes, A6 routed research runs, and portfolio allocation safety.",
-    "",
-    "## Architecture Changes",
-    "",
-    "- A6 routing is configuration-driven through `createRegimeStrategyRouter`; the engine receives a router interface and does not know the regime map.",
-    "- Regime validation prefers persisted snapshots, but the report labels whether those rows came from the GPT/A6 detector or deterministic proxy research generation. If none exist, it builds in-memory OHLCV fallback labels.",
-    "- `regime -> []` and missing regime mappings produce no trade, allowing future capital-preservation experiments.",
-    "- Portfolio research validates `sum(weights) <= 100%` and rejects implicit leverage.",
-    "- Validation tooling accepts `symbol`, `exchange`, `assetType`, and `dataSource` for multi-asset expansion.",
-    "- PORTFOLIO_REGIME_WEIGHTS extracted as a module-level constant shared by portfolio summaries and comparison stats.",
-    "",
-    "## Issues Found",
-    "",
-    "- Deterministic proxy research snapshots and OHLCV fallback labels are not described as GPT/A6 detector validation.",
-    "- BTC-USD data coverage is reported per run as bars, executable bars, 1h features, daily features, and persisted regimes. If any coverage falls short, the report keeps sample counts lower rather than manufacturing windows.",
-    "- If meaningful proxy windows cannot provide the requested windows per regime, the report intentionally keeps lower sample counts rather than shrinking to 1-2 bar windows.",
-    "- Current portfolio research uses scaled simulated trade PnL and should not be treated as a full broker-grade portfolio accounting engine.",
-    "",
-    "## Limitations",
-    "",
-    "- This remains research only. No live, broker, paper trading, order manager, or capital deployment path is introduced.",
-    "- Portfolio equity realizes scaled trade PnL at exits and does not model intra-trade capital contention.",
-    "- Strategy simulations preserve the current long-only/default P4 assumptions unless explicitly configured otherwise.",
-    "- Statistical confidence depends on available persisted bars, features, and A6 regime snapshots. Proxy mode improves coverage but is not a substitute for persisted A6 labels.",
-    "- staticStrategyFullStats and portfolioComparisonStats re-run backtests independently of routingSummaries and portfolioSummaries; this is intentional to keep the comparison section isolated but doubles computation.",
-    "",
+    ...executiveSummarySection(resolution, summaries),
+    ...regimeSourceExplanationSection(),
     ...discoveryReadinessSection(resolution.discovery),
     ...skippedEquitySections,
     ...crossAssetSections,
+    ...strategyRecommendationSummarySection(),
+    ...knownLimitationsSection(),
+    ...nextActionListSection(),
+    ...strategyRefinementCandidateResultsSection(summaries),
+    ...strategyRefinementComparisonSection(summaries),
+    ...momentumRefinedTestPassBreakdownSection(summaries),
+    ...gateAvailabilityDiagnosticsSection(summaries),
     "## Per-Asset Detail",
     "",
+    "Supporting run metadata, implementation context, and per-asset detail tables for the top-level research conclusions.",
+    "",
+    ...runMetadataSection(metadata).map((line) => line === "## Run Metadata" ? "### Run Metadata" : line),
+    ...implementationSummarySection(),
+    ...strategyAnalyticsSection(),
+    ...architectureChangesSection(),
+    ...issuesFoundSection(),
     ...sections,
-    "## Recommendations",
-    "",
-    "1. Prefer decisions based on stability rankings, walk-forward out-of-sample evidence, and expectancy — not isolated in-sample total-return winners.",
-    "2. Treat the Cross-Asset Opportunity Ranking as a hypothesis generator; confirm any edge with the walk-forward verdict before acting.",
-    "3. No router is validated unless it beats best-static-by-return, best-static-by-ret/DD, equal-weight, and regime-weight on held-out test windows.",
-    "4. Increase each regime to 20 non-overlapping windows per asset before drawing production conclusions.",
-    "5. Add equity/ETF ingestion (SPY/QQQ/AAPL/MSFT/NVDA) so the same pipeline can rank equities; they are skipped honestly until a data source exists.",
-    "",
   ].join("\n");
 
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });

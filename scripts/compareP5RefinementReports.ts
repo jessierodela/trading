@@ -108,12 +108,13 @@ function discoverReports(): ReportSpec[] {
 function extractSection(markdown: string, title: string): string | null {
   if (!markdown) return null;
   const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const startMatch = markdown.match(new RegExp(`^## ${escaped}\\s*$`, "m"));
+  const startMatch = markdown.match(new RegExp(`^(#{2,3}) ${escaped}\\s*$`, "m"));
   if (!startMatch || startMatch.index === undefined) return null;
+  const level = startMatch[1].length;
   const start = startMatch.index;
   const rest = markdown.slice(start + startMatch[0].length);
-  const next = rest.search(/^## /m);
-  return `## ${title}${next === -1 ? rest : rest.slice(0, next)}`.trim();
+  const next = rest.search(new RegExp(`^#{2,${level}} `, "m"));
+  return `${"#".repeat(level)} ${title}${next === -1 ? rest : rest.slice(0, next)}`.trim();
 }
 
 function parseFirstTable(section: string | null): TableData | null {
