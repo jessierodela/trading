@@ -192,19 +192,30 @@ const RUN_CONFIGS: RunConfig[] = [
   { label: "336b/65%", windowBars: 336, minDominantRegimePct: 65 },
 ];
 
+type ResearchAssetType = "CRYPTO" | "EQUITY" | "ETF";
+
 const ETF_SYMBOLS = new Set(["DIA", "IWM", "QQQ", "SPY", "VOO", "VTI"]);
 const BASE_STRATEGY_IDS = new Set<string>(REFINED_STRATEGY_PAIRS.map((pair) => pair.baseStrategyId));
 const REFINED_STRATEGY_IDS = new Set<string>(REFINED_STRATEGY_PAIRS.map((pair) => pair.refinedStrategyId));
 
-interface DiscoveryRow {
+export interface AssetReadinessDiagnostics {
   symbol: string;
   exchange: Exchange;
-  barCount: number;
-  featureCount: number;
-  featureCoveragePct: number;
-  regimeCount: number;
-  regimeCoveragePct: number;
-  exclusionReasons: string[];
+  assetType: ResearchAssetType;
+  bars1h: number;
+  features1h: number;
+  featureCoverage1hPct: number | null;
+  dailyBars: number;
+  dailyFeatures: number;
+  dailyFeatureCoveragePct: number | null;
+  regimeLabels: number;
+  regimeCoveragePct: number | null;
+  isResearchReady: boolean;
+  notReadyReason: string | null;
+}
+
+interface DiscoveryRow extends AssetReadinessDiagnostics {
+  selectionReason: string | null;
 }
 
 interface DiscoveryFilters {
@@ -282,16 +293,17 @@ interface RefinementFoldCounts {
   missingRefined: number;
 }
 
-interface RunMetadata {
+interface ReportRunMetadata {
   branch: string;
-  commitSha: string;
+  generatedFromCommit: string;
+  committedInCommit?: string | null;
   runTimestamp: string;
   reportPath: string;
+  logPath?: string | null;
   strategyVersions: Record<string, string>;
   featureVersion: string;
   windowConfig: string;
   symbolsDiscovered: string[];
-  p5ReportPathEnv: string;
 }
 
 function parseSymbolList(raw: string): string[] {
@@ -301,7 +313,7 @@ function parseSymbolList(raw: string): string[] {
     .filter(Boolean);
 }
 
-function inferAssetType(symbol: string): BacktestAssetType {
+function inferAssetType(symbol: string): ResearchAssetType {
   const normalized = symbol.trim().toUpperCase();
   if (normalized.includes("-USD")) return "CRYPTO";
   if (ETF_SYMBOLS.has(normalized)) return "ETF";
@@ -375,59 +387,91 @@ async function discoverStoredInstruments(): Promise<DiscoveryResult> {
   const requireRegimeSnapshots = envBoolean("REQUIRE_REGIME_SNAPSHOTS", false);
   const maxAssets = maxAssetsRaw ? envPositiveInteger("MAX_ASSETS", 1) : null;
 
-  const params: unknown[] = ["1h", FEATURE_VERSION];
-  const exchangeClause = exchangeFilter ? "and b.exchange = $3" : "";
+  const params: unknown[] = [FEATURE_VERSION];
+  const exchangeClause = exchangeFilter ? "and b.exchange = $2" : "";
   if (exchangeFilter) params.push(exchangeFilter);
 
   const { rows } = await pool.query<{
     symbol: string;
     exchange: Exchange;
-    bar_count: string;
-    feature_count: string;
-    regime_count: string;
+    bars_1h: string;
+    features_1h: string;
+    daily_bars: string;
+    daily_features: string;
+    regime_labels: string;
   }>(
     `with bar_counts as (
-       select b.symbol, b.exchange, count(*)::text as bar_count
+       select b.symbol, b.exchange, count(*)::text as bars_1h
        from market_bars b
-       where b.timeframe = $1
+       where b.timeframe = '1h'
          ${exchangeClause}
        group by b.symbol, b.exchange
      ),
      feature_counts as (
-       select b.symbol, b.exchange, count(distinct b.ts)::text as feature_count
+       select b.symbol, b.exchange, count(distinct b.ts)::text as features_1h
        from market_bars b
        join feature_snapshots f
          on f.symbol = b.symbol
         and f.exchange = b.exchange
         and f.timeframe = b.timeframe
         and f.ts = b.ts
-        and f.feature_version = $2
-       where b.timeframe = $1
+        and f.feature_version = $1
+       where b.timeframe = '1h'
+         ${exchangeClause}
+       group by b.symbol, b.exchange
+     ),
+     daily_bar_counts as (
+       select b.symbol, b.exchange, count(*)::text as daily_bars
+       from market_bars b
+       where b.timeframe = '1d'
+         ${exchangeClause}
+       group by b.symbol, b.exchange
+     ),
+     daily_feature_counts as (
+       select b.symbol, b.exchange, count(distinct b.ts)::text as daily_features
+       from market_bars b
+       join feature_snapshots f
+         on f.symbol = b.symbol
+        and f.exchange = b.exchange
+        and f.timeframe = b.timeframe
+        and f.ts = b.ts
+        and f.feature_version = $1
+       where b.timeframe = '1d'
          ${exchangeClause}
        group by b.symbol, b.exchange
      ),
      regime_counts as (
-       select b.symbol, b.exchange, count(distinct b.ts)::text as regime_count
+       select b.symbol, b.exchange, count(distinct b.ts)::text as regime_labels
        from market_bars b
        join regime_snapshots r
          on r.symbol = b.symbol
         and r.exchange = b.exchange
         and r.ts = b.ts
-        and (r.feature_version is null or r.feature_version = $2)
-       where b.timeframe = $1
+        and (r.feature_version is null or r.feature_version = $1)
+       where b.timeframe = '1h'
          ${exchangeClause}
        group by b.symbol, b.exchange
+     ),
+     instrument_keys as (
+       select symbol, exchange from bar_counts
+       union
+       select symbol, exchange from daily_bar_counts
      )
      select
-       b.symbol,
-       b.exchange,
-       b.bar_count,
-       coalesce(f.feature_count, '0') as feature_count,
-       coalesce(r.regime_count, '0') as regime_count
-     from bar_counts b
-     left join feature_counts f on f.symbol = b.symbol and f.exchange = b.exchange
-     left join regime_counts r on r.symbol = b.symbol and r.exchange = b.exchange
-     order by b.bar_count::int desc, b.symbol asc, b.exchange asc`,
+       k.symbol,
+       k.exchange,
+       coalesce(b.bars_1h, '0') as bars_1h,
+       coalesce(f.features_1h, '0') as features_1h,
+       coalesce(db.daily_bars, '0') as daily_bars,
+       coalesce(df.daily_features, '0') as daily_features,
+       coalesce(r.regime_labels, '0') as regime_labels
+     from instrument_keys k
+     left join bar_counts b on b.symbol = k.symbol and b.exchange = k.exchange
+     left join feature_counts f on f.symbol = k.symbol and f.exchange = k.exchange
+     left join daily_bar_counts db on db.symbol = k.symbol and db.exchange = k.exchange
+     left join daily_feature_counts df on df.symbol = k.symbol and df.exchange = k.exchange
+     left join regime_counts r on r.symbol = k.symbol and r.exchange = k.exchange
+     order by coalesce(b.bars_1h, '0')::int desc, k.symbol asc, k.exchange asc`,
     params,
   );
 
@@ -439,38 +483,53 @@ async function discoverStoredInstruments(): Promise<DiscoveryResult> {
     exchange: exchangeFilter || null,
   };
   const diagnostics: DiscoveryRow[] = rows.map((row) => {
-    const barCount = Number(row.bar_count);
-    const featureCount = Number(row.feature_count);
-    const regimeCount = Number(row.regime_count);
-    const featureCoveragePct = barCount === 0 ? 0 : featureCount / barCount * 100;
-    const regimeCoveragePct = barCount === 0 ? 0 : regimeCount / barCount * 100;
-    const exclusionReasons: string[] = [];
-    if (barCount < minAssetBars) exclusionReasons.push(`bars ${barCount} < ${minAssetBars}`);
-    if (featureCoveragePct < minFeatureCoveragePct) {
-      exclusionReasons.push(`feature coverage ${featureCoveragePct.toFixed(2)}% < ${minFeatureCoveragePct}%`);
+    const bars1h = Number(row.bars_1h);
+    const features1h = Number(row.features_1h);
+    const dailyBars = Number(row.daily_bars);
+    const dailyFeatures = Number(row.daily_features);
+    const regimeLabels = Number(row.regime_labels);
+    const featureCoverage1hPct = pctOf(features1h, bars1h);
+    const dailyFeatureCoveragePct = pctOf(dailyFeatures, dailyBars);
+    const regimeCoveragePct = pctOf(regimeLabels, bars1h);
+    const notReadyReasons: string[] = [];
+    if (bars1h < minAssetBars) notReadyReasons.push(`1h bars ${bars1h} < ${minAssetBars}`);
+    if (featureCoverage1hPct === null || featureCoverage1hPct < minFeatureCoveragePct) {
+      notReadyReasons.push(`1h feature coverage ${fmt(featureCoverage1hPct)}% < ${minFeatureCoveragePct}%`);
     }
-    if (requireRegimeSnapshots && regimeCoveragePct < minFeatureCoveragePct) {
-      exclusionReasons.push(`regime coverage ${regimeCoveragePct.toFixed(2)}% < ${minFeatureCoveragePct}%`);
+    if (dailyBars === 0) {
+      notReadyReasons.push("daily bars missing");
+    } else if (dailyFeatureCoveragePct === null || dailyFeatureCoveragePct < minFeatureCoveragePct) {
+      notReadyReasons.push(`daily feature coverage ${fmt(dailyFeatureCoveragePct)}% < ${minFeatureCoveragePct}%`);
     }
+    if (requireRegimeSnapshots && (regimeCoveragePct === null || regimeCoveragePct < minFeatureCoveragePct)) {
+      notReadyReasons.push(`regime coverage ${fmt(regimeCoveragePct)}% < ${minFeatureCoveragePct}%`);
+    }
+    const notReadyReason = notReadyReasons.length > 0 ? notReadyReasons.join("; ") : null;
     return {
       symbol: row.symbol,
       exchange: row.exchange,
-      barCount,
-      featureCount,
-      featureCoveragePct,
-      regimeCount,
+      assetType: inferAssetType(row.symbol),
+      bars1h,
+      features1h,
+      featureCoverage1hPct,
+      dailyBars,
+      dailyFeatures,
+      dailyFeatureCoveragePct,
+      regimeLabels,
       regimeCoveragePct,
-      exclusionReasons,
+      isResearchReady: notReadyReasons.length === 0,
+      notReadyReason,
+      selectionReason: notReadyReason,
     };
   });
-  const readyRows = diagnostics.filter((row) => row.exclusionReasons.length === 0);
+  const readyRows = diagnostics.filter((row) => row.isResearchReady);
   const selectedRows = maxAssets === null ? readyRows : readyRows.slice(0, maxAssets);
   const selectedKeys = new Set(selectedRows.map((row) => `${row.symbol}:${row.exchange}`));
   const excludedRows = diagnostics
-    .filter((row) => row.exclusionReasons.length > 0)
+    .filter((row) => !row.isResearchReady)
     .concat(readyRows
       .filter((row) => !selectedKeys.has(`${row.symbol}:${row.exchange}`))
-      .map((row) => ({ ...row, exclusionReasons: [`MAX_ASSETS cap (${maxAssets})`] })));
+      .map((row) => ({ ...row, selectionReason: `MAX_ASSETS cap (${maxAssets})` })));
 
   console.log(
     `[research:p5] discovery filters: MIN_ASSET_BARS=${minAssetBars}, ` +
@@ -478,14 +537,18 @@ async function discoverStoredInstruments(): Promise<DiscoveryResult> {
   );
   console.log(
     `[research:p5] discovery candidates: ${diagnostics.map((row) =>
-      `${row.symbol}@${row.exchange} bars=${row.barCount} features=${row.featureCount} ` +
-      `featureCoverage=${row.featureCoveragePct.toFixed(2)}% regimes=${row.regimeCount}`,
+      `${row.symbol}@${row.exchange} 1hBars=${row.bars1h} 1hFeatures=${row.features1h} ` +
+      `1hCoverage=${fmt(row.featureCoverage1hPct)}% dailyBars=${row.dailyBars} ` +
+      `dailyFeatures=${row.dailyFeatures} dailyCoverage=${fmt(row.dailyFeatureCoveragePct)}% ` +
+      `regimes=${row.regimeLabels}`,
     ).join("; ") || "none"}`,
   );
   console.log(
     `[research:p5] discovery selected: ${selectedRows.map((row) =>
-      `${row.symbol}@${row.exchange} bars=${row.barCount} features=${row.featureCount} ` +
-      `featureCoverage=${row.featureCoveragePct.toFixed(2)}% regimes=${row.regimeCount}`,
+      `${row.symbol}@${row.exchange} 1hBars=${row.bars1h} 1hFeatures=${row.features1h} ` +
+      `1hCoverage=${fmt(row.featureCoverage1hPct)}% dailyBars=${row.dailyBars} ` +
+      `dailyFeatures=${row.dailyFeatures} dailyCoverage=${fmt(row.dailyFeatureCoveragePct)}% ` +
+      `regimes=${row.regimeLabels}`,
     ).join("; ") || "none"}`,
   );
 
@@ -562,6 +625,16 @@ function gitValue(args: string): string {
   }
 }
 
+function repoRelativePath(filePath: string | null | undefined): string | null {
+  if (!filePath || filePath.trim() === "") return null;
+  const absolute = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+  const relative = path.relative(process.cwd(), absolute);
+  if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
+    return relative.split(path.sep).join("/");
+  }
+  return absolute;
+}
+
 function csvEscape(value: string | number | null | undefined): string {
   const raw = value === null || value === undefined ? "" : String(value);
   return /[",\r\n]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw;
@@ -587,7 +660,7 @@ function windowConfigText(): string {
   ].join("; ");
 }
 
-function runMetadataSection(metadata: RunMetadata): string[] {
+function runMetadataSection(metadata: ReportRunMetadata): string[] {
   return [
     "## Run Metadata",
     "",
@@ -595,13 +668,14 @@ function runMetadataSection(metadata: RunMetadata): string[] {
       ["field", "value"],
       [
         ["branch", metadata.branch],
-        ["commit sha", metadata.commitSha],
+        ["generated from commit", metadata.generatedFromCommit],
+        ["committed in commit", metadata.committedInCommit || "not recorded"],
         ["run timestamp", metadata.runTimestamp],
         ["report path", metadata.reportPath],
+        ["log path", metadata.logPath || "unset"],
         ["feature version", metadata.featureVersion],
         ["window config", metadata.windowConfig],
         ["symbols discovered", metadata.symbolsDiscovered.join(", ") || "none"],
-        ["P5_REPORT_PATH", metadata.p5ReportPathEnv || "unset"],
       ],
     ),
     "",
@@ -618,9 +692,10 @@ function runMetadataSection(metadata: RunMetadata): string[] {
 function appendReportIndex(args: {
   timestamp: string;
   branch: string;
-  commit: string;
+  generatedFromCommit: string;
+  committedInCommit?: string | null;
   reportPath: string;
-  logPath: string;
+  logPath: string | null;
   exitCode: number;
   assetsAnalyzed: string[];
   strategyVersions: Record<string, string>;
@@ -631,7 +706,8 @@ function appendReportIndex(args: {
   const header = [
     "timestamp",
     "branch",
-    "commit",
+    "generated_from_commit",
+    "committed_in_commit",
     "report_path",
     "log_path",
     "exit_code",
@@ -645,7 +721,8 @@ function appendReportIndex(args: {
   const row = [
     args.timestamp,
     args.branch,
-    args.commit,
+    args.generatedFromCommit,
+    args.committedInCommit ?? "",
     args.reportPath,
     args.logPath,
     args.exitCode,
@@ -674,17 +751,71 @@ async function fetchBounds(symbol: string, exchange: Exchange, timeframe: Timefr
 
 async function skippedEquityAssetsSection(): Promise<string[]> {
   const pool = getPgPool();
-  const { rows } = await pool.query<{ symbol: string; bar_count: string }>(
-    `select symbol, count(*)::text as bar_count
-     from market_bars
-     where timeframe = '1h' and symbol = any($1)
-     group by symbol`,
-    [EQUITY_WATCHLIST_TARGETS.map((target) => target.symbol)],
+  const { rows } = await pool.query<{
+    symbol: string;
+    bars_1h: string;
+    daily_bars: string;
+    daily_features: string;
+  }>(
+    `with targets as (
+       select unnest($1::text[]) as symbol
+     ),
+     bars_1h as (
+       select symbol, count(*)::text as bars_1h
+       from market_bars
+       where timeframe = '1h' and symbol = any($1)
+       group by symbol
+     ),
+     daily_bars as (
+       select symbol, count(*)::text as daily_bars
+       from market_bars
+       where timeframe = '1d' and symbol = any($1)
+       group by symbol
+     ),
+     daily_features as (
+       select b.symbol, count(distinct b.ts)::text as daily_features
+       from market_bars b
+       join feature_snapshots f
+         on f.symbol = b.symbol
+        and f.exchange = b.exchange
+        and f.timeframe = b.timeframe
+        and f.ts = b.ts
+        and f.feature_version = $2
+       where b.timeframe = '1d' and b.symbol = any($1)
+       group by b.symbol
+     )
+     select
+       t.symbol,
+       coalesce(b.bars_1h, '0') as bars_1h,
+       coalesce(db.daily_bars, '0') as daily_bars,
+       coalesce(df.daily_features, '0') as daily_features
+     from targets t
+     left join bars_1h b on b.symbol = t.symbol
+     left join daily_bars db on db.symbol = t.symbol
+     left join daily_features df on df.symbol = t.symbol
+     order by t.symbol asc`,
+    [EQUITY_WATCHLIST_TARGETS.map((target) => target.symbol), FEATURE_VERSION],
   );
-  const counts = new Map(rows.map((row) => [row.symbol.toUpperCase(), Number(row.bar_count)]));
-  const skipped = EQUITY_WATCHLIST_TARGETS
-    .filter((target) => (counts.get(target.symbol) ?? 0) === 0)
-    .map((target) => [target.symbol, target.assetType, target.missingBarsReason]);
+  const counts = new Map(rows.map((row) => [row.symbol.toUpperCase(), row]));
+  const skipped = EQUITY_WATCHLIST_TARGETS.map((target) => {
+    const row = counts.get(target.symbol);
+    const bars1h = Number(row?.bars_1h ?? 0);
+    const dailyBars = Number(row?.daily_bars ?? 0);
+    const dailyFeatures = Number(row?.daily_features ?? 0);
+    const dailyCoverage = pctOf(dailyFeatures, dailyBars);
+    const reason = bars1h === 0
+      ? target.missingBarsReason
+      : "equity/ETF research remains disabled until proper ingestion, features, and regimes are ready";
+    return [
+      target.symbol,
+      target.assetType,
+      String(bars1h),
+      String(dailyBars),
+      String(dailyFeatures),
+      `${fmt(dailyCoverage)}%`,
+      reason,
+    ];
+  });
 
   if (skipped.length === 0) {
     return [
@@ -698,9 +829,9 @@ async function skippedEquityAssetsSection(): Promise<string[]> {
   return [
     "## Skipped Assets",
     "",
-    "Equity/ETF watchlist assets are listed here when they are not part of the research-ready universe because stored 1h bars are missing.",
+    "Equity/ETF watchlist assets remain out of scope for this branch until proper 1h bars, daily bars/features, and regimes are ingested. These diagnostics are informational only; this branch does not add equity ingestion.",
     "",
-    table(["asset", "type", "reason"], skipped),
+    table(["asset", "type", "1h bars", "daily bars", "daily features", "daily feature coverage", "reason"], skipped),
     "",
   ];
 }
@@ -1311,7 +1442,7 @@ function discoveryReadinessSection(discovery: DiscoveryResult | null): string[] 
   return [
     "## Discovery Readiness Diagnostics",
     "",
-    "Dynamic discovery includes only stored 1h instruments that pass the readiness filters below. Persisted regime snapshots are counted for visibility but are optional unless `REQUIRE_REGIME_SNAPSHOTS=true`, because OHLCV fallback labels can still support research runs.",
+    "Dynamic discovery includes instruments that pass the readiness filters below across stored 1h bars/features and daily bars/features. Persisted regime snapshots are counted for visibility but are optional unless `REQUIRE_REGIME_SNAPSHOTS=true`, because OHLCV fallback labels can still support research runs.",
     "",
     table(
       ["filter", "value"],
@@ -1327,36 +1458,46 @@ function discoveryReadinessSection(discovery: DiscoveryResult | null): string[] 
     "Selected assets:",
     "",
     table(
-      ["asset", "exchange", "bars", "features", "featureCoverage", "regimes", "regimeCoverage"],
+      ["asset", "exchange", "type", "1h bars", "1h features", "1h feature coverage", "daily bars", "daily features", "daily feature coverage", "regime labels", "regime coverage", "ready"],
       selected.length > 0
         ? selected.map((row) => [
             row.symbol,
             row.exchange,
-            String(row.barCount),
-            String(row.featureCount),
-            `${fmt(row.featureCoveragePct)}%`,
-            String(row.regimeCount),
+            row.assetType,
+            String(row.bars1h),
+            String(row.features1h),
+            `${fmt(row.featureCoverage1hPct)}%`,
+            String(row.dailyBars),
+            String(row.dailyFeatures),
+            `${fmt(row.dailyFeatureCoveragePct)}%`,
+            String(row.regimeLabels),
             `${fmt(row.regimeCoveragePct)}%`,
+            String(row.isResearchReady),
           ])
-        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"]],
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "false"]],
     ),
     "",
     "Excluded assets:",
     "",
     table(
-      ["asset", "exchange", "bars", "features", "featureCoverage", "regimes", "regimeCoverage", "reason"],
+      ["asset", "exchange", "type", "1h bars", "1h features", "1h feature coverage", "daily bars", "daily features", "daily feature coverage", "regime labels", "regime coverage", "ready", "reason"],
       excluded.length > 0
         ? excluded.map((row) => [
             row.symbol,
             row.exchange,
-            String(row.barCount),
-            String(row.featureCount),
-            `${fmt(row.featureCoveragePct)}%`,
-            String(row.regimeCount),
+            row.assetType,
+            String(row.bars1h),
+            String(row.features1h),
+            `${fmt(row.featureCoverage1hPct)}%`,
+            String(row.dailyBars),
+            String(row.dailyFeatures),
+            `${fmt(row.dailyFeatureCoveragePct)}%`,
+            String(row.regimeLabels),
             `${fmt(row.regimeCoveragePct)}%`,
-            row.exclusionReasons.join("; "),
+            String(row.isResearchReady),
+            row.selectionReason ?? row.notReadyReason ?? "not selected",
           ])
-        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "none"]],
+        : [["none", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "false", "none"]],
     ),
     "",
   ];
@@ -1439,8 +1580,8 @@ function implementationSummarySection(heading = "### Implementation Summary"): s
     "- Added research-only strategy refinement variants beside the four base strategies and a base-vs-refined comparison section for expectancy, profit factor, drawdown, trade count, and walk-forward survival.",
     "- Added Strategy Refinement Candidate Results: refined variants are compared against their base strategies on held-out test-window metrics and rolling fold consistency before receiving conservative research verdicts.",
     "- Added P5 report run metadata, `reports/p5/index.csv` append-only report indexing, pooled held-out trade stats, fold denominator transparency, over-filtering warnings, and Gate Availability Diagnostics.",
-    "- Multi-asset research runs dynamically discover research-ready stored 1h instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum bars and feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
-    "- TODO before equity/ETF expansion: add daily feature readiness to dynamic discovery so cross-timeframe research inputs are enforced consistently.",
+    "- Multi-asset research runs dynamically discover research-ready stored instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum 1h bars, 1h feature coverage, and daily feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
+    "- Added daily feature readiness diagnostics before equity/ETF expansion so cross-timeframe research inputs are visible without enabling equity ingestion.",
     "",
   ];
 }
@@ -3562,16 +3703,17 @@ async function main(): Promise<void> {
         ...bestStrategyByRegimeSummarySection(summaries),
       ];
 
-  const metadata: RunMetadata = {
+  const metadata: ReportRunMetadata = {
     branch: gitValue("rev-parse --abbrev-ref HEAD"),
-    commitSha: gitValue("rev-parse HEAD"),
+    generatedFromCommit: gitValue("rev-parse HEAD"),
+    committedInCommit: null,
     runTimestamp,
-    reportPath,
+    reportPath: repoRelativePath(reportPath) ?? reportPath,
+    logPath: repoRelativePath(process.env.P5_LOG_PATH ?? null),
     strategyVersions,
     featureVersion: FEATURE_VERSION,
     windowConfig: windowConfigText(),
     symbolsDiscovered: instruments.map((instrument) => `${instrument.symbol}@${instrument.exchange}`),
-    p5ReportPathEnv: process.env.P5_REPORT_PATH ?? "",
   };
 
   const report = [
@@ -3611,9 +3753,10 @@ async function main(): Promise<void> {
   appendReportIndex({
     timestamp: runTimestamp,
     branch: metadata.branch,
-    commit: metadata.commitSha,
-    reportPath,
-    logPath: process.env.P5_LOG_PATH ?? "",
+    generatedFromCommit: metadata.generatedFromCommit,
+    committedInCommit: metadata.committedInCommit,
+    reportPath: metadata.reportPath,
+    logPath: metadata.logPath ?? null,
     exitCode: 0,
     assetsAnalyzed: summaries.map((summary) => summary.symbol),
     strategyVersions,

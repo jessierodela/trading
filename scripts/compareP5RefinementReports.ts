@@ -5,6 +5,7 @@ interface ReportSpec {
   key: string;
   label: string;
   file: string;
+  pathInRepo: string;
   markdown: string;
   missingReason?: string;
 }
@@ -31,6 +32,10 @@ const REQUIRED_REPORT_PATTERNS: Array<{ key: string; label: string; test: (file:
   { key: "reporting-hardening", label: "reporting-hardening", test: (file) => file.includes("reporting-hardening") },
 ];
 
+function compareMode(): "snapshots" | "current" {
+  return process.env.P5_COMPARE_MODE?.trim().toLowerCase() === "current" ? "current" : "snapshots";
+}
+
 function timestampForFilename(): string {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -45,6 +50,15 @@ function timestampForFilename(): string {
   ].join("");
 }
 
+function repoRelativePath(filePath: string): string {
+  const absolute = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+  const relative = path.relative(process.cwd(), absolute);
+  if (!relative.startsWith("..") && !path.isAbsolute(relative)) {
+    return relative.split(path.sep).join("/");
+  }
+  return absolute;
+}
+
 function loadReport(fileInput: string, fallbackLabel: string): ReportSpec {
   const fullPath = path.isAbsolute(fileInput) ? fileInput : path.resolve(process.cwd(), fileInput);
   const file = path.basename(fullPath);
@@ -53,6 +67,7 @@ function loadReport(fileInput: string, fallbackLabel: string): ReportSpec {
       key: fallbackLabel,
       label: fallbackLabel,
       file,
+      pathInRepo: fileInput,
       markdown: "",
       missingReason: `explicit report not found: ${fileInput}`,
     };
@@ -61,6 +76,7 @@ function loadReport(fileInput: string, fallbackLabel: string): ReportSpec {
     key: fallbackLabel,
     label: fallbackLabel,
     file,
+    pathInRepo: repoRelativePath(fullPath),
     markdown: fs.readFileSync(fullPath, "utf8"),
   };
 }
@@ -75,10 +91,7 @@ function explicitReportList(): ReportSpec[] | null {
     .map((file, index) => loadReport(file, `explicit-${index + 1}`));
 }
 
-function discoverReports(): ReportSpec[] {
-  const explicit = explicitReportList();
-  if (explicit) return explicit;
-
+function discoverRequiredReports(): ReportSpec[] {
   const files = fs.existsSync(REPORT_DIR)
     ? fs.readdirSync(REPORT_DIR).filter((file) => file.endsWith(".md") && file.startsWith("P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT"))
     : [];
@@ -91,6 +104,7 @@ function discoverReports(): ReportSpec[] {
         key: pattern.key,
         label: pattern.label,
         file: "",
+        pathInRepo: "missing",
         markdown: "",
         missingReason: `no report matched expected snapshot '${pattern.label}'`,
       };
@@ -100,9 +114,73 @@ function discoverReports(): ReportSpec[] {
       key: pattern.key,
       label: pattern.label,
       file,
+      pathInRepo: repoRelativePath(fullPath),
       markdown: fs.readFileSync(fullPath, "utf8"),
     };
   });
+}
+
+function reportTimestampScore(file: string, fullPath: string): number {
+  const timestamp = file.match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+  if (timestamp) {
+    return Date.UTC(
+      Number(timestamp[1]),
+      Number(timestamp[2]) - 1,
+      Number(timestamp[3]),
+      Number(timestamp[4]),
+      Number(timestamp[5]),
+      Number(timestamp[6]),
+    );
+  }
+  return fs.statSync(fullPath).mtimeMs;
+}
+
+function discoverCurrentReport(): ReportSpec {
+  const candidates: Array<{ file: string; fullPath: string; score: number }> = [];
+  const rootReport = path.join(process.cwd(), "P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT.md");
+  if (fs.existsSync(rootReport)) {
+    candidates.push({
+      file: path.basename(rootReport),
+      fullPath: rootReport,
+      score: reportTimestampScore(path.basename(rootReport), rootReport),
+    });
+  }
+  if (fs.existsSync(REPORT_DIR)) {
+    for (const file of fs.readdirSync(REPORT_DIR)) {
+      if (!file.endsWith(".md") || !file.startsWith("P5_MULTI_ASSET_STRATEGY_RESEARCH_REPORT")) continue;
+      const fullPath = path.join(REPORT_DIR, file);
+      candidates.push({ file, fullPath, score: reportTimestampScore(file, fullPath) });
+    }
+  }
+  candidates.sort((a, b) => a.score - b.score || a.file.localeCompare(b.file));
+  const latest = candidates[candidates.length - 1];
+  if (!latest) {
+    return {
+      key: "current",
+      label: "current-latest",
+      file: "",
+      pathInRepo: "missing",
+      markdown: "",
+      missingReason: "no current P5 multi-asset report found",
+    };
+  }
+  return {
+    key: "current",
+    label: "current-latest",
+    file: latest.file,
+    pathInRepo: repoRelativePath(latest.fullPath),
+    markdown: fs.readFileSync(latest.fullPath, "utf8"),
+  };
+}
+
+function discoverReports(): ReportSpec[] {
+  const explicit = explicitReportList();
+  if (explicit) return explicit;
+
+  const required = discoverRequiredReports();
+  if (compareMode() !== "current") return required;
+
+  return [discoverCurrentReport(), ...required];
 }
 
 function extractSection(markdown: string, title: string): string | null {
@@ -146,7 +224,7 @@ function table(headers: string[], rows: string[][]): string {
 }
 
 function reportPathFor(report: ReportSpec): string {
-  return report.file ? path.join("reports", "p5", report.file) : "missing";
+  return report.pathInRepo || (report.file ? path.join("reports", "p5", report.file) : "missing");
 }
 
 function missingReports(reports: ReportSpec[]): ReportSpec[] {
@@ -166,6 +244,19 @@ function missingReportsSection(reports: ReportSpec[]): string[] {
       ? []
       : missing.map((report) => `- ${report.label}: ${report.missingReason ?? "missing"}`)),
     missing.length === 0 ? "" : "",
+  ];
+}
+
+function compareModeSection(reports: ReportSpec[]): string[] {
+  if (compareMode() !== "current") return [];
+  const current = reports.find((report) => report.key === "current");
+  return [
+    "## Compare Mode",
+    "",
+    "`P5_COMPARE_MODE=current` was used, so this report extracts the latest/current P5 multi-asset report first and still checks expected historical snapshots for missing-source warnings.",
+    "",
+    `Current report source: \`${current ? reportPathFor(current) : "missing"}\`.`,
+    "",
   ];
 }
 
@@ -441,12 +532,15 @@ function main(): void {
   const outputPath = path.join(REPORT_DIR, `P5_REFINEMENT_COMPARISON_${timestampForFilename()}.md`);
 
   const markdown = [
-    "# P5 Refinement Cross-Report Comparison Summary",
+    compareMode() === "current"
+      ? "# P5 Current-State Report Audit"
+      : "# P5 Refinement Cross-Report Comparison Summary",
     "",
     `Generated: ${generatedAt}`,
     "",
     "Note: source versioned P5 reports are local research artifacts and may not be committed to git. This comparison stores the extracted sections needed for review.",
     "",
+    ...compareModeSection(reports),
     "## Compared Reports",
     "",
     table(

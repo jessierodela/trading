@@ -302,9 +302,9 @@ export interface PnlSnapshot {
 export interface RiskInput {
   signal:          StrategySignal;
   regime:          RegimeContext | null;   // null = no regime data, fail-open per ARCHITECTURE
-  equity:          number;
+  accountEquity:   number;
   openPositions:   Position[];
-  recentPnl:       PnlSnapshot;
+  recentPnL:       PnlSnapshot[];
   config:          RiskConfig;
 }
 
