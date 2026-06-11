@@ -9,6 +9,7 @@ import type {
   RiskInput,
   StrategySignal,
 } from "@/lib/risk/types";
+import { RISK_VERSION } from "@/lib/versions";
 
 let passed = 0;
 let failed = 0;
@@ -40,6 +41,7 @@ function config(overrides: Partial<RiskConfig> = {}): RiskConfig {
     blockedRegimes: [],
     allowLong: true,
     allowShort: true,
+    allowDefaultStopFallback: true,
     defaultStopLossPct: 0.02,
     defaultTakeProfitPct: 0.04,
     maxLeverage: 1,
@@ -126,6 +128,7 @@ function testApprovalsAndStops(): void {
   assert("approves normal valid long trade", long.approved, long);
   assert("long stop prefers invalidation", long.stopLoss === 95, long.stopLoss);
   assert("long target prefers signal target", long.takeProfit === 110, long.takeProfit);
+  assert("approved decision stamps risk version", long.riskVersion === RISK_VERSION, long.riskVersion);
 
   const shortSignal = signal({ direction: "short", invalidationPrice: 105, takeProfit: 90 });
   const short = evaluateRisk(input({ signal: shortSignal }));
@@ -140,6 +143,16 @@ function testApprovalsAndStops(): void {
   const defaultShortSignal = signal({ direction: "short", invalidationPrice: null, stopLoss: null, takeProfit: null });
   assert("default short stop is percent based", near(calculateStopLoss({ signal: defaultShortSignal, side: "SHORT", entryPrice: 100, config: defaultInput.config })!, 102));
   assert("default short target is percent based", near(calculateTakeProfit({ signal: defaultShortSignal, side: "SHORT", entryPrice: 100, config: defaultInput.config })!, 96));
+
+  const fallbackDecision = evaluateRisk(defaultInput);
+  assert("default stop fallback warns when used", fallbackDecision.warnings.includes("DEFAULT_STOP_FALLBACK_USED"), fallbackDecision);
+
+  const strictDecision = evaluateRisk(input({
+    signal: defaultSignal,
+    config: config({ allowDefaultStopFallback: false }),
+  }));
+  assert("strict config blocks missing invalidation", strictDecision.blockedBy.includes("STOP_LOSS_MISSING"), strictDecision);
+  assert("strict config does not report fallback warning", !strictDecision.warnings.includes("DEFAULT_STOP_FALLBACK_USED"), strictDecision);
 }
 
 function testCoreBlocks(): void {
@@ -300,6 +313,7 @@ function testKillSwitchAndDisabledMode(): void {
   }));
   assert("risk disabled returns pass-through approval", disabled.approved, disabled);
   assert("risk disabled returns pass-through warning", disabled.warnings.includes("RISK_ENGINE_DISABLED"), disabled);
+  assert("risk disabled decision stamps risk version", disabled.riskVersion === RISK_VERSION, disabled.riskVersion);
 }
 
 function testDeterminism(): void {

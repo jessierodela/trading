@@ -28,6 +28,7 @@ export function calculateStopLoss(input: StopTargetInput): number | null {
     return isPositiveFinite(supplied) && isValidStop(side, entryPrice, supplied) ? supplied : null;
   }
 
+  if (!config.allowDefaultStopFallback) return null;
   if (!Number.isFinite(config.defaultStopLossPct) || config.defaultStopLossPct <= 0) return null;
   const stopLoss = side === "LONG"
     ? entryPrice * (1 - config.defaultStopLossPct)

@@ -16,6 +16,7 @@ export interface RiskConfig {
   blockedRegimes: string[];
   allowLong: boolean;
   allowShort: boolean;
+  allowDefaultStopFallback: boolean;
   defaultStopLossPct: number;
   defaultTakeProfitPct: number;
   maxLeverage: number;
@@ -68,4 +69,5 @@ export interface RiskDecision {
   takeProfit: number | null;
   blockedBy: string[];
   warnings: string[];
+  riskVersion: string;
 }

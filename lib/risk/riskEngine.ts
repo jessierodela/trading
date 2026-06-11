@@ -1,3 +1,4 @@
+import { RISK_VERSION } from "@/lib/versions";
 import { evaluateKillSwitch } from "./killSwitch";
 import { calculatePositionSize, positionNotional } from "./positionSizing";
 import { calculateStopLoss, calculateTakeProfit } from "./stops";
@@ -85,6 +86,7 @@ function passThroughDecision(input: RiskInput): RiskDecision {
     takeProfit: input.signal.takeProfit ?? null,
     blockedBy: [],
     warnings: ["RISK_ENGINE_DISABLED"],
+    riskVersion: RISK_VERSION,
   };
 }
 
@@ -170,6 +172,11 @@ export function evaluateRisk(input: RiskInput): RiskDecision {
     ? calculateTakeProfit({ signal: input.signal, side, entryPrice, config: input.config })
     : null;
   if (stopLoss === null) addBlock(blockedBy, "STOP_LOSS_MISSING");
+  const usedDefaultStopFallback =
+    stopLoss !== null &&
+    input.signal.invalidationPrice == null &&
+    input.signal.stopLoss == null;
+  if (usedDefaultStopFallback) warnings.push("DEFAULT_STOP_FALLBACK_USED");
 
   const baseMaxRiskUsd = input.accountEquity > 0 && input.config.maxRiskPerTradePct > 0
     ? input.accountEquity * input.config.maxRiskPerTradePct
@@ -202,5 +209,6 @@ export function evaluateRisk(input: RiskInput): RiskDecision {
     takeProfit,
     blockedBy,
     warnings,
+    riskVersion: RISK_VERSION,
   };
 }
