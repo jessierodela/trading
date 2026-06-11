@@ -9,20 +9,22 @@ import type {
 
 export interface BacktestRiskInputContext {
   signal: StrategySignal;
-  regime?: RegimeContext | null;
+  regime: RegimeContext;
   accountEquity: number;
   openPositions?: Position[];
   recentPnL?: PnlSnapshot[];
   config: RiskConfig;
+  nowTs?: string;
 }
 
 export function buildRiskInputFromBacktestContext(context: BacktestRiskInputContext): RiskInput {
   return {
     signal: context.signal,
-    regime: context.regime ?? null,
+    regime: context.regime,
     accountEquity: context.accountEquity,
     openPositions: context.openPositions ?? [],
     recentPnL: context.recentPnL ?? [],
     config: context.config,
+    nowTs: context.nowTs,
   };
 }

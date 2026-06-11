@@ -159,9 +159,9 @@ export const CONFLUENCE_VERSION = "confluence.2026-05-13.v1";
 
 /**
  * CHANGELOG (risk):
- *   risk.v1 - Stub. Real risk engine ships in P6.
+ *   risk.2026-06-11.v1 - Deterministic P6A risk engine core.
  */
-export const RISK_VERSION = "risk.v1";
+export const RISK_VERSION = "risk.2026-06-11.v1";
 
 // ─── Data source versions ─────────────────────────────────────────────────
 /**

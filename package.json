@@ -13,6 +13,7 @@
     "smoke:features": "tsx _smoke/features.ts",
     "smoke:p2d": "tsx _smoke/features_crossvalidate.ts",
     "smoke:strategies": "tsx _smoke/strategies.ts",
+    "smoke:risk": "tsx _smoke/risk.ts",
     "smoke:backtest": "tsx _smoke/backtest.ts",
     "smoke:p2d:live": "dotenv -e .env.local -- tsx _smoke/features_crossvalidate_live.ts",
     "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
