@@ -35,7 +35,14 @@ import {
   type RegimeValidationSource,
   type RegimeWindowBacktest,
 } from "@/lib/backtest/regimeValidation";
-import type { BacktestAssetType, BacktestConfig, BacktestInput, BacktestMetrics, SimulatedTrade } from "@/lib/backtest/types";
+import type {
+  BacktestAssetType,
+  BacktestConfig,
+  BacktestInput,
+  BacktestMetrics,
+  RiskOverlaySummary,
+  SimulatedTrade,
+} from "@/lib/backtest/types";
 
 type BacktestRunResult = ReturnType<typeof runBacktestRaw>;
 
@@ -75,6 +82,23 @@ interface FullStats {
   stopLossExitCount: number;
   noTradeWindows: number;
   avgReturnToDrawdown: number | null;
+}
+
+interface RiskOverlayReportSummary {
+  strategyId: string;
+  windows: number;
+  rawTradeCount: number;
+  riskAdjustedTradeCount: number;
+  blockedTrades: number;
+  blockedByReason: Record<string, number>;
+  rawMaxDrawdownPct: number | null;
+  riskAdjustedMaxDrawdownPct: number | null;
+  rawAvgReturnPct: number | null;
+  riskAdjustedAvgReturnPct: number | null;
+  rawAvgProfitFactor: number | null;
+  riskAdjustedAvgProfitFactor: number | null;
+  rawAvgExpectancy: number | null;
+  riskAdjustedAvgExpectancy: number | null;
 }
 
 interface RegimePurityStats {
@@ -376,6 +400,37 @@ function envBoolean(name: string, fallback: boolean): boolean {
   if (["1", "true", "yes", "y"].includes(normalized)) return true;
   if (["0", "false", "no", "n"].includes(normalized)) return false;
   throw new Error(`${name} must be true/false or 1/0`);
+}
+
+function researchRiskOverlayConfig(): BacktestConfig["risk"] | undefined {
+  if (!envBoolean("P5_RISK_OVERLAY", false)) return undefined;
+  return {
+    enabled: true,
+    config: {
+      enabled: true,
+      maxRiskPerTradePct: Number(process.env.RISK_PER_TRADE_PCT ?? 0.005),
+      maxDailyLossPct: 0.02,
+      maxWeeklyLossPct: 0.05,
+      maxOpenPositions: 1,
+      maxSymbolExposurePct: Number(process.env.MAX_POSITION_PCT ?? 1),
+      maxPortfolioExposurePct: 1,
+      minRegimeReliability: 0.5,
+      blockedRegimes: [],
+      allowLong: true,
+      allowShort: false,
+      allowDefaultStopFallback: false,
+      defaultStopLossPct: 0.02,
+      defaultTakeProfitPct: 0.04,
+      maxLeverage: 1,
+      staleSignalMaxAgeMs: 2 * 60 * 60 * 1000,
+      duplicateCooldownMs: 0,
+      maxConsecutiveLosses: 3,
+      highVolSizeMultiplier: 0.5,
+      chopSizeMultiplier: 0.25,
+      newsShockBlocksTrading: true,
+      killSwitchEnabled: false,
+    },
+  };
 }
 
 async function discoverStoredInstruments(): Promise<DiscoveryResult> {
@@ -885,6 +940,7 @@ function baseConfig(instrument: InstrumentArg, startTs: string, endTs: string): 
     closeOpenPositionAtEnd: true,
     enterOnNextBarOpen: true,
     sameBarStopFirst: true,
+    risk: researchRiskOverlayConfig(),
   };
 }
 
@@ -931,6 +987,7 @@ function backtestCacheKey(input: BacktestInput): string {
       closeOpenPositionAtEnd: input.config.closeOpenPositionAtEnd,
       enterOnNextBarOpen: input.config.enterOnNextBarOpen,
       sameBarStopFirst: input.config.sameBarStopFirst,
+      risk: input.config.risk ?? null,
       routerId: input.strategyRouter?.id ?? null,
       routerVersion: input.strategyRouter?.version ?? null,
     },
@@ -1181,6 +1238,54 @@ function staticStrategyFullStats(base: BacktestInput, windows: RegimeCandidateWi
       avgReturnToDrawdown: avg(rtdds),
     };
   });
+}
+
+function summarizeRiskOverlayWindows(
+  base: BacktestInput,
+  windows: RegimeCandidateWindow[],
+): RiskOverlayReportSummary | null {
+  if (base.config.risk?.enabled !== true) return null;
+  const strategyId = STRATEGY_REGISTRY[0].id;
+  const overlays = windows
+    .map((window) => runBacktest(sliceInput(base, window, strategyId)).riskOverlay)
+    .filter((overlay): overlay is RiskOverlaySummary => overlay !== undefined);
+  if (overlays.length === 0) return null;
+
+  const blockedByReason: Record<string, number> = {};
+  for (const overlay of overlays) {
+    for (const [reason, count] of Object.entries(overlay.riskBlockedByReason)) {
+      blockedByReason[reason] = (blockedByReason[reason] ?? 0) + count;
+    }
+  }
+
+  const rawMetrics = overlays.map((overlay) => overlay.rawMetrics);
+  const riskAdjustedMetrics = overlays.map((overlay) => overlay.riskAdjustedMetrics);
+  return {
+    strategyId,
+    windows: overlays.length,
+    rawTradeCount: rawMetrics.reduce((sum, metrics) => sum + metrics.numberOfTrades, 0),
+    riskAdjustedTradeCount: riskAdjustedMetrics.reduce((sum, metrics) => sum + metrics.numberOfTrades, 0),
+    blockedTrades: overlays.reduce((sum, overlay) => sum + overlay.riskBlockedTrades, 0),
+    blockedByReason,
+    rawMaxDrawdownPct: rawMetrics.length === 0 ? null : Math.max(...rawMetrics.map((metrics) => metrics.maxDrawdownPct)),
+    riskAdjustedMaxDrawdownPct: riskAdjustedMetrics.length === 0
+      ? null
+      : Math.max(...riskAdjustedMetrics.map((metrics) => metrics.maxDrawdownPct)),
+    rawAvgReturnPct: avg(rawMetrics.map((metrics) => metrics.totalReturnPct)),
+    riskAdjustedAvgReturnPct: avg(riskAdjustedMetrics.map((metrics) => metrics.totalReturnPct)),
+    rawAvgProfitFactor: avg(
+      rawMetrics.map((metrics) => metrics.profitFactor).filter((value): value is number => value !== null),
+    ),
+    riskAdjustedAvgProfitFactor: avg(
+      riskAdjustedMetrics.map((metrics) => metrics.profitFactor).filter((value): value is number => value !== null),
+    ),
+    rawAvgExpectancy: avg(
+      rawMetrics.map((metrics) => metrics.expectancy).filter((value): value is number => value !== null),
+    ),
+    riskAdjustedAvgExpectancy: avg(
+      riskAdjustedMetrics.map((metrics) => metrics.expectancy).filter((value): value is number => value !== null),
+    ),
+  };
 }
 
 function routerFullStatsFromAudit(audit: RouterMetricAudit, routerSummary: RoutingSummary): FullStats {
@@ -1531,6 +1636,8 @@ function knownLimitationsSection(): string[] {
     "- OHLCV fallback labels are temporary in-memory research labels, not persisted detector output.",
     "- Portfolio equity realizes scaled simulated trade PnL at exits and does not model full broker-grade portfolio accounting or intra-trade capital contention.",
     "- Strategy simulations preserve the current long-only/default P4 assumptions unless explicitly configured otherwise.",
+    "- The optional risk overlay is a backtest-only simulation. It does not create trade intents, orders, fills, persistent positions, or execution state.",
+    "- Overlay exposure checks inherit the v1 backtest engine's single-position model; cross-strategy portfolio contention is not broker-grade accounting.",
     "- Sample sizes are limited by selected windows, available bars, features, and regime labels.",
     "- Some high-expectancy candidates have too few trades to trust.",
     "- Candidate rankings are not validated until held-out and rolling-fold validation passes.",
@@ -1551,7 +1658,7 @@ function nextActionListSection(): string[] {
     "5. Compare base vs refined variants across assets, regimes, held-out windows, and rolling folds.",
     "6. Promote only variants that survive held-out and rolling-fold validation.",
     "7. Add equity/ETF ingestion after the crypto research layer is stable.",
-    "8. Do not start risk engine or execution work until the research layer identifies validated candidates.",
+    "8. Keep the risk overlay simulation-only; do not add trade intents, paper trading, broker integration, or live execution in this phase.",
     "",
   ];
 }
@@ -1582,6 +1689,7 @@ function implementationSummarySection(heading = "### Implementation Summary"): s
     "- Added P5 report run metadata, `reports/p5/index.csv` append-only report indexing, pooled held-out trade stats, fold denominator transparency, over-filtering warnings, and Gate Availability Diagnostics.",
     "- Multi-asset research runs dynamically discover research-ready stored instruments unless `SYMBOLS` is provided explicitly; readiness is filtered by minimum 1h bars, 1h feature coverage, and daily feature coverage, while persisted regime snapshots remain optional because OHLCV fallback labels exist.",
     "- Added daily feature readiness diagnostics before equity/ETF expansion so cross-timeframe research inputs are visible without enabling equity ingestion.",
+    "- Added an optional, disabled-by-default P6B risk overlay that preserves raw metrics and reports separate risk-adjusted simulation metrics without introducing execution behavior.",
     "",
   ];
 }
@@ -2525,6 +2633,7 @@ interface AssetSummary {
   gateDiagnostics: GateDiagnosticRow[];
   walkForward: WalkForwardSummary | null;
   opportunityWalkForward: OpportunityWalkForwardData | null;
+  riskOverlay: RiskOverlayReportSummary | null;
 }
 
 // Conservative final verdict combining the 70/30 test result with rolling-fold robustness.
@@ -2558,6 +2667,75 @@ function summarizeWalkForward(data: WalkForwardData | null): WalkForwardSummary 
     anyRouterTestValidated: validated.length > 0,
     finalVerdict: finalRouterVerdict(best.testVerdict, foldsValidated, totalFolds),
   };
+}
+
+function topRiskBlockReasons(counts: Record<string, number>): string {
+  const reasons = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 3)
+    .map(([reason, count]) => `${reason} (${count})`);
+  return reasons.length > 0 ? reasons.join(", ") : "none";
+}
+
+function riskOverlaySimulationSection(summaries: AssetSummary[]): string[] {
+  const enabled = summaries.filter(
+    (summary): summary is AssetSummary & { riskOverlay: RiskOverlayReportSummary } => summary.riskOverlay !== null,
+  );
+  const header = [
+    "## Risk Overlay Simulation",
+    "",
+    "SIMULATED RISK OVERLAY ONLY \u2014 NOT PAPER TRADING OR LIVE EXECUTION",
+    "",
+  ];
+  if (enabled.length === 0) {
+    return [...header, "Risk overlay was not enabled for this run.", ""];
+  }
+
+  return [
+    ...header,
+    "Raw and risk-adjusted values below use the primary validation windows and the first registered strategy. Return, profit factor, and expectancy are averages across those windows; max drawdown is the worst window.",
+    "",
+    table(
+      [
+        "asset",
+        "strategy",
+        "windows",
+        "raw trades",
+        "risk trades",
+        "blocked",
+        "top blocked reasons",
+        "raw max DD",
+        "risk max DD",
+        "raw avg return",
+        "risk avg return",
+        "raw avg PF",
+        "risk avg PF",
+        "raw avg expectancy",
+        "risk avg expectancy",
+      ],
+      enabled.map((summary) => {
+        const overlay = summary.riskOverlay;
+        return [
+          summary.symbol,
+          overlay.strategyId,
+          String(overlay.windows),
+          String(overlay.rawTradeCount),
+          String(overlay.riskAdjustedTradeCount),
+          String(overlay.blockedTrades),
+          topRiskBlockReasons(overlay.blockedByReason),
+          `${fmt(overlay.rawMaxDrawdownPct)}%`,
+          `${fmt(overlay.riskAdjustedMaxDrawdownPct)}%`,
+          `${fmt(overlay.rawAvgReturnPct)}%`,
+          `${fmt(overlay.riskAdjustedAvgReturnPct)}%`,
+          fmt(overlay.rawAvgProfitFactor),
+          fmt(overlay.riskAdjustedAvgProfitFactor),
+          fmt(overlay.rawAvgExpectancy),
+          fmt(overlay.riskAdjustedAvgExpectancy),
+        ];
+      }),
+    ),
+    "",
+  ];
 }
 
 function multiAssetCoverageSection(summaries: AssetSummary[]): string[] {
@@ -3547,6 +3725,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
   const opportunityWalkForward = computeOpportunityWalkForward(instrument.symbol, baseInput, validation.selectedWindows);
   const heldoutTradeStats = heldoutTradeStatsByStrategy(baseInput, opportunityWalkForward?.testWindows ?? []);
   const gateDiagnostics = gateDiagnosticsForWindows(baseInput, validation.selectedWindows);
+  const riskOverlay = summarizeRiskOverlayWindows(baseInput, validation.selectedWindows);
   const bestByReturn = [...staticFull].sort((a, b) => (b.avgReturn ?? Number.NEGATIVE_INFINITY) - (a.avgReturn ?? Number.NEGATIVE_INFINITY))[0];
   const bestByRtDD = [...staticFull].sort((a, b) => (b.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY) - (a.avgReturnToDrawdown ?? Number.NEGATIVE_INFINITY))[0];
   const equalWeightPortfolio = portfolioFull.find((row) => row.label === "equal_weight");
@@ -3590,6 +3769,7 @@ async function runInstrument(instrument: InstrumentArg): Promise<InstrumentRepor
     gateDiagnostics,
     walkForward: summarizeWalkForward(walkForwardData),
     opportunityWalkForward,
+    riskOverlay,
   };
   const warnings = validationWarnings({
     requestedWindowsPerRegime,
@@ -3729,6 +3909,7 @@ async function main(): Promise<void> {
     ...discoveryReadinessSection(resolution.discovery),
     ...skippedEquitySections,
     ...crossAssetSections,
+    ...riskOverlaySimulationSection(summaries),
     ...strategyRecommendationSummarySection(),
     ...knownLimitationsSection(),
     ...nextActionListSection(),

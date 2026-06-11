@@ -109,7 +109,9 @@ export class PgBacktestReportStore implements BacktestReportStore {
         result.config.startTs,
         result.config.endTs,
         JSON.stringify(result.config),
-        JSON.stringify(result.metrics),
+        JSON.stringify(result.riskOverlay
+          ? { ...result.metrics, riskOverlay: result.riskOverlay }
+          : result.metrics),
       ],
     );
     return { id: rows[0].id, publicId: rows[0].public_id };
@@ -186,7 +188,9 @@ export class InMemoryBacktestReportStore implements BacktestReportStore {
       startTs: result.config.startTs,
       endTs: result.config.endTs,
       config: result.config,
-      metrics: result.metrics,
+      metrics: result.riskOverlay
+        ? { ...result.metrics, riskOverlay: result.riskOverlay }
+        : result.metrics,
       createdAt: result.config.endTs,
     });
     return { id, publicId };

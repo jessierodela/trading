@@ -7,12 +7,18 @@ import type {
   Timeframe,
 } from "@/lib/quant/types";
 import { getStrategyById } from "@/lib/strategies/strategyRegistry";
+import { buildRiskInputFromBacktestContext } from "@/lib/risk/riskInputAdapter";
+import { evaluateRisk } from "@/lib/risk/riskEngine";
+import type { PnlSnapshot, RiskDecision } from "@/lib/risk/types";
+import { RISK_VERSION } from "@/lib/versions";
 import { applyEntrySlippage, applyExitSlippage, feeForNotional } from "./slippage";
 import { calculateBacktestMetrics } from "./metrics";
 import type {
   BacktestInput,
   BacktestResult,
   EquityPoint,
+  RiskOverlayEvent,
+  RiskOverlaySummary,
   SimulatedTrade,
   TradeExitReason,
 } from "./types";
@@ -41,6 +47,7 @@ interface OpenPosition {
   entryFee: number;
   entrySlippageCost: number;
   regimeAtEntry: RegimeLabel | "UNKNOWN";
+  riskDecision?: RiskDecision;
 }
 
 function assertFinitePositive(label: string, value: number): void {
@@ -121,6 +128,9 @@ function validateInputs(input: BacktestInput): void {
       }
     }
   }
+  if (config.risk?.enabled === true && config.risk.config.enabled !== true) {
+    throw new Error("risk.config.enabled must be true when the backtest risk overlay is enabled");
+  }
 }
 
 function latestRegimeAtOrBefore(
@@ -176,6 +186,17 @@ function closePosition(
   const entryNotional = position.entryPrice * position.quantity;
   const holdBars = Math.max(1, exitIndex - position.entryIndex + 1);
   const holdHours = Math.max(0, (Date.parse(exitTs) - Date.parse(position.entryTs)) / HOUR_MS);
+  const riskMetadata = position.riskDecision ? {
+    riskApproved: position.riskDecision.approved,
+    riskDecision: position.riskDecision,
+    riskVersion: position.riskDecision.riskVersion,
+    riskBlockedBy: position.riskDecision.blockedBy,
+    riskWarnings: position.riskDecision.warnings,
+    riskSizeMultiplier: position.riskDecision.sizeMultiplier,
+    riskMaxRiskUsd: position.riskDecision.maxRiskUsd,
+    riskStopLoss: position.riskDecision.stopLoss,
+    riskTakeProfit: position.riskDecision.takeProfit,
+  } : {};
 
   return {
     symbol: position.signal.symbol,
@@ -204,11 +225,23 @@ function closePosition(
     regimeAtEntry: position.regimeAtEntry,
     entryHourUtc: new Date(position.entryTs).getUTCHours(),
     sourceSignal: position.signal,
+    ...riskMetadata,
   };
 }
 
 function noExitTrade(position: OpenPosition, finalIndex: number): SimulatedTrade {
   const entryNotional = position.entryPrice * position.quantity;
+  const riskMetadata = position.riskDecision ? {
+    riskApproved: position.riskDecision.approved,
+    riskDecision: position.riskDecision,
+    riskVersion: position.riskDecision.riskVersion,
+    riskBlockedBy: position.riskDecision.blockedBy,
+    riskWarnings: position.riskDecision.warnings,
+    riskSizeMultiplier: position.riskDecision.sizeMultiplier,
+    riskMaxRiskUsd: position.riskDecision.maxRiskUsd,
+    riskStopLoss: position.riskDecision.stopLoss,
+    riskTakeProfit: position.riskDecision.takeProfit,
+  } : {};
   return {
     symbol: position.signal.symbol,
     exchange: position.signal.exchange,
@@ -236,6 +269,7 @@ function noExitTrade(position: OpenPosition, finalIndex: number): SimulatedTrade
     regimeAtEntry: position.regimeAtEntry,
     entryHourUtc: new Date(position.entryTs).getUTCHours(),
     sourceSignal: position.signal,
+    ...riskMetadata,
   };
 }
 
@@ -245,6 +279,7 @@ export function createOpenPositionFromSignal(
   entryIndex: number,
   equity: number,
   input: BacktestInput,
+  riskDecision?: RiskDecision,
 ): OpenPosition | null {
   const { config } = input;
   if (signal.signalType !== "trigger") return null;
@@ -252,7 +287,7 @@ export function createOpenPositionFromSignal(
   if (signal.direction === "short" && config.allowShorts !== true) return null;
 
   const direction = signal.direction;
-  const stopLoss = signal.stopLoss ?? signal.invalidationPrice ?? null;
+  const stopLoss = riskDecision?.stopLoss ?? signal.stopLoss ?? signal.invalidationPrice ?? null;
   if (stopLoss === null || !Number.isFinite(stopLoss)) return null;
 
   const entryPrice = applyEntrySlippage(entryBar.open, direction, config.slippageBps);
@@ -260,7 +295,7 @@ export function createOpenPositionFromSignal(
   if (!Number.isFinite(riskPerUnit) || riskPerUnit <= 0) return null;
 
   const rewardRisk = config.defaultRewardRisk ?? 2;
-  const takeProfit = signal.takeProfit ?? (
+  const takeProfit = riskDecision?.takeProfit ?? signal.takeProfit ?? (
     direction === "long"
       ? entryPrice + riskPerUnit * rewardRisk
       : entryPrice - riskPerUnit * rewardRisk
@@ -269,7 +304,7 @@ export function createOpenPositionFromSignal(
   const riskUsd = equity * config.riskPerTradePct;
   const quantityByRisk = riskUsd / riskPerUnit;
   const quantityByMaxNotional = equity * config.maxPositionPct / entryPrice;
-  const quantity = Math.min(quantityByRisk, quantityByMaxNotional);
+  const quantity = riskDecision?.positionSize ?? Math.min(quantityByRisk, quantityByMaxNotional);
   if (!Number.isFinite(quantity) || quantity <= 0) return null;
 
   const entryFee = feeForNotional(entryPrice * quantity, config.feeBps);
@@ -292,6 +327,86 @@ export function createOpenPositionFromSignal(
     entryFee,
     entrySlippageCost,
     regimeAtEntry: entryRegime?.regime ?? "UNKNOWN",
+    riskDecision,
+  };
+}
+
+function missingRegimeDecision(): RiskDecision {
+  return {
+    approved: false,
+    reason: "Risk overlay requires regime context before simulated entry",
+    sizeMultiplier: 0,
+    maxRiskUsd: 0,
+    positionSize: 0,
+    stopLoss: null,
+    takeProfit: null,
+    blockedBy: ["REGIME_CONTEXT_MISSING"],
+    warnings: [],
+    riskVersion: RISK_VERSION,
+  };
+}
+
+function riskEvent(signal: StrategySignal, decision: RiskDecision, entryPrice: number): RiskOverlayEvent {
+  const riskUsdUsed = decision.approved && decision.stopLoss !== null
+    ? decision.positionSize * Math.abs(entryPrice - decision.stopLoss)
+    : 0;
+  return {
+    ts: signal.ts,
+    symbol: signal.symbol,
+    strategyId: signal.strategyId,
+    approved: decision.approved,
+    riskVersion: decision.riskVersion,
+    blockedBy: [...decision.blockedBy],
+    warnings: [...decision.warnings],
+    reason: decision.reason,
+    sizeMultiplier: decision.sizeMultiplier,
+    maxRiskUsd: decision.maxRiskUsd,
+    riskUsdUsed,
+    positionSize: decision.positionSize,
+    stopLoss: decision.stopLoss,
+    takeProfit: decision.takeProfit,
+  };
+}
+
+function countReasons(events: RiskOverlayEvent[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const event of events) {
+    for (const reason of event.blockedBy) counts[reason] = (counts[reason] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function sumReasonCounts(counts: Record<string, number>, reasons: string[]): number {
+  return reasons.reduce((sum, reason) => sum + (counts[reason] ?? 0), 0);
+}
+
+function summarizeRiskOverlay(
+  rawMetrics: BacktestResult["metrics"],
+  riskAdjustedMetrics: BacktestResult["metrics"],
+  events: RiskOverlayEvent[],
+): RiskOverlaySummary {
+  const approved = events.filter((event) => event.approved);
+  const blocked = events.filter((event) => !event.approved);
+  const riskBlockedByReason = countReasons(blocked);
+  return {
+    enabled: true,
+    rawMetrics,
+    riskAdjustedMetrics,
+    riskApprovedTrades: approved.length,
+    riskBlockedTrades: blocked.length,
+    riskBlockedByReason,
+    avgSizeMultiplier: approved.length === 0
+      ? null
+      : approved.reduce((sum, event) => sum + event.sizeMultiplier, 0) / approved.length,
+    maxRiskUsdUsed: approved.reduce((max, event) => Math.max(max, event.riskUsdUsed), 0),
+    dailyLossBlocks: sumReasonCounts(riskBlockedByReason, ["MAX_DAILY_LOSS"]),
+    weeklyLossBlocks: sumReasonCounts(riskBlockedByReason, ["MAX_WEEKLY_LOSS"]),
+    regimeReliabilityBlocks: sumReasonCounts(riskBlockedByReason, ["REGIME_RELIABILITY_LOW", "REGIME_RELIABILITY_COLLAPSE"]),
+    regimeBlocks: sumReasonCounts(riskBlockedByReason, ["REGIME_BLOCKED", "NEWS_SHOCK_BLOCKED", "REGIME_SIZE_BLOCKED", "REGIME_CONTEXT_MISSING"]),
+    staleSignalBlocks: sumReasonCounts(riskBlockedByReason, ["SIGNAL_STALE"]),
+    duplicateCooldownBlocks: sumReasonCounts(riskBlockedByReason, ["DUPLICATE_COOLDOWN"]),
+    exposureBlocks: sumReasonCounts(riskBlockedByReason, ["MAX_SYMBOL_EXPOSURE", "MAX_PORTFOLIO_EXPOSURE", "MAX_LEVERAGE", "POSITION_SIZE_ZERO"]),
+    killSwitchBlocks: sumReasonCounts(riskBlockedByReason, ["KILL_SWITCH_ENABLED", "MAX_OPEN_POSITION_DRAWDOWN", "MAX_CONSECUTIVE_LOSSES"]),
   };
 }
 
@@ -334,6 +449,13 @@ function markToMarket(position: OpenPosition | null, bar: Bar): { equityDelta: n
 export function runBacktest(input: BacktestInput): BacktestResult {
   validateInputs(input);
   const { config, bars, features } = input;
+  const riskEnabled = config.risk?.enabled === true;
+  const rawResult = riskEnabled
+    ? runBacktest({
+        ...input,
+        config: { ...config, risk: undefined },
+      })
+    : null;
   const strategy = input.strategyRouter ?? getStrategyById(config.strategyId);
   if (!strategy) throw new Error(`unknown strategyId: ${config.strategyId}`);
 
@@ -341,8 +463,11 @@ export function runBacktest(input: BacktestInput): BacktestResult {
   const featureByTs = new Map(features.map((feature) => [feature.ts, feature]));
   const trades: SimulatedTrade[] = [];
   const equityCurve: EquityPoint[] = [];
+  const riskEvents: RiskOverlayEvent[] = [];
+  const recentPnL: PnlSnapshot[] = [];
   let equity = config.initialCapital;
   let peakEquity = config.initialCapital;
+  let consecutiveLosses = 0;
   let open: OpenPosition | null = null;
 
   for (let barIndex = 0; barIndex < bars.length; barIndex++) {
@@ -353,6 +478,14 @@ export function runBacktest(input: BacktestInput): BacktestResult {
       if (closed) {
         trades.push(closed);
         equity += closed.pnl;
+        consecutiveLosses = closed.pnl < 0 ? consecutiveLosses + 1 : 0;
+        recentPnL.push({
+          ts: closed.exitTs ?? bar.ts,
+          realizedPnl: closed.pnl,
+          unrealizedPnl: 0,
+          equity,
+          consecutiveLosses,
+        });
         open = null;
       }
     }
@@ -382,9 +515,36 @@ export function runBacktest(input: BacktestInput): BacktestResult {
       regime,
     });
     if (!signal || signal.signalType !== "trigger") continue;
-    if (!input.strategyRouter && regime?.regime === "NEWS_SHOCK") continue;
+    if (!riskEnabled && !input.strategyRouter && regime?.regime === "NEWS_SHOCK") continue;
 
-    open = createOpenPositionFromSignal(signal, bars[nextBarIndex], nextBarIndex, equity, input);
+    if (!riskEnabled) {
+      open = createOpenPositionFromSignal(signal, bars[nextBarIndex], nextBarIndex, equity, input);
+      continue;
+    }
+
+    const entryBar = bars[nextBarIndex];
+    const riskEntryPrice = signal.direction === "long" || signal.direction === "short"
+      ? applyEntrySlippage(entryBar.open, signal.direction, config.slippageBps)
+      : entryBar.open;
+    const decision = regime === null
+      ? missingRegimeDecision()
+      : evaluateRisk(buildRiskInputFromBacktestContext({
+          signal: {
+            ...signal,
+            features: {
+              ...signal.features,
+              close: riskEntryPrice,
+            },
+          },
+          regime,
+          accountEquity: equity,
+          recentPnL,
+          config: config.risk!.config,
+          nowTs: entryBar.ts,
+        }));
+    riskEvents.push(riskEvent(signal, decision, riskEntryPrice));
+    if (!decision.approved) continue;
+    open = createOpenPositionFromSignal(signal, entryBar, nextBarIndex, equity, input, decision);
   }
 
   if (open && !config.closeOpenPositionAtEnd) {
@@ -392,11 +552,16 @@ export function runBacktest(input: BacktestInput): BacktestResult {
   }
 
   const metrics = calculateBacktestMetrics(config, trades, equityCurve, bars);
-  return {
+  const result: BacktestResult = {
     config,
     strategyVersion: strategy.version,
     trades,
     equityCurve,
     metrics,
   };
+  if (riskEnabled && rawResult) {
+    result.riskEvents = riskEvents;
+    result.riskOverlay = summarizeRiskOverlay(rawResult.metrics, metrics, riskEvents);
+  }
+  return result;
 }

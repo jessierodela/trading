@@ -14,6 +14,7 @@ import {
 import { FEATURE_VERSION } from "@/lib/versions";
 import type { BacktestAssetType, BacktestConfig, StrategyRouter } from "@/lib/backtest/types";
 import type { Exchange, RegimeContext, Timeframe } from "@/lib/quant/types";
+import type { RiskConfig } from "@/lib/risk/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -40,6 +41,10 @@ interface RunBacktestBody {
     id?: string;
     version?: string;
     regimeStrategyMap?: RegimeStrategyMap;
+  };
+  risk?: {
+    enabled?: boolean;
+    config?: RiskConfig;
   };
 }
 
@@ -97,6 +102,12 @@ function parseConfig(body: RunBacktestBody): { config: BacktestConfig; persist: 
   const endMs = Date.parse(body.endTs);
   if (Number.isNaN(startMs) || Number.isNaN(endMs)) return { error: "startTs and endTs must be valid timestamps" };
   if (startMs >= endMs) return { error: "startTs must be < endTs" };
+  if (body.risk?.enabled === true && !body.risk.config) {
+    return { error: "risk.config is required when risk.enabled is true" };
+  }
+  if (body.risk?.enabled === true && body.risk.config?.enabled !== true) {
+    return { error: "risk.config.enabled must be true when risk.enabled is true" };
+  }
 
   return {
     persist: body.persist ?? true,
@@ -120,6 +131,9 @@ function parseConfig(body: RunBacktestBody): { config: BacktestConfig; persist: 
       closeOpenPositionAtEnd: body.closeOpenPositionAtEnd ?? true,
       enterOnNextBarOpen: true,
       sameBarStopFirst: true,
+      risk: body.risk?.enabled === true
+        ? { enabled: true, config: body.risk.config! }
+        : undefined,
     },
   };
 }
@@ -245,6 +259,12 @@ export async function POST(req: NextRequest) {
       firstTrade: result.trades[0] ?? null,
       lastTrade: result.trades[result.trades.length - 1] ?? null,
       notes: result.metrics.notes,
+      ...(result.riskOverlay
+        ? {
+            riskOverlay: result.riskOverlay,
+            riskEvents: result.riskEvents ?? [],
+          }
+        : {}),
     });
   } catch (err) {
     return NextResponse.json<ErrorResponse>(

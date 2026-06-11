@@ -8,6 +8,7 @@ import type {
   Timeframe,
 } from "@/lib/quant/types";
 import type { StrategyInput } from "@/lib/strategies/types";
+import type { RiskConfig, RiskDecision } from "@/lib/risk/types";
 
 export type BacktestAssetType = "CRYPTO" | "EQUITY" | "ETF" | "UNKNOWN";
 
@@ -49,6 +50,11 @@ export interface BacktestConfig {
 
   enterOnNextBarOpen: true;
   sameBarStopFirst: true;
+
+  risk?: {
+    enabled: boolean;
+    config: RiskConfig;
+  };
 }
 
 export interface BacktestInput {
@@ -100,6 +106,52 @@ export interface SimulatedTrade {
   entryHourUtc: number;
 
   sourceSignal: StrategySignal;
+
+  riskApproved?: boolean;
+  riskDecision?: RiskDecision;
+  riskVersion?: string;
+  riskBlockedBy?: string[];
+  riskWarnings?: string[];
+  riskSizeMultiplier?: number;
+  riskMaxRiskUsd?: number;
+  riskStopLoss?: number | null;
+  riskTakeProfit?: number | null;
+}
+
+export interface RiskOverlayEvent {
+  ts: string;
+  symbol: string;
+  strategyId: string;
+  approved: boolean;
+  riskVersion: string;
+  blockedBy: string[];
+  warnings: string[];
+  reason: string;
+  sizeMultiplier: number;
+  maxRiskUsd: number;
+  riskUsdUsed: number;
+  positionSize: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+}
+
+export interface RiskOverlaySummary {
+  enabled: true;
+  rawMetrics: BacktestMetrics;
+  riskAdjustedMetrics: BacktestMetrics;
+  riskApprovedTrades: number;
+  riskBlockedTrades: number;
+  riskBlockedByReason: Record<string, number>;
+  avgSizeMultiplier: number | null;
+  maxRiskUsdUsed: number;
+  dailyLossBlocks: number;
+  weeklyLossBlocks: number;
+  regimeReliabilityBlocks: number;
+  regimeBlocks: number;
+  staleSignalBlocks: number;
+  duplicateCooldownBlocks: number;
+  exposureBlocks: number;
+  killSwitchBlocks: number;
 }
 
 export interface EquityPoint {
@@ -170,7 +222,13 @@ export interface BacktestResult {
   trades: SimulatedTrade[];
   equityCurve: EquityPoint[];
   metrics: BacktestMetrics;
+  riskEvents?: RiskOverlayEvent[];
+  riskOverlay?: RiskOverlaySummary;
 }
+
+export type StoredBacktestMetrics = BacktestMetrics & {
+  riskOverlay?: RiskOverlaySummary;
+};
 
 export interface BacktestRunRow {
   id: number;
@@ -183,7 +241,7 @@ export interface BacktestRunRow {
   startTs: string;
   endTs: string;
   config: BacktestConfig;
-  metrics: BacktestMetrics;
+  metrics: StoredBacktestMetrics;
   createdAt: string;
 }
 
