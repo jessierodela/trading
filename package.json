@@ -18,6 +18,7 @@
     "smoke:backtest:risk": "tsx _smoke/backtestRiskOverlay.ts",
     "smoke:trade-intent": "tsx _smoke/tradeIntent.ts",
     "smoke:paper-trading": "tsx _smoke/paperTrading.ts",
+    "smoke:paper-trading:persistence": "tsx _smoke/paperTradingPersistence.ts",
     "smoke:p2d:live": "dotenv -e .env.local -- tsx _smoke/features_crossvalidate_live.ts",
     "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
     "backfill:btc:bootstrap": "dotenv -e .env.local -- tsx scripts/backfillBtcBootstrap.ts",

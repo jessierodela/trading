@@ -30,6 +30,7 @@ export function openPaperPosition(intent: TradeIntent, order: PaperOrder, fill: 
     orderId: order.id,
     symbol: intent.symbol,
     exchange: intent.exchange,
+    timeframe: intent.timeframe,
     direction: intent.direction,
     quantity: fill.quantity,
     entryPrice: fill.fillPrice,
