@@ -17,8 +17,12 @@ import { RegimeIntelligencePanel } from "@/components/dashboard/RegimeIntelligen
 import { StrategyResearchPanel }   from "@/components/dashboard/StrategyResearchPanel";
 import { MultiAssetCoveragePanel } from "@/components/dashboard/MultiAssetCoveragePanel";
 import { DataHealthPanel }         from "@/components/dashboard/DataHealthPanel";
+import { PaperTradingPanel }       from "@/components/dashboard/PaperTradingPanel";
 import { ExecutionReadinessPanel } from "@/components/dashboard/ExecutionReadinessPanel";
 import { SystemEventLog }          from "@/components/dashboard/SystemEventLog";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export default function DashboardPage() {
   return (
@@ -34,6 +38,7 @@ export default function DashboardPage() {
         <StrategyResearchPanel />
         <MultiAssetCoveragePanel />
         <DataHealthPanel />
+        <PaperTradingPanel />
         <ExecutionReadinessPanel />
         <SystemEventLog />
       </main>
