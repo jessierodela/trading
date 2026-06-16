@@ -51,6 +51,7 @@ create table jobs (
     check (payload ? 'jobType' and payload->>'jobType' = job_type),
   constraint jobs_attempts_nonnegative check (attempts >= 0),
   constraint jobs_max_attempts_positive check (max_attempts > 0),
+  constraint jobs_attempts_lte_max_attempts check (attempts <= max_attempts),
   constraint jobs_priority_nonnegative check (priority >= 0)
 );
 

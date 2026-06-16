@@ -37,7 +37,7 @@ export type JobPayload =
     }
   | {
       jobType: "dashboard.snapshot";
-      snapshotType: "dashboard" | "signals" | "regime" | "paper";
+      snapshotType: "dashboard" | "signals" | "regime" | "paper" | "telegram";
       symbols?: string[];
     }
   | {
@@ -164,8 +164,8 @@ export function validateJobPayload(payload: unknown): JobPayload {
       requireTimeframe(obj, ["1h"]);
       break;
     case "dashboard.snapshot":
-      if (!["dashboard", "signals", "regime", "paper"].includes(String(obj.snapshotType))) {
-        throw new Error("dashboard.snapshot snapshotType must be dashboard, signals, regime, or paper");
+      if (!["dashboard", "signals", "regime", "paper", "telegram"].includes(String(obj.snapshotType))) {
+        throw new Error("dashboard.snapshot snapshotType must be dashboard, signals, regime, paper, or telegram");
       }
       optionalStringArray(obj, "symbols");
       break;

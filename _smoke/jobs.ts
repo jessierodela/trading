@@ -83,6 +83,20 @@ const dashboardPayload: JobPayload = {
   symbols: ["BTC-USD"],
 };
 
+const telegramSnapshotPayload: JobPayload = {
+  jobType: "dashboard.snapshot",
+  snapshotType: "telegram",
+  symbols: ["BTC-USD"],
+};
+
+function dashboardSnapshotPayloadFor(symbol: string): JobPayload {
+  return {
+    jobType: "dashboard.snapshot",
+    snapshotType: "dashboard",
+    symbols: [symbol],
+  };
+}
+
 const telegramPayload: JobPayload = {
   jobType: "telegram.refresh",
   chatId: "123",
@@ -99,6 +113,7 @@ function runPayloadValidationChecks(): void {
     strategyPayload,
     paperPayload,
     dashboardPayload,
+    telegramSnapshotPayload,
     telegramPayload,
   ]) {
     eq(`validates ${payload.jobType}`, validateJobPayload(payload).jobType, payload.jobType);
@@ -304,6 +319,43 @@ async function runPostgresChecks(pool: Pool): Promise<void> {
     "runtime forbidden live job type rejected",
     () => jobs.enqueueJob({ jobType: "live.execute" } as unknown as JobPayload),
   );
+
+  await expectReject(
+    "db rejects attempts greater than max_attempts",
+    () => pool.query(
+      `insert into jobs (job_type, status, payload, attempts, max_attempts)
+       values ('dashboard.snapshot', 'queued', $1::jsonb, 2, 1)`,
+      [JSON.stringify(dashboardPayload)],
+    ),
+  );
+
+  console.log("\n=== stale worker lease guards ===");
+  const staleHeartbeatJob = await jobs.enqueueJob(dashboardSnapshotPayloadFor("STALE-HEARTBEAT"));
+  const staleHeartbeatClaimed = await jobs.claimNextJob("worker-stale-heartbeat", 1_000);
+  eq("claim stale heartbeat candidate", staleHeartbeatClaimed?.publicId, staleHeartbeatJob.publicId);
+  await pool.query("update jobs set lease_expires_at = now() - interval '1 second' where id = $1", [staleHeartbeatClaimed!.id]);
+  await expectReject(
+    "stale worker heartbeat after lease expiry rejected",
+    () => jobs.heartbeatJob(staleHeartbeatClaimed!.id, "worker-stale-heartbeat", 1_000),
+  );
+
+  const staleCompleteJob = await jobs.enqueueJob(dashboardSnapshotPayloadFor("STALE-COMPLETE"));
+  const staleCompleteClaimed = await jobs.claimNextJob("worker-stale-complete", 1_000);
+  eq("claim stale complete candidate", staleCompleteClaimed?.publicId, staleCompleteJob.publicId);
+  await pool.query("update jobs set lease_expires_at = now() - interval '1 second' where id = $1", [staleCompleteClaimed!.id]);
+  await expectReject(
+    "stale worker completion after lease expiry rejected",
+    () => jobs.completeJob(staleCompleteClaimed!.id, "worker-stale-complete", { shouldNotWrite: true }),
+  );
+
+  const staleFailJob = await jobs.enqueueJob(dashboardSnapshotPayloadFor("STALE-FAIL"));
+  const staleFailClaimed = await jobs.claimNextJob("worker-stale-fail", 1_000);
+  eq("claim stale fail candidate", staleFailClaimed?.publicId, staleFailJob.publicId);
+  await pool.query("update jobs set lease_expires_at = now() - interval '1 second' where id = $1", [staleFailClaimed!.id]);
+  await expectReject(
+    "stale worker failure after lease expiry rejected",
+    () => jobs.failJob(staleFailClaimed!.id, "worker-stale-fail", "too late", { retryable: true }),
+  );
 }
 
 async function main(): Promise<void> {
@@ -311,7 +363,13 @@ async function main(): Promise<void> {
 
   const dbUrl = process.env.SUPABASE_DB_URL ?? process.env.DATABASE_URL;
   if (!dbUrl) {
-    console.log("\n(skipping postgres job lifecycle suite - set SUPABASE_DB_URL or DATABASE_URL to enable)");
+    const message = "postgres job lifecycle suite skipped - set SUPABASE_DB_URL or DATABASE_URL to enable";
+    if (process.env.REQUIRE_DB_SMOKE === "1") {
+      console.log(`\nFAIL: ${message} (REQUIRE_DB_SMOKE=1)`);
+      failed++;
+    } else {
+      console.log(`\n(SKIP: ${message}; set REQUIRE_DB_SMOKE=1 in CI to fail instead)`);
+    }
   } else {
     const pool = new Pool({ connectionString: dbUrl });
     try {

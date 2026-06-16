@@ -343,10 +343,11 @@ export class PostgresJobStore implements JobStore {
          where (public_id::text = $1 or id::text = $1)
            and status = 'running'
            and locked_by = $2
+           and lease_expires_at > now()
          returning *`,
         [normalizeJobIdentifier(jobId), workerId, leaseMs],
       );
-      if (!rows[0]) throw new Error(`running job not found for heartbeat: ${jobId}`);
+      if (!rows[0]) throw new Error(`running job with active lease not found for heartbeat: ${jobId}`);
       const job = rowToJob(rows[0]);
       await insertEvent(client, job.id, "job_heartbeat", "Worker heartbeat extended lease", { workerId, leaseMs });
       return job;
@@ -370,10 +371,11 @@ export class PostgresJobStore implements JobStore {
          where (public_id::text = $1 or id::text = $1)
            and status = 'running'
            and locked_by = $2
+           and lease_expires_at > now()
          returning *`,
         [normalizeJobIdentifier(jobId), workerId, JSON.stringify(result ?? {})],
       );
-      if (!rows[0]) throw new Error(`running job not found for completion: ${jobId}`);
+      if (!rows[0]) throw new Error(`running job with active lease not found for completion: ${jobId}`);
       const job = rowToJob(rows[0]);
       await insertEvent(client, job.id, "job_succeeded", "Job completed successfully", { workerId });
       return job;
@@ -389,12 +391,13 @@ export class PostgresJobStore implements JobStore {
          where (public_id::text = $1 or id::text = $1)
            and status = 'running'
            and locked_by = $2
+           and lease_expires_at > now()
          for update
          limit 1`,
         [normalizeJobIdentifier(jobId), workerId],
       );
       const row = current.rows[0];
-      if (!row) throw new Error(`running job not found for failure: ${jobId}`);
+      if (!row) throw new Error(`running job with active lease not found for failure: ${jobId}`);
 
       if (!retryPolicy.retryable) {
         const { rows } = await client.query<JobRow>(
