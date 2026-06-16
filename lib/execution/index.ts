@@ -8,6 +8,15 @@ export {
   validatePaperPositionForPersistence,
 } from "./postgresPaperTradingStore";
 export { openPaperPosition, updatePaperPositionWithBar } from "./paperPosition";
+export {
+  createPaperOrderFromIntent,
+  fillPaperOrder,
+  isPaperTradingKillSwitchActive,
+  listPaperPositions,
+  mutatePaperPosition,
+  paperTradingAuthResult,
+  withPostgresPaperTradingContext,
+} from "./paperTradingApi";
 export type { PaperTradingStore, PgQueryable } from "./storeTypes";
 export type {
   CreatePaperOrderConfig,
