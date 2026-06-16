@@ -32,6 +32,7 @@ export interface PaperPosition {
   orderId: string;
   symbol: string;
   exchange: string;
+  timeframe: string;
   direction: "LONG" | "SHORT";
   quantity: number;
   entryPrice: number;
