@@ -409,14 +409,13 @@ async function runStaticChecks(): Promise<void> {
   assert("market ingest names closed bar behavior", marketIngestText.includes("closedbar"));
 
   const forbiddenFiles = [
-    "lib/jobs/worker.ts",
     "lib/jobs/scheduler.ts",
-    "scripts/runJobWorker.ts",
     "scripts/jobScheduler.ts",
     "app/api/jobs/worker/route.ts",
+    "app/api/jobs/scheduler/route.ts",
   ];
   for (const file of forbiddenFiles) {
-    assert(`no worker/scheduler file added: ${file}`, !fs.existsSync(path.join(process.cwd(), file)));
+    assert(`no scheduler/public worker route added: ${file}`, !fs.existsSync(path.join(process.cwd(), file)));
   }
 
   assertNoLiveExecutionJobTypes();
