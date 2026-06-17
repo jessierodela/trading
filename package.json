@@ -9,6 +9,7 @@
     "lint": "next lint",
     "migrate": "dotenv -e .env.local -- tsx migrations/run.ts",
     "migrate:status": "dotenv -e .env.local -- tsx migrations/run.ts --status",
+    "repair:migration:0001": "dotenv -e .env.local -- tsx scripts/repairMigration0001Drift.ts",
     "smoke:storage": "tsx _smoke/storage.ts",
     "smoke:features": "tsx _smoke/features.ts",
     "smoke:p2d": "tsx _smoke/features_crossvalidate.ts",

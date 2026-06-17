@@ -137,6 +137,14 @@ async function countEvents(pool: Pool, jobId: number, eventType?: string): Promi
 
 async function runPostgresChecks(pool: Pool): Promise<void> {
   console.log("\n=== postgres job store ===");
+  // SMOKE_ALLOW_TRUNCATE is checked in main() before we get here; this assert
+  // is defense in depth so a future caller cannot bypass the gate by invoking
+  // runPostgresChecks directly.
+  if (process.env.SMOKE_ALLOW_TRUNCATE !== "1") {
+    throw new Error(
+      "runPostgresChecks called without SMOKE_ALLOW_TRUNCATE=1 — destructive truncate refused",
+    );
+  }
   await pool.query("truncate table job_events, dashboard_snapshots, jobs restart identity cascade");
 
   const jobs = new PostgresJobStore(pool);
@@ -370,6 +378,22 @@ async function main(): Promise<void> {
     } else {
       console.log(`\n(SKIP: ${message}; set REQUIRE_DB_SMOKE=1 in CI to fail instead)`);
     }
+  } else if (process.env.SMOKE_ALLOW_TRUNCATE !== "1") {
+    // The DB suite begins with `truncate table job_events, dashboard_snapshots,
+    // jobs restart identity cascade`. Once workers/the paper run start
+    // populating those tables, running this smoke would wipe live state.
+    // Fail loudly before any destructive SQL runs.
+    console.log(
+      "\nFAIL: refusing to run DB smoke — it truncates job_events/dashboard_snapshots/jobs.",
+    );
+    console.log(
+      "       Set SMOKE_ALLOW_TRUNCATE=1 only against a DB where wiping these tables is safe",
+    );
+    console.log(
+      "       (e.g. a fresh project, or before any worker has run). Do NOT set this once",
+    );
+    console.log("       the paper-run worker pipeline is live.");
+    failed++;
   } else {
     const pool = new Pool({ connectionString: dbUrl });
     try {
