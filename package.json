@@ -24,6 +24,7 @@
     "smoke:paper-trading:dashboard": "tsx _smoke/paperTradingDashboard.tsx",
     "smoke:paper-trading:workflow": "tsx _smoke/paperTradingWorkflow.ts",
     "smoke:jobs": "tsx _smoke/jobs.ts",
+    "smoke:pipeline-services": "tsx _smoke/pipelineServices.ts",
     "smoke:p2d:live": "dotenv -e .env.local -- tsx _smoke/features_crossvalidate_live.ts",
     "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
     "backfill:btc:bootstrap": "dotenv -e .env.local -- tsx scripts/backfillBtcBootstrap.ts",
