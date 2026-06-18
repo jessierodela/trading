@@ -4,29 +4,22 @@
  * GET /api/regime/[symbol]
  *
  * Regime Oracle endpoint consumed by the Markov bot.
- * Reads from memCache.response.regimeMap after a queued dashboard refresh
- * completes. No GPT calls, no indicator fetches, pure cache read.
  *
- * Response contract:
- *   symbol           string
- *   regime           string
- *   reliability      number
- *   directionalBias  string
- *   tradePermission  string
- *   edgeMultiplier   number
- *   sizeMultiplier   number
- *   emaContext       object
- *   volContext       object
- *   reason           string
- *   updatedAt        ISO8601
+ * P8D read priority:
+ *   1. latest regime_snapshots row for the symbol/exchange
+ *   2. latest non-expired dashboard_snapshots payload.regimeMap
+ *   3. transitional process-local memCache.response.regimeMap
+ *   4. 404 empty state
+ *
+ * This route does not run GPT, indicator fetches, refresh pipelines, worker
+ * handlers, or route-to-route refresh calls.
  */
 
 import { NextResponse } from "next/server";
+import { DashboardSnapshotStore } from "@/lib/jobs/dashboardSnapshotStore";
+import { readRegimeRouteState } from "@/lib/regime/regimeRouteReader";
 import { memCache } from "@/lib/signalsCache";
-import {
-  mapRegimeToPermission,
-  type RegimeLabel,
-} from "@/lib/regime/permissionMap";
+import { getPgPool, PgRegimeStore } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -35,63 +28,34 @@ export async function GET(
   { params }: { params: Promise<{ symbol: string }> },
 ) {
   const { symbol } = await params;
-  const upper = symbol.toUpperCase();
 
+  let regimeStore: PgRegimeStore | null = null;
+  let dashboardSnapshotStore: DashboardSnapshotStore | null = null;
   try {
-    const payload = memCache.response as {
-      regimeMap?: Record<string, {
-        regime: RegimeLabel;
-        reliability: number;
-        emaContext: { ema20Slope: string; ema50Above200: boolean | null };
-        volContext: { atrPct: number | null; atrRegime: string; relVol: number | null };
-      }>;
-      generatedAt?: string;
-    } | null;
-
-    if (!payload?.regimeMap) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Regime cache is empty. Queue a dashboard refresh and wait for completion first.",
-          symbol: upper,
-        },
-        { status: 404 },
-      );
-    }
-
-    const ctx = payload.regimeMap[upper];
-    if (!ctx) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `No regime data for symbol ${upper}. Supported symbols are: ${Object.keys(payload.regimeMap).join(", ")}.`,
-          symbol: upper,
-        },
-        { status: 404 },
-      );
-    }
-
-    const mapped = mapRegimeToPermission(ctx.regime, ctx.reliability);
-
-    return NextResponse.json({
-      success: true,
-      symbol: upper,
-      regime: ctx.regime,
-      reliability: ctx.reliability,
-      directionalBias: mapped.directionalBias,
-      tradePermission: mapped.tradePermission,
-      edgeMultiplier: mapped.edgeMultiplier,
-      sizeMultiplier: mapped.sizeMultiplier,
-      emaContext: ctx.emaContext,
-      volContext: ctx.volContext,
-      reason: mapped.reason,
-      updatedAt: payload.generatedAt ?? null,
-    });
-  } catch (e) {
-    console.error("[api/regime] Unhandled error:", e);
-    return NextResponse.json(
-      { success: false, error: "Internal server error", detail: String(e) },
-      { status: 500 },
+    const pool = getPgPool();
+    regimeStore = new PgRegimeStore(pool);
+    dashboardSnapshotStore = new DashboardSnapshotStore(pool);
+  } catch (err) {
+    console.warn(
+      `[api/regime] persisted stores unavailable - falling back: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
     );
   }
+
+  const result = await readRegimeRouteState({
+    symbol,
+    regimeStore,
+    dashboardSnapshotStore,
+    memoryResponse: memCache.response,
+    onPersistedReadError: (err) => {
+      console.warn(
+        `[api/regime] persisted regime read failed - falling back: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    },
+  });
+
+  return NextResponse.json(result.body, { status: result.status });
 }

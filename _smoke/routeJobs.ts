@@ -26,6 +26,11 @@ import {
   isRefreshBusy,
   refreshStateFromJobStatus,
 } from "@/components/dashboard/RefreshButton";
+import {
+  normalizeRegimeRouteSymbol,
+  readRegimeRouteState,
+} from "@/lib/regime/regimeRouteReader";
+import type { RegimeSnapshotRow } from "@/lib/storage/interfaces";
 
 let failed = 0;
 
@@ -125,6 +130,30 @@ function snapshot(payload: unknown, generatedAt = "2026-06-17T10:00:00.000Z"): D
     generatedAt,
     expiresAt: null,
     createdAt: generatedAt,
+  };
+}
+
+function regimeSnapshotRow(symbol = "BTC-USD"): RegimeSnapshotRow {
+  return {
+    symbol,
+    exchange: "COINBASE",
+    ts: "2026-06-17T11:00:00.000Z",
+    regime: "TREND_UP",
+    reliability: 0.91,
+    directionalBias: "UP",
+    tradePermission: "ALLOW_UP_ONLY",
+    edgeMultiplier: 0.9,
+    sizeMultiplier: 1.25,
+    reason: "persisted regime row",
+    rawResponse: {
+      signal: {
+        emaContext: { ema20Slope: "up", ema50Above200: true },
+        volContext: { atrPct: 1.2, atrRegime: "normal", relVol: 1.1 },
+      },
+    },
+    regimeModelVersion: "a6.test",
+    promptVersion: "prompt.test",
+    featureVersion: "features.test",
   };
 }
 
@@ -259,6 +288,109 @@ async function runSignalsReaderChecks(): Promise<void> {
   });
 }
 
+async function runRegimeRouteReaderChecks(): Promise<void> {
+  console.log("\n=== regime route persisted reads ===");
+  const lookup = normalizeRegimeRouteSymbol("btc");
+  eq("regime route normalizes persisted symbol", lookup.persistedSymbol, "BTC-USD");
+  assert("regime route can match dashboard BTC key", lookup.dashboardCandidates.includes("BTC"));
+
+  const persisted = await readRegimeRouteState({
+    symbol: "btc",
+    regimeStore: {
+      async latest(filter) {
+        return filter.symbol === "BTC-USD" ? regimeSnapshotRow(filter.symbol) : null;
+      },
+    },
+    dashboardSnapshotStore: {
+      async fetchLatestSnapshot() {
+        return snapshot({
+          generatedAt: "2026-06-17T10:00:00.000Z",
+          regimeMap: {
+            BTC: {
+              regime: "CHOP",
+              reliability: 0.8,
+              emaContext: null,
+              volContext: null,
+            },
+          },
+        });
+      },
+    },
+    memoryResponse: {
+      generatedAt: "2026-06-17T09:00:00.000Z",
+      regimeMap: {
+        BTC: {
+          regime: "LOW_VOL",
+          reliability: 0.7,
+          emaContext: null,
+          volContext: null,
+        },
+      },
+    },
+  });
+  eq("regime route prefers regime_snapshots", persisted.source, "regime_snapshots");
+  assert("regime route persisted body succeeds", persisted.body.success);
+  if (persisted.body.success) {
+    eq("regime route persisted symbol response", persisted.body.symbol, "BTC");
+    eq("regime route persisted trade permission", persisted.body.tradePermission, "ALLOW_UP_ONLY");
+    eq("regime route persisted updatedAt", persisted.body.updatedAt, "2026-06-17T11:00:00.000Z");
+  }
+
+  const snapshotFallback = await readRegimeRouteState({
+    symbol: "BTC-USD",
+    regimeStore: {
+      async latest() {
+        return null;
+      },
+    },
+    dashboardSnapshotStore: {
+      async fetchLatestSnapshot(filter) {
+        eq("regime route dashboard fallback requests non-expired snapshot", filter, {
+          snapshotType: "dashboard",
+          includeExpired: false,
+        });
+        return snapshot({
+          generatedAt: "2026-06-17T10:00:00.000Z",
+          regimeMap: {
+            BTC: {
+              regime: "CHOP",
+              reliability: 0.8,
+              emaContext: { ema20Slope: "flat" },
+              volContext: { atrRegime: "low" },
+            },
+          },
+        });
+      },
+    },
+  });
+  eq("regime route falls back to dashboard_snapshots", snapshotFallback.source, "dashboard_snapshots");
+  assert("regime route dashboard fallback body succeeds", snapshotFallback.body.success);
+  if (snapshotFallback.body.success) {
+    eq("regime route dashboard fallback maps permission", snapshotFallback.body.tradePermission, "BLOCK_OR_EXCEPTIONAL_ONLY");
+    eq("regime route dashboard fallback updatedAt", snapshotFallback.body.updatedAt, "2026-06-17T10:00:00.000Z");
+  }
+
+  const memoryFallback = await readRegimeRouteState({
+    symbol: "BTC",
+    memoryResponse: {
+      generatedAt: "2026-06-17T09:00:00.000Z",
+      regimeMap: {
+        BTC: {
+          regime: "LOW_VOL",
+          reliability: 0.7,
+          emaContext: null,
+          volContext: null,
+        },
+      },
+    },
+  });
+  eq("regime route falls back to memCache", memoryFallback.source, "memCache");
+
+  const empty = await readRegimeRouteState({ symbol: "DOGE" });
+  eq("regime route empty state is 404", empty.status, 404);
+  eq("regime route empty state source", empty.source, "empty");
+}
+
 function runRefreshButtonChecks(): void {
   console.log("\n=== refresh button state helpers ===");
   eq("queued job maps to queued state", refreshStateFromJobStatus("queued"), "queued");
@@ -297,6 +429,7 @@ function runStaticChecks(): void {
   console.log("\n=== static route boundaries ===");
   for (const file of [
     "app/api/cache/refresh/route.ts",
+    "app/api/regime/[symbol]/route.ts",
     "app/api/regime/refresh/route.ts",
     "app/api/jobs/refresh/route.ts",
     "app/api/jobs/[id]/route.ts",
@@ -323,6 +456,7 @@ async function main(): Promise<void> {
   await runEnqueueChecks();
   runPresenterChecks();
   await runSignalsReaderChecks();
+  await runRegimeRouteReaderChecks();
   runRefreshButtonChecks();
   await runTelegramRefreshChecks();
   runStaticChecks();
