@@ -1,54 +1,66 @@
 /**
  * app/api/signals/route.ts
  *
- * READ ONLY — serves the in-memory cache written by POST /api/cache/refresh.
- * No Supabase. No fallback. If the cache is empty, returns empty state.
+ * Read-only dashboard state endpoint.
+ *
+ * P8D preference order:
+ *   1. Latest non-expired dashboard_snapshots row with snapshotType=dashboard
+ *   2. Transitional in-memory cache
+ *   3. Empty dashboard state
  */
 
-import { NextResponse }            from "next/server";
-import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
-import {
-  buildActivityLog,
-  type AgentResult,
-  type DashboardStats,
-} from "@/lib/signals";
+import { NextResponse } from "next/server";
+import { DashboardSnapshotStore } from "@/lib/jobs/dashboardSnapshotStore";
+import { readDashboardSignals } from "@/lib/jobs/dashboardSignalsReader";
+import { getPgPool } from "@/lib/storage";
+import { memCache } from "@/lib/signalsCache";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const TAG = "[api/signals]";
-
-// Currently unused — kept for future wiring. Mirrors the filtering logic
-// in /api/cache/refresh: A6 regime signals are not trade alerts and must
-// not inflate counts.
-function computeStats(agentResults: AgentResult[]): DashboardStats {
-  const tradingAgents = agentResults.filter((a) => a.id !== "A6");
-  const allSignals    = tradingAgents.flatMap((a) => a.signals);
-  const buySignals    = allSignals.filter((s) => s.type === "buy");
-  const highConf      = buySignals.filter((s) => s.confidence === "high");
-  const activeAgents  = tradingAgents.filter((a) => a.signalCount > 0).length;
-  return {
-    activeAgents,
-    alertsToday:    allSignals.length,
-    buySignals:     buySignals.length,
-    highConfidence: highConf.length,
-  };
-}
 
 export async function GET() {
   const reqId = Math.random().toString(36).slice(2, 7);
   console.log(`${TAG} [${reqId}] GET /api/signals`);
 
-  const now = Date.now();
-  if (memCache.response && now < memCache.expiresAt) {
-    const ttlLeft = ((memCache.expiresAt - now) / 1000).toFixed(1);
-    const cached  = memCache.response as { generatedAt: string };
-    console.log(`${TAG} [${reqId}] HIT — expires in ${ttlLeft}s, generatedAt=${cached.generatedAt}`);
-    return NextResponse.json(memCache.response);
+  let snapshotStore: DashboardSnapshotStore | null = null;
+  try {
+    snapshotStore = new DashboardSnapshotStore(getPgPool());
+  } catch (err) {
+    console.warn(
+      `${TAG} [${reqId}] snapshot store unavailable - falling back: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 
-  console.log(`${TAG} [${reqId}] MISS — cache empty or expired, returning empty state`);
-  return NextResponse.json({
-    agentResults: [],
-    stats:        null,
-    activity:     [],
-    generatedAt:  null,
+  const result = await readDashboardSignals({
+    snapshotStore,
+    memoryResponse: memCache.response,
+    memoryExpiresAt: memCache.expiresAt,
+    onSnapshotError: (err) => {
+      console.warn(
+        `${TAG} [${reqId}] snapshot read failed - falling back: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    },
   });
+
+  if (result.source === "dashboard_snapshots") {
+    console.log(
+      `${TAG} [${reqId}] HIT dashboard_snapshots generatedAt=${result.snapshot?.generatedAt ?? "unknown"}`,
+    );
+  } else if (result.source === "memCache") {
+    const ttlLeft = ((memCache.expiresAt - Date.now()) / 1000).toFixed(1);
+    const cached = memCache.response as { generatedAt?: string } | null;
+    console.log(
+      `${TAG} [${reqId}] HIT memCache expires in ${ttlLeft}s, generatedAt=${cached?.generatedAt ?? "unknown"}`,
+    );
+  } else {
+    console.log(`${TAG} [${reqId}] MISS returning empty state`);
+  }
+
+  return NextResponse.json(result.payload);
 }
