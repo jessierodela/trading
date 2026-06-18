@@ -3,6 +3,7 @@ import type { RegimeSignal } from "@/lib/agents/regimeDetector";
 import type { DashboardSnapshotStore } from "@/lib/jobs/dashboardSnapshotStore";
 import type { JobRecord, JobStore } from "@/lib/jobs/jobStore";
 import type { JobPayload } from "@/lib/jobs/types";
+import type { PaperTradingStore } from "@/lib/execution";
 import type {
   DashboardRefreshPipelineInput,
   DashboardRefreshPipelineResult,
@@ -23,6 +24,7 @@ export interface JobHandlerServices {
   featureStore?: FeatureStore;
   regimeStore?: RegimeStore;
   signalStore?: SignalStore;
+  paperStore?: PaperTradingStore;
   dashboardSnapshotStore?: DashboardSnapshotStore;
   runDashboardRefreshPipeline?: (
     input?: DashboardRefreshPipelineInput,

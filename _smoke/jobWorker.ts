@@ -186,6 +186,14 @@ function fakeBarStore(): NonNullable<JobHandlerServices["barStore"]> {
   };
 }
 
+function fakePaperStore(): NonNullable<JobHandlerServices["paperStore"]> {
+  return {
+    async listPositions() {
+      return [];
+    },
+  } as unknown as NonNullable<JobHandlerServices["paperStore"]>;
+}
+
 async function runRegistryChecks(): Promise<void> {
   console.log("\n=== handler registry ===");
   assertJobHandlerRegistryComplete();
@@ -307,16 +315,29 @@ async function runHandlerChecks(): Promise<void> {
     chatId: "123",
     requestedBy: "telegram",
   };
-  eq("paper monitor is deferred non-retryably", await handlePaperMonitor(paperPayload, {} as never), {
-    success: false,
-    retryable: false,
-    error: "handler_not_implemented",
-    result: {
-      jobType: "paper.monitor",
-      reason:
-        "paper.monitor needs a closed-bar payload or persisted bar selection policy before worker execution can safely update paper positions",
+  const paperMonitorResult = await handlePaperMonitor(paperPayload, {
+    workerId: "smoke",
+    job: job(paperPayload),
+    store: new FakeJobStore(),
+    now: () => new Date("2026-06-17T12:00:00.000Z"),
+    services: {
+      barStore: fakeBarStore(),
+      paperStore: fakePaperStore(),
     },
   });
+  assert("paper monitor succeeds as paper-only no-op with no open positions", paperMonitorResult.success);
+  if (paperMonitorResult.success) {
+    eq("paper monitor no-op result", paperMonitorResult.result, {
+      paperOnly: true,
+      evaluatedAt: "2026-06-17T12:00:00.000Z",
+      openPositions: 0,
+      matchedPositions: 0,
+      updatedPositions: 0,
+      closedPositions: 0,
+      skippedPositions: 0,
+      groups: [],
+    });
+  }
   eq("telegram refresh is deferred non-retryably", await handleTelegramRefresh(telegramPayload, {} as never), {
     success: false,
     retryable: false,

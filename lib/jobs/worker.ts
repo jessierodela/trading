@@ -22,6 +22,7 @@ import {
   PgRegimeStore,
   PgSignalStore,
 } from "@/lib/storage";
+import { PostgresPaperTradingStore } from "@/lib/execution";
 
 export interface JobWorkerLogger {
   info(message: string, metadata?: unknown): void;
@@ -158,6 +159,7 @@ export function createJobWorkerServices(pool: Pool): JobHandlerServices {
     featureStore: new PgFeatureStore(pool),
     regimeStore: new PgRegimeStore(pool),
     signalStore: new PgSignalStore(pool),
+    paperStore: new PostgresPaperTradingStore(pool),
     dashboardSnapshotStore: new DashboardSnapshotStore(pool),
     runDashboardRefreshPipeline,
     runMarketIngestLatestPipeline,
