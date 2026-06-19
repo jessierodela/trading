@@ -33,6 +33,7 @@
     "backfill:btc:bootstrap": "dotenv -e .env.local -- tsx scripts/backfillBtcBootstrap.ts",
     "worker:jobs": "dotenv -e .env.local -- tsx scripts/runJobWorker.ts",
     "scheduler:feed": "dotenv -e .env.local -- tsx scripts/enqueueScheduledFeed.ts",
+    "validate:p8:operational": "dotenv -e .env.local -- tsx scripts/validateP8Operational.ts",
     "features:btc:bulk": "dotenv -e .env.local -- tsx scripts/computeBtcFeaturesBulk.ts",
     "regimes:btc:bulk": "dotenv -e .env.local -- tsx scripts/computeBtcRegimesBulk.ts",
     "backfill:crypto:bulk": "dotenv -e .env.local -- tsx scripts/backfillCryptoBulk.ts",
