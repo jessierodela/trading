@@ -55,13 +55,23 @@ import { Client } from "pg";
 
 const MIGRATION_FILENAME = "0001_initial_schema.sql";
 
-// Must stay byte-identical to migrations/run.ts:checksum.
-function checksum(contents: string): string {
+// Must stay behaviorally aligned with migrations/run.ts checksum handling.
+function hashText(contents: string): string {
   let h = 0;
   for (let i = 0; i < contents.length; i++) {
     h = ((h << 5) - h + contents.charCodeAt(i)) | 0;
   }
   return h.toString(16);
+}
+
+function checksum(contents: string): string {
+  return hashText(contents.replace(/\r\n?/g, "\n"));
+}
+
+function acceptedChecksums(contents: string): Set<string> {
+  const lf = contents.replace(/\r\n?/g, "\n");
+  const crlf = lf.replace(/\n/g, "\r\n");
+  return new Set([hashText(lf), hashText(crlf)]);
 }
 
 interface PolicyRow {
@@ -127,17 +137,18 @@ async function main(): Promise<void> {
     }
 
     const policiesBefore = await staleAnonPolicies(client);
-    const drifted = storedBefore !== fileChecksum;
+    const drifted = !acceptedChecksums(fileContents).has(storedBefore);
 
     console.log("=== migration 0001 drift status: BEFORE ===");
     console.log(`  file:             migrations/${MIGRATION_FILENAME}`);
     console.log(`  file checksum:    ${fileChecksum}`);
     console.log(`  stored checksum:  ${storedBefore}`);
     console.log(`  drifted:          ${drifted}`);
+    console.log(`  stored accepted:  ${!drifted}`);
     describePolicies("stale anon policies present", policiesBefore);
 
     if (!drifted && policiesBefore.length === 0) {
-      console.log("\nNothing to do — checksum matches and stale policies are already gone.");
+      console.log("\nNothing to do — stored checksum is an accepted LF/CRLF variant and stale policies are already gone.");
       return;
     }
 

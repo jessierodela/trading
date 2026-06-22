@@ -57,14 +57,25 @@ async function getAppliedMigrations(client: Client): Promise<Map<string, string>
   return new Map(rows.map((r) => [r.filename, r.checksum]));
 }
 
-function checksum(contents: string): string {
+function hashText(contents: string): string {
   // Cheap, deterministic. We only need to detect "did this file change since
   // it was applied?" — not cryptographic strength.
+  // Git may materialize the same tracked SQL as LF or CRLF across hosts.
   let h = 0;
   for (let i = 0; i < contents.length; i++) {
     h = ((h << 5) - h + contents.charCodeAt(i)) | 0;
   }
   return h.toString(16);
+}
+
+function checksum(contents: string): string {
+  return hashText(contents.replace(/\r\n?/g, "\n"));
+}
+
+function acceptedChecksums(contents: string): Set<string> {
+  const lf = contents.replace(/\r\n?/g, "\n");
+  const crlf = lf.replace(/\n/g, "\r\n");
+  return new Set([hashText(lf), hashText(crlf)]);
 }
 
 async function main(): Promise<void> {
@@ -93,7 +104,7 @@ async function main(): Promise<void> {
 
       if (existing === undefined) {
         pending.push({ filename, sql, sum });
-      } else if (existing !== sum) {
+      } else if (!acceptedChecksums(sql).has(existing)) {
         drifted.push(filename);
       }
     }

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { Pool } from "pg";
 import {
   DashboardSnapshotStore,
@@ -22,7 +23,7 @@ function assert(label: string, cond: boolean, details?: unknown): void {
 }
 
 function eq(label: string, actual: unknown, expected: unknown): void {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  const ok = isDeepStrictEqual(actual, expected);
   assert(label, ok, ok ? undefined : { actual, expected });
 }
 
@@ -367,6 +368,14 @@ async function runPostgresChecks(pool: Pool): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  console.log("\n=== smoke assertion semantics ===");
+  eq(
+    "JSON object key order is ignored",
+    { count: 3, nested: { ok: true } },
+    { nested: { ok: true }, count: 3 },
+  );
+  assert("JSON array order remains significant", !isDeepStrictEqual([1, 2], [2, 1]));
+
   runPayloadValidationChecks();
 
   const dbUrl = process.env.SUPABASE_DB_URL ?? process.env.DATABASE_URL;

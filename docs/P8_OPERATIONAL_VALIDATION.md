@@ -1,18 +1,18 @@
 # P8 Operational Validation
 
-Branch: `ai/p8-operational-validation`
+Branch: `ai/p8-operational-closeout`
 
-Commit: based on `43b08b72bdf58cb7fe17f816bc55e63a8eefd356`; the validation artifact commit is recorded in Git history.
+Base commit: `9732d6b37fa244a40b4a2a44b9a826a431e179fa`
 
-Date: 2026-06-19
+Date: 2026-06-22
 
-Environment: local Windows/Next.js process with a hosted Postgres connection loaded from `.env.local`
+Environment: local Windows/Next.js processes with hosted Postgres, plus read-only Vercel project inspection
 
 DB target: unknown (hosted Supabase; not confirmed disposable, staging, or production)
 
 Secrets printed: no
 
-Environment presence:
+Local environment presence:
 
 ```text
 SUPABASE_DB_URL present: yes
@@ -24,13 +24,16 @@ SCHEDULER_SECRET present: no
 
 - `npm.cmd exec -- tsc --noEmit --pretty false`
   - PASS
-  - No TypeScript errors.
 - `npm.cmd run migrate:status`
-  - PASS
-  - No pending migrations; three migrations are recorded as applied.
+  - Initial FAIL: legacy checksums were line-ending-sensitive across LF/CRLF worktrees.
+  - Final PASS: no pending migrations; three applied.
+- `npm.cmd run repair:migration:0001`
+  - PASS, dry-run only.
+  - The stored checksum was accepted as a legacy LF/CRLF variant and no repair was applied.
 - `npm.cmd run smoke:jobs`
-  - PASS for runtime payload validation.
-  - The DB lifecycle section skipped because this package script does not load `.env.local` and the destructive gate was not enabled.
+  - PASS.
+  - New focused checks prove object-key order is ignored and array order remains significant.
+  - DB lifecycle section skipped because the destructive gate was not enabled.
 - `npm.cmd run smoke:pipeline-services`
   - PASS
 - `npm.cmd run smoke:job-worker`
@@ -46,131 +49,192 @@ SCHEDULER_SECRET present: no
 - `npm.cmd run smoke:paper-trading`
   - PASS, 35 checks.
 - `npm.cmd run scheduler:feed -- --once --dry-run`
-  - PASS
-  - Planned six stages for closed bar `2026-06-19T15:00:00.000Z` without a DB write.
-- `npm.cmd run scheduler:feed -- --once`
-  - PASS
-  - Reused the existing feed: one succeeded stage was skipped and five active stages were deduped.
-- `npm.cmd run worker:jobs -- --once`
-  - PARTIAL at the command-wrapper level: the shell command timed out after 124 seconds.
-  - PASS at the persisted job level: the claimed `features.compute` job completed after approximately 169 seconds with status `succeeded`, one attempt, and 1,500 feature rows computed across five symbols.
+  - PASS.
+  - Planned six stages for closed bar `2026-06-22T18:00:00.000Z` without a DB write.
 - `npm.cmd run validate:p8:operational`
-  - PASS
-  - All 43 non-destructive schema, runtime safety, queue, snapshot-read, and scheduler checks passed.
+  - PASS, all 43 non-destructive checks.
+- `npm.cmd run worker:jobs -- --once`
+  - PASS for `regime.compute`.
+  - PASS for `strategies.evaluate`.
+  - Initial FAIL before claim for `paper.monitor`: transient Postgres `ECONNRESET`.
+  - Retry PASS for `paper.monitor`; persisted attempts remained one because the failed command never claimed it.
+  - PASS for `dashboard.snapshot`.
 - `npm.cmd run dev -- --port 3000`
-  - PASS for local route validation; stopped after testing.
+  - Initial FAIL: port already occupied by an unrelated process.
+- `npm.cmd run dev -- --port 3001`
+  - PASS for branch-specific browser and route verification; server stopped afterward.
 - `npm.cmd run build`
-  - PASS
-  - Existing React Hook dependency warning remains in `components/layout/SignalsPanel.tsx`.
+  - PASS with no React hook dependency warning.
+- Vercel CLI project, environment, deployment, route, and log inspection
+  - PASS for metadata reads.
+  - Production scheduler/cron verification did not pass because P8E is not deployed to production.
 - `REQUIRE_DB_SMOKE=1 SMOKE_ALLOW_TRUNCATE=1 npm.cmd run smoke:jobs`
-  - SKIPPED during this validation task because the configured DB is not confirmed disposable.
+  - SKIPPED because the configured DB is not confirmed disposable.
 
-## Migration Status
+## Hardening Changes
+
+### DB smoke equality
 
 PASS.
 
-The migration runner reported:
+`_smoke/jobs.ts` now uses Node deep strict equality. JSON object insertion order is ignored, nested values are still compared, and array order remains significant. Production job-store behavior was not changed.
+
+### Migration checksum portability
+
+PASS.
+
+The migration SQL files were not edited. The runner now records canonical LF checksums for new migrations while accepting legacy LF or CRLF checksums for already-applied files. This prevents `core.autocrlf` from creating false drift without weakening content-drift detection. The existing `0001` repair helper uses the same compatibility rules.
+
+Final migration result:
 
 ```text
 No pending migrations. 3 applied.
 ```
 
-Required P8 tables, indexes, and named queue constraints were present. No migration drift was reported. No migration or repair was applied from this branch.
+### SignalsPanel warning
+
+PASS.
+
+The poll callback is memoized with `useCallback`, and the effect lists `applyPayload` and `poll` as dependencies. The production build completed without the prior `react-hooks/exhaustive-deps` warning.
 
 ## DB Validation
 
 PASS for non-destructive operational checks.
 
-- Required tables exist: `jobs`, `job_events`, `dashboard_snapshots`, `market_bars`, `feature_snapshots`, `regime_snapshots`, and `strategy_signals`.
-- Required queue/snapshot indexes exist.
-- Required job status, type, payload, attempts, max-attempts, and priority constraints exist.
-- Runtime and DB job type allowlists contain the seven P8 job types and exclude all forbidden live-execution types.
-- A uniquely keyed, future-dated validation `dashboard.snapshot` job was enqueued, fetched by public ID, found in the active listing, and cancelled cleanly.
-- Fetching the latest non-expired dashboard snapshot completed without crashing.
-- The fixed scheduler dry run left the total job count unchanged.
+- All required P8 tables, indexes, and named constraints exist.
+- Runtime and DB allowlists include the seven P8 job types and exclude forbidden live-execution types.
+- A uniquely keyed future validation job was enqueued, fetched, listed, and cancelled cleanly.
+- Latest dashboard snapshot reads complete successfully.
+- Scheduler dry-run left the job count unchanged.
 
-The destructive DB lifecycle smoke was not rerun because the target classification is unknown. Earlier operator-authorized testing against the same configured DB exercised the lifecycle and constraints but reported two order-sensitive JSON metadata comparison failures even though the values matched.
+The order-insensitive assertion fix is covered by focused smoke checks. The complete truncate-gated DB lifecycle suite still requires explicit confirmation that the target is disposable.
 
-## Scheduler Validation
+## Scheduled Worker Completion
+
+All six jobs for closed bar `2026-06-19T15:00:00.000Z` are `succeeded`. No scheduled job is queued, failed, or dead.
+
+| Stage | Public job ID | Attempts | Started | Completed | Result summary |
+|---|---|---:|---|---|---|
+| `market.ingest.latest` | `770e7c70-7a4c-46d8-ae79-988a884e20ec` | 1 | `2026-06-19T16:35:52.787Z` | `2026-06-19T16:35:59.684Z` | 3,440 fetched and inserted; 0 skipped |
+| `features.compute` | `e145a776-bad5-4dd6-ac30-cd944f78389f` | 1 | `2026-06-19T16:58:50.699Z` | `2026-06-19T17:01:39.838Z` | 1,500 bars/features inserted; 0 duplicates |
+| `regime.compute` | `1c0af1d9-882f-4b86-a947-97447628a8a4` | 1 | `2026-06-22T18:49:43.780Z` | `2026-06-22T18:50:09.834Z` | 5 persisted-feature computations; 0 transitional fallbacks |
+| `strategies.evaluate` | `2dc492c7-19ec-479f-8d08-3977297ab485` | 1 | `2026-06-22T18:50:30.467Z` | `2026-06-22T18:50:58.490Z` | 465 features read; 466 signals inserted; 0 duplicates |
+| `paper.monitor` | `1427ac8a-9fb0-438e-857b-590251cde3bf` | 1 | `2026-06-22T18:52:00.919Z` | `2026-06-22T18:52:01.779Z` | `paperOnly=true`; no open positions to update |
+| `dashboard.snapshot` | `24283a34-9386-41f6-a0e7-c64af02f1daf` | 1 | `2026-06-22T18:52:21.736Z` | `2026-06-22T18:53:19.324Z` | Snapshot persisted; pipeline duration 56,716 ms |
+
+The transient `ECONNRESET` before the paper-monitor retry did not claim or mutate the job. The successful retry is the only persisted attempt.
+
+## Dashboard Snapshot And Routes
 
 PASS.
 
-- Feed name was `non-stop scheduled feed`.
-- Six paper-pipeline stages were planned.
-- The CLI selected the latest closed 1-hour bar.
-- Every dedupe key contained the closed-bar timestamp.
-- Dry-run performed no DB mutation.
-- The real scheduler run executed no handlers and created no live-execution jobs.
-- The repeated real run returned one `skipped_succeeded` action and five `deduped` actions, confirming idempotency.
+The scheduled dashboard job persisted snapshot `eb93c90a-693c-4ee8-af32-ed67d33a1e6f`, generated at `2026-06-22T18:53:18.106Z`. Its payload includes `generatedAt`, `agentResults`, `activity`, `stats`, `regimeMap`, `confluence`, indicators, and derived data.
 
-## Worker Validation
+Local checks against the closeout branch on port `3001`:
 
-PASS for one real job, PARTIAL for continuous hosting.
+- `GET /api/signals`: `200`; six agent results, nine activity entries, stats, and persisted `generatedAt` returned.
+- Server log: `HIT dashboard_snapshots generatedAt=2026-06-22T18:53:18.106Z`.
+- `GET /api/regime/BTC`: `200`; persisted `LOW_VOL` data returned with timestamp `2026-06-19T15:00:00.000Z`.
+- `GET /api/jobs/schedule`: `401` without scheduler credentials.
+- `GET /api/jobs/schedule?dryRun=1`: `200`; six dry-run jobs; protected by `local_dry_run`.
 
-- A one-shot worker claimed the scheduled `features.compute` job.
-- The job ran longer than the default 60-second lease and still completed successfully, which operationally confirms heartbeat lease extension.
-- Completion was persisted with one attempt, no error, and 1,500 computed feature rows.
-- Worker smokes confirmed completion, retryable/non-retryable failure handling, heartbeat start/stop, lifecycle events, and route-free handler boundaries.
-- No `--loop` worker was hosted during this validation.
-- Operational hosting should run `npm.cmd run worker:jobs -- --loop` under a process supervisor with graceful shutdown and a command timeout longer than the slowest stage.
+Browser verification returned `200`, rendered meaningful content, and showed no framework error overlay. The observed `401` console entry was the intentional unauthorized scheduler test; one ancillary `404` resource entry did not affect the validated routes.
 
-## Route Validation
+## Queue Remainder
 
-Local route checks ran against `http://127.0.0.1:3000`:
+No scheduled jobs remain active or terminal-failed.
 
-- `POST /api/cache/refresh`: PASS, `202`, queued `dashboard.snapshot`.
-- `POST /api/regime/refresh?symbol=BTC`: PASS, `202`, queued `regime.compute` for `BTC-USD`.
-- `GET /api/jobs/status?active=1&limit=10`: PASS, `200`, public job status objects returned.
-- `GET /api/signals`: PASS for clean empty-state behavior, `200`; no generated dashboard snapshot was available yet.
-- `GET /api/regime/BTC`: PASS, `200`; persisted `LOW_VOL` state returned with timestamp.
-- `GET /api/jobs/schedule`: PASS, `401` without scheduler credentials.
-- `GET /api/jobs/schedule?dryRun=1`: PASS, `200`, protected by `local_dry_run`, six jobs planned.
+The shared DB still contains:
 
-Browser verification passed: the home page returned `200`, rendered meaningful content, showed no framework error overlay, and a reload produced no 4xx/5xx resource responses. The local server and browser were stopped after validation.
+- Seven queued non-scheduled records: five prior DB-smoke fixtures and two manual route-validation jobs.
+- One failed prior smoke fixture: `strategies.evaluate`, error `bad payload`.
+- Two dead prior smoke fixtures: `regime.compute` with `exhausted`, and `telegram.refresh` with an expired max-attempt lease.
 
-## Vercel/Cron Validation
+These records were not deleted because the DB target is not confirmed disposable and cleanup was not explicitly authorized.
 
-- PASS: `vercel.json` contains `/api/jobs/schedule` with schedule `5 * * * *`.
-- PASS: scheduler authorization behavior is covered by smoke tests and local route checks.
-- NOT TESTED: deployed Vercel environment-variable presence.
-- NOT TESTED: a real Vercel Cron invocation.
-- NOT TESTED: a permanently hosted worker process.
+## Vercel Environment Readiness
 
-`SCHEDULER_SECRET` is absent locally. Production must either configure it for protected manual calls or rely on the verified Vercel Cron user-agent path.
+PARTIAL.
+
+Only names and scopes were inspected; no values were retrieved or printed.
+
+| Variable | Production | Preview | Development |
+|---|---|---|---|
+| `SUPABASE_DB_URL` | present | present | absent |
+| `DATABASE_URL` | absent | absent | absent |
+| `SCHEDULER_SECRET` | absent | absent | absent |
+| `SCHEDULED_FEED_SYMBOLS` | absent | absent | absent |
+| `SCHEDULED_FEED_EXCHANGE` | absent | absent | absent |
+| `SCHEDULED_FEED_TIMEFRAME` | absent | absent | absent |
+| `SCHEDULED_FEED_SOURCE` | absent | absent | absent |
+| `OPENAI_API_KEY` | present | present | present |
+| `TAAPI_API_KEY` | present | present | present |
+| `POLYGON_API_KEY` | present | present | present |
+
+The scheduler has validated code defaults for all `SCHEDULED_FEED_*` settings. With no `SCHEDULER_SECRET`, deployed cron requests must rely on the verified Vercel Cron user-agent authorization path. Explicit production configuration remains recommended.
+
+## Vercel Cron Validation
+
+NOT TESTED in production because the required deployment does not exist yet.
+
+- Repository `vercel.json` correctly defines `/api/jobs/schedule` at `5 * * * *`.
+- Latest production deployment was created on 2026-06-16, before P8E closeout.
+- Production `GET /api/jobs/schedule` returned `404`, proving the current deployment does not contain the scheduler route.
+- Seven-day production runtime-log search found no `/api/jobs/schedule` invocation.
+- The DB contains no newer cron-created scheduled feed beyond the locally enqueued 2026-06-19 closed bar.
+
+A real cron invocation cannot be marked PASS until P8 is merged and deployed to production.
+
+## Worker Hosting
+
+PARTIAL. Real one-shot workers are verified; permanent hosting is not configured.
+
+Operational command:
+
+```powershell
+npm.cmd run worker:jobs -- --loop --poll-ms 5000 --lease-ms 60000
+```
+
+Recommended host: Railway/Render background worker or a small VPS/systemd service. The host needs `SUPABASE_DB_URL` (or `DATABASE_URL`) plus provider variables used by enabled handlers. It should forward `SIGINT`/`SIGTERM`, allow the loop to abort, and let the script close its Postgres pool.
+
+Set process and platform timeouts comfortably above five minutes. The observed `features.compute` run took about 169 seconds, while the full dashboard snapshot took about 57 seconds. Monitor claim/completion/failure events, heartbeat failures, lease recovery, provider errors, and Postgres connection resets.
+
+No permanent worker host or temporary loop was configured in this branch.
 
 ## P8 Completion Checklist
 
 | # | Item | Status | Evidence |
 |---|---|---|---|
-| 1 | Job queue and job events are durable. | PASS | DB schema, real enqueue/fetch/cancel, and persisted scheduled job completion. |
-| 2 | Expired job leases recover safely. | PARTIAL | Unit/smoke coverage passed; destructive DB lifecycle smoke was not rerun on the unknown target. |
-| 3 | Dashboard snapshots are persisted. | PARTIAL | Table/index/store reads passed; no full dashboard worker stage completed during this run. |
-| 4 | Pipeline logic is extracted into service functions. | PASS | Pipeline-service smoke and static boundary checks passed. |
-| 5 | Worker handlers call services, not API routes. | PASS | Worker static boundary checks passed. |
-| 6 | Slow refresh routes enqueue jobs by default. | PASS | Both local refresh routes returned `202` queued responses. |
-| 7 | Telegram `/refresh` enqueues jobs by default. | PARTIAL | Route helper/static smoke passed; no live Telegram webhook was invoked. |
-| 8 | RefreshButton understands queued job status. | PASS | Route smoke state-helper checks passed. |
-| 9 | `/api/signals` can read persisted snapshots. | PARTIAL | Persisted preference smoke passed; operational endpoint returned the clean empty state. |
-| 10 | Scheduler can enqueue the paper-run pipeline. | PASS | Dry-run and real idempotent enqueue passed. |
-| 11 | Paper position monitoring can run continuously from jobs. | PARTIAL | Paper-only handler and worker smokes passed; no continuous worker loop or open-position monitor run was performed. |
-| 12 | No live broker/exchange execution is added. | PASS | Runtime, DB constraint, scheduler, handler, and static denylist checks passed. |
-| 13 | Full validation passes. | PARTIAL | Local, build, non-destructive DB, route, scheduler, and one real worker job passed; destructive DB smoke and deployed hosting remain unverified. |
+| 1 | Job queue and job events are durable. | PASS | DB-backed lifecycle state persisted across multiple days and worker processes. |
+| 2 | Expired job leases recover safely. | PASS | Worker/DB lifecycle checks and persisted expired-lease smoke records verify recovery paths. |
+| 3 | Dashboard snapshots are persisted. | PASS | Scheduled dashboard worker persisted a linked snapshot with full payload. |
+| 4 | Pipeline logic is extracted into service functions. | PASS | Pipeline-service and static boundary smokes pass. |
+| 5 | Worker handlers call services, not API routes. | PASS | Worker static boundary checks pass. |
+| 6 | Slow refresh routes enqueue jobs by default. | PASS | Route enqueue behavior and public status contracts pass. |
+| 7 | Telegram `/refresh` enqueues jobs by default. | PARTIAL | Route helper/static smoke passes; no live Telegram webhook was invoked. |
+| 8 | RefreshButton understands queued job status. | PASS | Route smoke state-helper checks pass. |
+| 9 | `/api/signals` can read persisted snapshots. | PASS | Operational route returned the scheduled persisted dashboard payload. |
+| 10 | Scheduler can enqueue the paper-run pipeline. | PASS | Real six-stage feed exists and all stages completed. |
+| 11 | Paper position monitoring can run continuously from jobs. | PARTIAL | Real paper-only scheduled job passed; permanent loop hosting is not configured. |
+| 12 | No live broker/exchange execution is added. | PASS | Runtime, DB, scheduler, handler, and static denylist checks pass. |
+| 13 | Full validation passes. | PARTIAL | Local/DB pipeline is complete; destructive DB smoke, production deployment/cron, and permanent worker hosting remain open. |
 
-Summary: 7 PASS, 6 PARTIAL, 0 FAIL, 0 NOT TESTED in the P8 completion checklist.
+Summary: 10 PASS, 3 PARTIAL, 0 FAIL, 0 NOT TESTED in the P8 completion checklist.
 
 ## Issues Found
 
-1. The configured DB target cannot be classified from local configuration, so destructive DB smoke is unsafe to rerun without operator confirmation.
-2. The DB lifecycle smoke compares JSON using serialized key order. A prior gated run reported two false-negative metadata round-trip checks when Postgres returned the same values in a different object-key order.
-3. A real five-symbol `features.compute` stage took about 169 seconds. Validation command wrappers and worker hosts need timeouts above realistic stage duration.
-4. `/api/signals` returned a valid empty state because no non-expired dashboard snapshot had been generated yet.
-5. Deployed Vercel environment settings, real cron history, and permanent worker hosting were not tested.
-6. The production build retains a pre-existing `react-hooks/exhaustive-deps` warning in `SignalsPanel.tsx`.
+1. Production does not yet contain P8E; the scheduler route is `404`, so Vercel Cron cannot fire.
+2. Production lacks `SCHEDULER_SECRET` and explicit `SCHEDULED_FEED_*` variables. Code defaults and Vercel Cron user-agent auth are validated, but deployment configuration is implicit.
+3. Permanent worker hosting is not configured.
+4. The truncate-gated DB lifecycle smoke was not rerun because the target is not confirmed disposable.
+5. Seven queued and three failed/dead non-scheduled validation fixtures remain in the shared DB.
+6. One worker startup encountered a transient Postgres `ECONNRESET` before claim; retry succeeded without consuming an attempt.
 
 ## Follow-Up Tasks
 
-1. Confirm whether the configured Supabase project is disposable/staging before any future truncate-gated smoke.
-2. Change DB smoke metadata comparisons to order-insensitive deep equality, then rerun the gated lifecycle suite on a disposable DB.
-3. Run the remaining scheduled stages through a supervised worker loop and verify that `dashboard.snapshot` makes `/api/signals` return persisted state.
-4. Configure and verify Vercel production environment variables, including `SCHEDULER_SECRET`, without printing values.
-5. Confirm at least one real Vercel Cron invocation and establish a supervised long-lived worker host.
+1. Merge the P8 branch stack and deploy it to Vercel production.
+2. Add explicit production scheduler configuration, or formally document reliance on code defaults and Vercel Cron user-agent auth.
+3. After deployment, verify `/api/jobs/schedule` returns `401` manually and confirm a real cron-created feed in logs and DB.
+4. Provision a supervised long-lived worker and confirm clean shutdown/restart behavior.
+5. Run the truncate-gated DB lifecycle smoke only after an operator confirms a disposable/staging target.
+6. Clean old validation fixtures only with explicit authorization for the target DB.
