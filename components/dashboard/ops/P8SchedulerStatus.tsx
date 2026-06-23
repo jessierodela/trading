@@ -5,7 +5,7 @@ export function P8SchedulerStatus({ data }: { data: P8OpsSummary }) {
   const scheduler = data.scheduler;
   const status = scheduler.lastScheduledFeed ? "active" : "unknown";
   return (
-    <OpsPanel title="Scheduler / Cron" eyebrow="Read-only configuration view" action={<OpsStatusPill status={status} />}>
+    <OpsPanel title="External Scheduler" eyebrow="Linux/systemd trigger" action={<OpsStatusPill status={status} />}>
       <dl className="divide-y divide-[var(--color-border-subtle)] px-4 text-[10px]">
         <div className="grid grid-cols-[126px_1fr] gap-3 py-3">
           <dt className="text-[var(--color-text-dim)]">Route</dt>
@@ -28,8 +28,8 @@ export function P8SchedulerStatus({ data }: { data: P8OpsSummary }) {
           <dd><OpsStatusPill status={scheduler.schedulerSecretPresent ? "pass" : "partial"} label={scheduler.schedulerSecretPresent ? "yes" : "no"} /></dd>
         </div>
         <div className="grid grid-cols-[126px_1fr] gap-3 py-3">
-          <dt className="text-[var(--color-text-dim)]">Production verified</dt>
-          <dd><OpsStatusPill status={scheduler.productionCronVerified} /></dd>
+          <dt className="text-[var(--color-text-dim)]">External verified</dt>
+          <dd><OpsStatusPill status={scheduler.externalSchedulerVerified} /></dd>
         </div>
       </dl>
     </OpsPanel>

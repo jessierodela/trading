@@ -6,22 +6,11 @@ This is not tick-level streaming and it is not WebSocket ingestion. The schedule
 
 ## Scheduler Mechanism
 
-The bootstrap scheduler uses Vercel Cron:
-
-```json
-{
-  "crons": [
-    {
-      "path": "/api/jobs/schedule",
-      "schedule": "5 * * * *"
-    }
-  ]
-}
-```
+The production trigger is an external Linux systemd timer. Vercel Cron is not registered because the required hourly cadence is unavailable on the target Vercel plan. See [P8_LINUX_SCHEDULER.md](./P8_LINUX_SCHEDULER.md) for the service, timer, secret, and worker configuration.
 
 The route is `GET /api/jobs/schedule`. It enqueues jobs and returns a JSON summary. It does not run handlers, import worker code, call refresh API routes, place orders, or call broker/exchange APIs.
 
-The same scheduler service can also be called by Linux cron or a systemd timer through the CLI fallback:
+The scheduler CLI remains available as a local or emergency fallback:
 
 ```powershell
 npm.cmd run scheduler:feed -- --once
@@ -60,7 +49,7 @@ Authorization: Bearer <secret>
 ?secret=<secret>
 ```
 
-If `SCHEDULER_SECRET` is not configured, the route only accepts the Vercel Cron user-agent. In local development, `?dryRun=1` is allowed explicitly and does not require a DB connection.
+Configure the same `SCHEDULER_SECRET` in Vercel and on the Linux scheduler host. The external systemd service must send it as a bearer token. The legacy Vercel Cron user-agent authorization path remains compatible but is not the active scheduling mechanism. In local development, `?dryRun=1` is allowed explicitly and does not require a DB connection.
 
 Unauthorized calls return `401`. Missing DB configuration for a real enqueue returns `503`.
 
