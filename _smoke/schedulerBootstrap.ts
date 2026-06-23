@@ -347,8 +347,15 @@ function runStaticChecks(): void {
     "fetch('/api",
     "fetch(\"/api",
   ]);
-  assert("vercel.json includes protected scheduler route path", readText("vercel.json").includes("/api/jobs/schedule"));
-  assert("vercel.json includes hourly five-minute cron", readText("vercel.json").includes("\"5 * * * *\""));
+  const vercelConfig = JSON.parse(readText("vercel.json")) as { crons?: unknown[] };
+  assert("vercel.json does not register Vercel Cron", !vercelConfig.crons || vercelConfig.crons.length === 0);
+  assert("protected scheduler route remains present", fs.existsSync(path.join(process.cwd(), "app/api/jobs/schedule/route.ts")));
+
+  const linuxRunbook = readText("docs/P8_LINUX_SCHEDULER.md");
+  assert("Linux runbook documents the scheduler route", linuxRunbook.includes("/api/jobs/schedule"));
+  assert("Linux runbook documents minute-five systemd cadence", linuxRunbook.includes("*:05:00"));
+  assert("Linux runbook documents scheduler secret handling", linuxRunbook.includes("SCHEDULER_SECRET"));
+  assert("Linux runbook keeps worker ownership separate", linuxRunbook.includes("npm run worker:jobs -- --loop --poll-ms 5000 --lease-ms 60000"));
 
   const cliText = readText("scripts/enqueueScheduledFeed.ts");
   assert("CLI supports --dry-run", cliText.includes("--dry-run"));

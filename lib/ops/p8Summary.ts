@@ -422,22 +422,22 @@ function readiness(input: {
       detail: "This summary is served alongside /api/jobs/schedule.",
     },
     {
-      label: "Vercel Cron can run hourly",
+      label: "External Linux scheduler runs hourly",
       status: input.lastScheduledFeed ? "partial" : "unknown",
-      detail: "The hourly schedule is configured; production Cron origin is not persisted.",
+      detail: "The minute-five cadence is documented; systemd origin is not persisted with jobs.",
     },
     {
       label: "Scheduler authorization configured",
-      status: input.schedulerSecretPresent ? "pass" : "partial",
+      status: input.schedulerSecretPresent ? "pass" : "not_configured",
       detail: input.schedulerSecretPresent
         ? "SCHEDULER_SECRET is present."
-        : "Secret is absent; the explicit Vercel Cron user-agent fallback remains available.",
+        : "Set the same SCHEDULER_SECRET in Vercel and on the Linux scheduler host.",
     },
     {
       label: "First real scheduled feed verified",
       status: input.lastScheduledFeed ? "partial" : "unknown",
       detail: input.lastScheduledFeed
-        ? "Scheduled jobs exist, but their production Cron origin is not recorded."
+        ? "Scheduled jobs exist, but their systemd or CLI origin is not recorded."
         : "No persisted scheduled feed is visible.",
     },
     {
@@ -508,7 +508,7 @@ export function buildP8OpsSummary(input: P8OpsBuildInput = {}): P8OpsSummary {
       cronExpression: "5 * * * *",
       cronMeaning: "Every hour at minute 5",
       schedulerSecretPresent: input.schedulerSecretPresent === true,
-      productionCronVerified: "unknown",
+      externalSchedulerVerified: "unknown",
       lastScheduledFeed,
     },
     queue: {

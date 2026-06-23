@@ -1,5 +1,7 @@
 # P8 Operational Validation
 
+> Historical closeout record. Scheduler ownership has since moved from Vercel Cron to an external Linux systemd timer. See [P8_LINUX_SCHEDULER.md](./P8_LINUX_SCHEDULER.md) for the current production runbook.
+
 Branch: `ai/p8-operational-closeout`
 
 Base commit: `9732d6b37fa244a40b4a2a44b9a826a431e179fa`

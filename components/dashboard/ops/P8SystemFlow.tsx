@@ -43,7 +43,7 @@ export function P8SystemFlow({ data }: { data: P8OpsSummary }) {
       : "missing";
   const nodes: Array<{ label: string; detail: string; status: FlowStatus }> = [
     {
-      label: "Cron scheduler",
+      label: "Linux scheduler",
       detail: data.scheduler.lastScheduledFeed ? "Feed observed" : "Awaiting feed evidence",
       status: data.scheduler.lastScheduledFeed ? "active" : "unknown",
     },

@@ -61,7 +61,7 @@ export interface P8OpsSummary {
     cronExpression: "5 * * * *";
     cronMeaning: string;
     schedulerSecretPresent: boolean;
-    productionCronVerified: "yes" | "no" | "unknown";
+    externalSchedulerVerified: "yes" | "no" | "unknown";
     lastScheduledFeed: {
       closedBarTs: string | null;
       enqueuedAt: string | null;
