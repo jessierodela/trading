@@ -28,6 +28,7 @@
     "smoke:job-worker": "tsx _smoke/jobWorker.ts",
     "smoke:route-jobs": "tsx _smoke/routeJobs.ts",
     "smoke:scheduler-bootstrap": "tsx _smoke/schedulerBootstrap.ts",
+    "smoke:p8-ops-dashboard": "tsx _smoke/p8OpsDashboard.ts",
     "smoke:p2d:live": "dotenv -e .env.local -- tsx _smoke/features_crossvalidate_live.ts",
     "smoke:backfill:live": "dotenv -e .env.local -- tsx _smoke/backfill_live.ts",
     "backfill:btc:bootstrap": "dotenv -e .env.local -- tsx scripts/backfillBtcBootstrap.ts",

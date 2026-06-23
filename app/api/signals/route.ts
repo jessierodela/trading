@@ -62,5 +62,9 @@ export async function GET() {
     console.log(`${TAG} [${reqId}] MISS returning empty state`);
   }
 
-  return NextResponse.json(result.payload);
+  const payload = result.payload && typeof result.payload === "object" && !Array.isArray(result.payload)
+    ? { ...result.payload, source: result.source }
+    : result.payload;
+
+  return NextResponse.json(payload);
 }
