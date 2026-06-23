@@ -1,7 +1,6 @@
-import { runRegimeRefreshPipeline } from "@/lib/pipeline";
 import { PostgresJobStore } from "@/lib/jobs/postgresJobStore";
 import {
-  buildRegimeRefreshJob,
+  buildRefreshJobRequest,
   enqueueJobForRoute,
   hasRouteDatabaseUrl,
   routeDatabaseUnavailableError,
@@ -13,13 +12,17 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function POST(req: NextRequest) {
-  const symbol = req.nextUrl.searchParams.get("symbol") ?? "BTC";
+  let body: unknown;
+  try {
+    const text = await req.text();
+    body = text.length > 0 ? JSON.parse(text) : {};
+  } catch {
+    return NextResponse.json({ success: false, error: "request body is not valid JSON" }, { status: 400 });
+  }
 
-  if (req.nextUrl.searchParams.get("mode") === "sync") {
-    // Temporary P8D compatibility path for Markov bot callers. The default
-    // path enqueues persisted-feature regime work instead of running inline.
-    const result = await runRegimeRefreshPipeline({ symbol });
-    return NextResponse.json(result.body, { status: result.status });
+  const built = buildRefreshJobRequest(body);
+  if ("error" in built) {
+    return NextResponse.json({ success: false, error: built.error }, { status: 400 });
   }
 
   if (!hasRouteDatabaseUrl()) {
@@ -39,7 +42,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const built = buildRegimeRefreshJob({ symbol });
   const { job, deduped } = await enqueueJobForRoute(store, built.payload, {
     dedupeKey: built.dedupeKey,
   });
@@ -49,9 +51,9 @@ export async function POST(req: NextRequest) {
       success: true,
       queued: true,
       jobId: job.publicId,
+      jobType: job.jobType,
       status: job.status,
-      message: "Regime compute queued",
-      symbol: built.payload.jobType === "regime.compute" ? built.payload.symbols[0] : symbol,
+      message: built.message,
       ...(deduped ? { deduped: true } : {}),
     },
     { status: 202 },

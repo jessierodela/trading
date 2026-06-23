@@ -293,7 +293,7 @@ export function SignalsPanel() {
     setLoading(false);
   }, []);
 
-  async function poll() {
+  const poll = useCallback(async () => {
     try {
       const [signalsRes, cacheRes] = await Promise.all([
         fetch("/api/signals"),
@@ -317,7 +317,7 @@ export function SignalsPanel() {
       console.error("[SignalsPanel] poll error", err);
       setLoading(false);
     }
-  }
+  }, [applyPayload]);
 
   useEffect(() => {
     poll();
@@ -334,7 +334,7 @@ export function SignalsPanel() {
     }
     window.addEventListener("signals:update", onUpdate);
     return () => window.removeEventListener("signals:update", onUpdate);
-  }, []);
+  }, [applyPayload, poll]);
 
   const ageLabel = lastFetch
     ? `${Math.round((Date.now() - lastFetch) / 1000)}s ago`
