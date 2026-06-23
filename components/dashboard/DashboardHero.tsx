@@ -4,11 +4,11 @@
 import { Pulse } from "@/components/ui/Pulse";
 
 const STATUS_CHIPS = [
-  { label: "Research Mode",        color: "green"  },
-  { label: "Multi-Asset Enabled",  color: "blue"   },
-  { label: "Regime Layer Active",    color: "blue" },
-  { label: "Execution Disabled",   color: "amber"  },
-  { label: "Risk Engine Pending",  color: "red"    },
+  { label: "Durable Jobs",          color: "green" },
+  { label: "Persisted State",       color: "blue"  },
+  { label: "Scheduled Pipeline",    color: "blue"  },
+  { label: "Paper Only",            color: "amber" },
+  { label: "Live Execution Off",    color: "red"   },
 ] as const;
 
 const chipColor = {
@@ -25,14 +25,14 @@ export function DashboardHero() {
         <Pulse />
         <div>
           <p className="text-[9px] text-[var(--color-text-dim)] tracking-[.18em] mb-2 uppercase">
-            Market Intelligence Architecture
+            Scheduler, workers, pipelines, and persisted state
           </p>
           <h1 className="text-[22px] font-light text-[var(--color-text-primary)] tracking-tight leading-tight">
-            Trading Intelligence Platform
+            AI Trading Operations
           </h1>
           <p className="text-[12px] text-[var(--color-text-muted)] mt-2 max-w-[680px] leading-[1.65]">
-            This platform ingests market data, computes multi-timeframe features, classifies regimes,
-            evaluates strategy behavior, and prepares risk-gated decisions for future execution.
+            Observe the durable data pipeline from hourly scheduling through worker processing,
+            persisted snapshots, and the signal consumers that power this dashboard.
           </p>
         </div>
       </div>
@@ -53,11 +53,11 @@ export function DashboardHero() {
       <div className="flex flex-wrap gap-6 mt-5 pt-4 border-t border-[var(--color-border-subtle)]">
         <div>
           <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">CURRENT MODE </span>
-          <span className="text-[9px] text-[var(--color-accent-blue)] tracking-[.1em]">Research + Validation</span>
+          <span className="text-[9px] text-[var(--color-accent-blue)] tracking-[.1em]">Operations + Validation</span>
         </div>
         <div>
-          <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">LIVE EXECUTION </span>
-          <span className="text-[9px] text-[var(--color-accent-amber)] tracking-[.1em]">Disabled until risk engine approval</span>
+          <span className="text-[9px] text-[var(--color-text-dim)] tracking-[.1em]">EXECUTION BOUNDARY </span>
+          <span className="text-[9px] text-[var(--color-accent-amber)] tracking-[.1em]">Signals and paper monitoring only</span>
         </div>
       </div>
     </div>

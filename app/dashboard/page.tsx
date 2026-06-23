@@ -10,6 +10,7 @@
 
 import { Header }                  from "@/components/layout/Header";
 import { DashboardHero }           from "@/components/dashboard/DashboardHero";
+import { P8OperationsConsole }     from "@/components/dashboard/ops/P8OperationsConsole";
 import { ArchitecturePipeline }    from "@/components/dashboard/ArchitecturePipeline";
 import { SystemStatusGrid }        from "@/components/dashboard/SystemStatusGrid";
 import { AgentStackOverview }      from "@/components/dashboard/AgentStackOverview";
@@ -31,6 +32,7 @@ export default function DashboardPage() {
 
       <main className="flex-1 overflow-y-auto bg-[var(--color-surface-base)]">
         <DashboardHero />
+        <P8OperationsConsole />
         <ArchitecturePipeline />
         <SystemStatusGrid />
         <AgentStackOverview />
