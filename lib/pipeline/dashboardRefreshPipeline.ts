@@ -5,6 +5,14 @@ import { runRegimeDetector, type RegimeSignal } from "@/lib/agents/regimeDetecto
 import { runTrendFollower } from "@/lib/agents/trendFollower";
 import { runVolatilityArbiter } from "@/lib/agents/volatilityArbiter";
 import { runConfluenceEngine, type RegimeMap } from "@/lib/confluence/confluenceEngine";
+import {
+  combineDataQualityReports,
+  createDataQualityReport,
+  type DataQualityIssue,
+  type DataQualityReport,
+} from "@/lib/dataQuality/types";
+import { TIMEFRAME_MS } from "@/lib/dataQuality/freshness";
+import { normalizeMarketIdentity, type MarketIdentity } from "@/lib/dataQuality/marketIdentity";
 import { getCache } from "@/lib/indicatorCache";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import { getCache1d } from "@/lib/indicatorCache1d";
@@ -36,6 +44,8 @@ import {
 } from "@/lib/regime/deterministicRegimeClassifier";
 
 const DEFAULT_WAIT_BEFORE_1D_MS = 15_000;
+const DASHBOARD_1H_MAX_STALENESS_MS = TIMEFRAME_MS["1h"] * 2;
+const DASHBOARD_1D_MAX_STALENESS_MS = TIMEFRAME_MS["1d"] * 2;
 
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -188,6 +198,211 @@ function buildDeterministicAgentResults(snapshot: CacheSnapshot): TradingAgentRe
     snapshot.stockSymbols,
     snapshot.cryptoSymbols,
   ).agentResults as TradingAgentResults;
+}
+
+function dashboardCanonicalIdentity(symbol: string): MarketIdentity {
+  return normalizeMarketIdentity({
+    symbol,
+    exchange: "COINBASE",
+    source: "coinbase",
+  });
+}
+
+function cacheFreshnessIssue(input: {
+  symbol: string;
+  canonicalSymbol: string;
+  timeframe: "1h" | "1d";
+  lastUpdated: string | null;
+  nowMs: number;
+  maxAgeMs: number;
+  severity: DataQualityIssue["severity"];
+}): DataQualityIssue | null {
+  if (!input.lastUpdated) {
+    return {
+      code: `DASHBOARD_${input.timeframe.toUpperCase()}_CACHE_MISSING_TIMESTAMP`,
+      severity: input.severity,
+      message: `Dashboard ${input.timeframe} cache has no freshness timestamp.`,
+      symbol: input.canonicalSymbol,
+      timeframe: input.timeframe,
+    };
+  }
+  const parsed = Date.parse(input.lastUpdated);
+  if (!Number.isFinite(parsed)) {
+    return {
+      code: `DASHBOARD_${input.timeframe.toUpperCase()}_CACHE_INVALID_TIMESTAMP`,
+      severity: input.severity,
+      message: `Dashboard ${input.timeframe} cache freshness timestamp is invalid.`,
+      symbol: input.canonicalSymbol,
+      timeframe: input.timeframe,
+      actual: input.lastUpdated,
+    };
+  }
+  const ageMs = input.nowMs - parsed;
+  if (ageMs > input.maxAgeMs) {
+    return {
+      code: `DASHBOARD_${input.timeframe.toUpperCase()}_CACHE_STALE`,
+      severity: input.severity,
+      message: `Dashboard ${input.timeframe} cache is stale.`,
+      symbol: input.canonicalSymbol,
+      timeframe: input.timeframe,
+      ts: input.lastUpdated,
+      expected: { maxAgeMs: input.maxAgeMs },
+      actual: { ageMs },
+    };
+  }
+  return null;
+}
+
+function buildDashboardDataQuality(
+  snapshot: CacheSnapshot,
+  snapshot1d: CacheSnapshot1d,
+  generatedAt: string,
+  generatedAtMs: number,
+): {
+  severity: DataQualityReport["severity"];
+  issues: DataQualityIssue[];
+  symbols: Record<string, {
+    market: MarketIdentity;
+    barQuality: DataQualityReport | null;
+    featureQuality: DataQualityReport | null;
+    freshness: Record<string, unknown>;
+  }>;
+} {
+  const symbols: Record<string, {
+    market: MarketIdentity;
+    barQuality: DataQualityReport | null;
+    featureQuality: DataQualityReport | null;
+    freshness: Record<string, unknown>;
+  }> = {};
+  const reports: DataQualityReport[] = [];
+
+  for (const symbol of snapshot.cryptoSymbols) {
+    const market = dashboardCanonicalIdentity(symbol);
+    const canonicalSymbol = market.canonicalSymbol;
+    const entry = snapshot.data.get(symbol);
+    const entry1d = snapshot1d.data.get(symbol);
+    if (!entry) continue;
+
+    const barIssues: DataQualityIssue[] = [
+      {
+        code: "DASHBOARD_BAR_TIMESTAMP_UNAVAILABLE",
+        severity: "warn",
+        message: "Dashboard cache does not expose the source bar open timestamp, so closed-bar status cannot be proven here.",
+        symbol: canonicalSymbol,
+        exchange: market.exchange,
+        source: "taapi",
+        timeframe: "1h",
+      },
+      {
+        code: "DASHBOARD_PROVIDER_MIXED_CONTEXT",
+        severity: "warn",
+        message: "Dashboard cache uses TAAPI/Yahoo-style crypto inputs while scheduled jobs use Coinbase BTC-USD identity.",
+        symbol: canonicalSymbol,
+        exchange: market.exchange,
+        source: "taapi+yahoo",
+        timeframe: "1h",
+        expected: "coinbase/COINBASE/BTC-USD",
+        actual: `${symbol}/taapi+yahoo`,
+      },
+    ];
+    const featureIssues: DataQualityIssue[] = [];
+    const oneHourFreshness = cacheFreshnessIssue({
+      symbol,
+      canonicalSymbol,
+      timeframe: "1h",
+      lastUpdated: snapshot.lastUpdated,
+      nowMs: generatedAtMs,
+      maxAgeMs: DASHBOARD_1H_MAX_STALENESS_MS,
+      severity: "block",
+    });
+    if (oneHourFreshness) featureIssues.push(oneHourFreshness);
+    if (entry.indicators.volume == null) {
+      featureIssues.push({
+        code: "DASHBOARD_VOLUME_UNAVAILABLE",
+        severity: "warn",
+        message: "Dashboard cache volume is unavailable and must not be interpreted as zero.",
+        symbol: canonicalSymbol,
+        exchange: market.exchange,
+        source: "taapi+yahoo",
+        timeframe: "1h",
+      });
+    }
+    if (snapshot1d.lastFetchFailed || !entry1d) {
+      featureIssues.push({
+        code: "DASHBOARD_1D_CONTEXT_MISSING",
+        severity: "warn",
+        message: "Dashboard 1D feature context is missing or failed to refresh.",
+        symbol: canonicalSymbol,
+        exchange: market.exchange,
+        source: "taapi",
+        timeframe: "1d",
+      });
+    } else {
+      const dailyFreshness = cacheFreshnessIssue({
+        symbol,
+        canonicalSymbol,
+        timeframe: "1d",
+        lastUpdated: snapshot1d.lastUpdated,
+        nowMs: generatedAtMs,
+        maxAgeMs: DASHBOARD_1D_MAX_STALENESS_MS,
+        severity: "warn",
+      });
+      if (dailyFreshness) featureIssues.push(dailyFreshness);
+    }
+
+    const barQuality = createDataQualityReport({
+      scope: "dashboard.snapshot.bar_cache",
+      checkedAt: generatedAt,
+      symbol: canonicalSymbol,
+      exchange: market.exchange,
+      source: "taapi+yahoo",
+      timeframe: "1h",
+      issues: barIssues,
+    });
+    const featureQuality = createDataQualityReport({
+      scope: "dashboard.snapshot.feature_cache",
+      checkedAt: generatedAt,
+      symbol: canonicalSymbol,
+      exchange: market.exchange,
+      source: "taapi+yahoo",
+      timeframe: "1h",
+      issues: featureIssues,
+    });
+    reports.push(barQuality, featureQuality);
+    symbols[canonicalSymbol] = {
+      market,
+      barQuality,
+      featureQuality,
+      freshness: {
+        oneHourLastUpdated: snapshot.lastUpdated,
+        oneDayLastUpdated: snapshot1d.lastUpdated,
+        oneHourMaxAgeMs: DASHBOARD_1H_MAX_STALENESS_MS,
+        oneDayMaxAgeMs: DASHBOARD_1D_MAX_STALENESS_MS,
+      },
+    };
+  }
+
+  const combined = reports.length === 0
+    ? createDataQualityReport({
+        scope: "dashboard.snapshot",
+        checkedAt: generatedAt,
+        issues: [{
+          code: "DASHBOARD_NO_CRYPTO_SYMBOLS",
+          severity: "warn",
+          message: "Dashboard snapshot has no crypto symbols to quality-check against the scheduled identity.",
+        }],
+      })
+    : combineDataQualityReports({
+        scope: "dashboard.snapshot",
+        checkedAt: generatedAt,
+        reports,
+      });
+
+  return {
+    severity: combined.severity,
+    issues: combined.issues,
+    symbols,
+  };
 }
 
 export async function runDashboardRefreshPipeline(
@@ -414,6 +629,12 @@ export async function runDashboardRefreshPipeline(
 
   const generatedAt = now().toISOString();
   const durationMs = nowMs() - startMs;
+  const dataQuality = buildDashboardDataQuality(
+    snapshot,
+    snapshot1d,
+    generatedAt,
+    Date.parse(generatedAt),
+  );
 
   const indicators = Object.fromEntries(
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators]),
@@ -436,6 +657,7 @@ export async function runDashboardRefreshPipeline(
     generatedAt,
     indicators,
     derived,
+    dataQuality,
     openai: {
       regime: regimeOpenAIStatus,
       strategyAgents: strategyOpenAIStatus,

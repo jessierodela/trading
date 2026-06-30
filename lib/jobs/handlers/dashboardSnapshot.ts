@@ -51,6 +51,7 @@ export const handleDashboardSnapshot: JobHandler<DashboardPayload> = async (payl
       durationMs: refreshed.body.durationMs,
       confluenceCount: refreshed.body.confluence.length,
       agentCount: refreshed.body.agentResults.length,
+      dataQuality: refreshed.body.dataQuality,
     });
   } catch (err) {
     return retryableFailure("dashboard_snapshot_failed", {

@@ -1,7 +1,18 @@
 import type { JobPayload } from "@/lib/jobs/types";
 import {
+  combineDataQualityReports,
+  type DataQualityReport,
+} from "@/lib/dataQuality/types";
+import {
+  missingFeatureReport,
+  validateFeatureSnapshotQuality,
+} from "@/lib/dataQuality/featureQuality";
+import { normalizeMarketIdentity } from "@/lib/dataQuality/marketIdentity";
+import { jobDataQualitySummary } from "@/lib/dataQuality/qualityGate";
+import {
   classifyFeatureRegime,
   toPersistableRegime,
+  type PersistableRegimeResult,
 } from "@/lib/regime/deterministicRegimeClassifier";
 import type { Exchange } from "@/lib/quant/types";
 import { mapRegimeToPermission } from "@/lib/regime/permissionMap";
@@ -20,6 +31,33 @@ function isExchange(value: string): value is Exchange {
 
 type RegimePayload = Extract<JobPayload, { jobType: "regime.compute" }>;
 
+function capReliability(
+  persisted: PersistableRegimeResult,
+  cap: number,
+  reason: string,
+): PersistableRegimeResult {
+  if (persisted.reliability <= cap) {
+    return {
+      ...persisted,
+      reason: `${persisted.reason}; ${reason}`,
+    };
+  }
+  return {
+    ...persisted,
+    reliability: cap,
+    reason: `${persisted.reason}; ${reason}; reliability_capped=${cap.toFixed(2)}`,
+  };
+}
+
+function shouldDropDailyContext(report: DataQualityReport): boolean {
+  return report.issues.some((issue) =>
+    issue.severity === "block" ||
+    issue.code === "FEATURE_MISSING" ||
+    issue.code === "FEATURE_STALE" ||
+    issue.code === "FEATURE_TIMESTAMP_INCOMPLETE"
+  );
+}
+
 export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, context) => {
   if (!isExchange(payload.exchange)) {
     return invalidPayload("regime.compute exchange is not supported", { exchange: payload.exchange });
@@ -36,9 +74,16 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
   let deterministicComputes = 0;
   let persistedFeatureComputes = 0;
   let unknownComputes = 0;
+  const dataQualityReports: DataQualityReport[] = [];
 
   try {
     for (const symbol of payload.symbols) {
+      const now = context.now();
+      const expectedIdentity = normalizeMarketIdentity({
+        symbol,
+        exchange: payload.exchange,
+        source: "coinbase",
+      });
       const feature1h = featureStore
         ? await featureStore.fetchLatest({
             symbol,
@@ -55,17 +100,71 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
           })
         : null;
 
-      const classifier = classifyFeatureRegime(feature1h, feature1d, {
+      const feature1hQuality = feature1h
+        ? validateFeatureSnapshotQuality({
+            feature: feature1h,
+            expectedIdentity,
+            timeframe: "1h",
+            now,
+          })
+        : missingFeatureReport({
+            symbol,
+            exchange: payload.exchange,
+            timeframe: "1h",
+            now,
+            severity: "block",
+          });
+      const feature1dQuality = feature1d
+        ? validateFeatureSnapshotQuality({
+            feature: feature1d,
+            expectedIdentity,
+            timeframe: "1d",
+            now,
+            staleSeverity: "warn",
+          })
+        : missingFeatureReport({
+            symbol,
+            exchange: payload.exchange,
+            timeframe: "1d",
+            now,
+            severity: "warn",
+          });
+      const symbolDataQuality = combineDataQualityReports({
+        scope: "regime.compute.symbol",
+        checkedAt: now.toISOString(),
+        reports: [feature1hQuality, feature1dQuality],
         symbol,
-        timestamp: feature1h?.ts ?? context.now().toISOString(),
-        source: feature1h ? "persisted_feature_snapshots" : "missing_feature_snapshot_safe_fallback",
+        exchange: payload.exchange,
+        timeframe: "1h",
       });
-      const persisted = toPersistableRegime(classifier);
+      dataQualityReports.push(symbolDataQuality);
+
+      const block1h = !feature1hQuality.ok;
+      const reducedDailyContext = shouldDropDailyContext(feature1dQuality);
+      const classifier = classifyFeatureRegime(
+        block1h ? null : feature1h,
+        reducedDailyContext ? null : feature1d,
+        {
+        symbol,
+        timestamp: block1h ? now.toISOString() : feature1h?.ts ?? now.toISOString(),
+        source: block1h
+          ? "data_quality_safe_fallback"
+          : reducedDailyContext
+            ? "persisted_feature_snapshots_reduced_daily_context"
+            : "persisted_feature_snapshots",
+        },
+      );
+      let persisted = toPersistableRegime(classifier);
+      if (block1h) {
+        persisted = capReliability(persisted, 0.25, "data_quality_blocked_1h_feature");
+      } else if (reducedDailyContext) {
+        persisted = capReliability(persisted, 0.55, "reduced_daily_context");
+      }
       const mapped = mapRegimeToPermission(persisted.regime, persisted.reliability);
       const row = await regimeStore.insert({
         symbol,
         exchange: payload.exchange,
-        ts: feature1h?.ts ?? classifier.timestamp,
+        ts: block1h ? now.toISOString() : feature1h?.ts ?? classifier.timestamp,
         regime: persisted.regime,
         reliability: persisted.reliability,
         directionalBias: mapped.directionalBias,
@@ -79,6 +178,7 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
           persisted,
           featureTs: feature1h?.ts ?? null,
           dailyFeatureTs: feature1d?.ts ?? null,
+          dataQuality: symbolDataQuality,
           requestedRegimeModelVersion: payload.regimeModelVersion,
           aiUsed: false,
         },
@@ -87,14 +187,16 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
         featureVersion: feature1h?.featureVersion ?? null,
       });
       deterministicComputes++;
-      if (feature1h) persistedFeatureComputes++;
+      if (feature1h && !block1h) persistedFeatureComputes++;
       if (classifier.regime === "UNKNOWN") unknownComputes++;
       symbols[symbol] = {
         source: "deterministic_regime_classifier",
+        dataQuality: symbolDataQuality,
         classifierRegime: classifier.regime,
         persistedRegime: persisted.regime,
         regime: row.regime,
         reliability: row.reliability,
+        tradePermission: row.tradePermission,
         ts: row.ts,
         id: row.id,
       };
@@ -104,6 +206,16 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
       message: err instanceof Error ? err.message : String(err),
     });
   }
+
+  const dataQuality = jobDataQualitySummary({
+    scope: "regime.compute",
+    checkedAt: context.now().toISOString(),
+    reports: dataQualityReports,
+    symbolsChecked: payload.symbols.length,
+    symbolsPassed: dataQualityReports.filter((report) => report.severity === "pass").length,
+    symbolsWarned: dataQualityReports.filter((report) => report.severity === "warn").length,
+    symbolsBlocked: dataQualityReports.filter((report) => report.severity === "block").length,
+  });
 
   return handlerSuccess({
     jobType: payload.jobType,
@@ -116,6 +228,7 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
     deterministicComputes,
     persistedFeatureComputes,
     unknownComputes,
+    dataQuality,
     symbols,
   });
 };

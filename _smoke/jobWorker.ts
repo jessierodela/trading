@@ -285,12 +285,36 @@ async function runHandlerChecks(): Promise<void> {
           insertedBars: 1,
           skippedBars: 0,
           latestTs: "2026-06-17T11:00:00.000Z",
+          dataQuality: {
+            ok: true,
+            severity: "pass",
+            checkedAt: "2026-06-17T12:00:00.000Z",
+            scope: "market.ingest.latest",
+            issues: [],
+            summary: { pass: 1, warn: 0, block: 0 },
+            checkedBars: 1,
+            passedBars: 1,
+            warnedBars: 0,
+            blockedBars: 0,
+          },
           symbols: {
             "BTC-USD": {
               fetchedBars: 1,
               insertedBars: 1,
               skippedBars: 0,
               latestTs: "2026-06-17T11:00:00.000Z",
+              dataQuality: {
+                ok: true,
+                severity: "pass",
+                checkedAt: "2026-06-17T12:00:00.000Z",
+                scope: "market.ingest.latest.symbol",
+                issues: [],
+                summary: { pass: 1, warn: 0, block: 0 },
+                checkedBars: 1,
+                passedBars: 1,
+                warnedBars: 0,
+                blockedBars: 0,
+              },
             },
           },
         };
@@ -421,6 +445,11 @@ async function runHandlerChecks(): Promise<void> {
             generatedAt: "2026-06-17T12:00:00.000Z",
             indicators: {},
             derived: {},
+            dataQuality: {
+              severity: "pass",
+              issues: [],
+              symbols: {},
+            },
           },
         };
       },

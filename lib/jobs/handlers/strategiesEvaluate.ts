@@ -1,4 +1,17 @@
 import type { JobPayload } from "@/lib/jobs/types";
+import {
+  combineDataQualityReports,
+  createDataQualityReport,
+  type DataQualityIssue,
+  type DataQualityReport,
+} from "@/lib/dataQuality/types";
+import {
+  missingFeatureReport,
+  validateFeatureSnapshotQuality,
+} from "@/lib/dataQuality/featureQuality";
+import { closedBarAge, maxStalenessBarsFor } from "@/lib/dataQuality/freshness";
+import { normalizeMarketIdentity } from "@/lib/dataQuality/marketIdentity";
+import { jobDataQualitySummary } from "@/lib/dataQuality/qualityGate";
 import type { Exchange } from "@/lib/quant/types";
 import { getStrategyById } from "@/lib/strategies/strategyRegistry";
 import { runStrategyWindow } from "@/lib/strategies/runStrategyWindow";
@@ -47,9 +60,16 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
   let duplicatesSkipped = 0;
   const byStrategy: Record<string, number> = {};
   const symbols: Record<string, unknown> = {};
+  const dataQualityReports: DataQualityReport[] = [];
 
   try {
     for (const symbol of payload.symbols) {
+      const now = context.now();
+      const expectedIdentity = normalizeMarketIdentity({
+        symbol,
+        exchange: payload.exchange,
+        source: "coinbase",
+      });
       const [features, dailyFeatures, regime] = await Promise.all([
         featureStore.fetchRange(
           { symbol, exchange: payload.exchange, timeframe: payload.timeframe },
@@ -62,14 +82,120 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
         regimeStore.latestAsContext({ symbol, exchange: payload.exchange }),
       ]);
       if (features.length === 0) {
-        symbols[symbol] = { featuresRead: 0, signalsEvaluated: 0, inserted: 0, duplicatesSkipped: 0 };
+        const missingReport = missingFeatureReport({
+          symbol,
+          exchange: payload.exchange,
+          timeframe: "1h",
+          now,
+          severity: "block",
+        });
+        dataQualityReports.push(missingReport);
+        symbols[symbol] = {
+          featuresRead: 0,
+          signalsEvaluated: 0,
+          inserted: 0,
+          duplicatesSkipped: 0,
+          skipped: true,
+          skipReason: "feature_window_missing",
+          dataQuality: missingReport,
+        };
         continue;
       }
 
+      const structuralReports = features.map((feature) =>
+        validateFeatureSnapshotQuality({
+          feature,
+          expectedIdentity,
+          timeframe: payload.timeframe,
+          now,
+          checkFreshness: false,
+        })
+      );
+      const latestFeature = features.at(-1)!;
+      const latestFeatureQuality = validateFeatureSnapshotQuality({
+        feature: latestFeature,
+        expectedIdentity,
+        timeframe: payload.timeframe,
+        now,
+      });
+      const latestDaily = dailyFeatures.at(-1) ?? null;
+      const dailyQuality = latestDaily
+        ? validateFeatureSnapshotQuality({
+            feature: latestDaily,
+            expectedIdentity,
+            timeframe: "1d",
+            now,
+            staleSeverity: "warn",
+          })
+        : missingFeatureReport({
+            symbol,
+            exchange: payload.exchange,
+            timeframe: "1d",
+            now,
+            severity: "warn",
+          });
+      const regimeIssues: DataQualityIssue[] = [];
+      let usableRegime = regime;
+      if (regime) {
+        const regimeAge = closedBarAge(regime.ts, "1h", now);
+        const maxRegimeAge = maxStalenessBarsFor("1h");
+        if (regimeAge !== null && regimeAge > maxRegimeAge) {
+          regimeIssues.push({
+            code: "REGIME_CONTEXT_STALE",
+            severity: "warn",
+            message: `Latest regime context is stale: age=${regimeAge} closed bars, max=${maxRegimeAge}.`,
+            symbol,
+            exchange: payload.exchange,
+            timeframe: "1h",
+            ts: regime.ts,
+            expected: { maxStalenessBars: maxRegimeAge },
+            actual: { ageClosedBars: regimeAge },
+          });
+          usableRegime = null;
+        }
+      }
+      const regimeQuality = createDataQualityReport({
+        scope: "strategies.evaluate.regime_context",
+        checkedAt: now.toISOString(),
+        symbol,
+        exchange: payload.exchange,
+        timeframe: "1h",
+        issues: regimeIssues,
+      });
+      const symbolDataQuality = combineDataQualityReports({
+        scope: "strategies.evaluate.symbol",
+        checkedAt: now.toISOString(),
+        reports: [...structuralReports, latestFeatureQuality, dailyQuality, regimeQuality],
+        symbol,
+        exchange: payload.exchange,
+        timeframe: payload.timeframe,
+      });
+      dataQualityReports.push(symbolDataQuality);
+
+      const hasBlockedWindow = structuralReports.some((report) => !report.ok) || !latestFeatureQuality.ok;
+      if (hasBlockedWindow) {
+        symbols[symbol] = {
+          featuresRead: features.length,
+          signalsEvaluated: 0,
+          inserted: 0,
+          duplicatesSkipped: 0,
+          skipped: true,
+          skipReason: "feature_window_data_quality_blocked",
+          dataQuality: symbolDataQuality,
+        };
+        continue;
+      }
+
+      const dailyContextBlocked = dailyQuality.issues.some((issue) =>
+        issue.severity === "block" ||
+        issue.code === "FEATURE_MISSING" ||
+        issue.code === "FEATURE_STALE" ||
+        issue.code === "FEATURE_TIMESTAMP_INCOMPLETE"
+      );
       const result = await runStrategyWindow({
         features,
-        dailyFeatures,
-        regimeByTs: () => regime,
+        dailyFeatures: dailyContextBlocked ? [] : dailyFeatures,
+        regimeByTs: () => usableRegime,
         persist: false,
       });
       const filteredSignals = allowed
@@ -93,9 +219,13 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
       signalsEvaluated += filteredSignals.length;
       symbols[symbol] = {
         featuresRead: result.featuresRead,
+        dailyFeaturesRead: dailyFeatures.length,
         signalsEvaluated: filteredSignals.length,
         inserted: insertedForSymbol,
         duplicatesSkipped: duplicatesForSymbol,
+        skipped: false,
+        reducedDailyContext: dailyContextBlocked,
+        dataQuality: symbolDataQuality,
       };
     }
   } catch (err) {
@@ -103,6 +233,16 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
       message: err instanceof Error ? err.message : String(err),
     });
   }
+
+  const dataQuality = jobDataQualitySummary({
+    scope: "strategies.evaluate",
+    checkedAt: context.now().toISOString(),
+    reports: dataQualityReports,
+    symbolsChecked: payload.symbols.length,
+    symbolsPassed: dataQualityReports.filter((report) => report.severity === "pass").length,
+    symbolsWarned: dataQualityReports.filter((report) => report.severity === "warn").length,
+    symbolsBlocked: dataQualityReports.filter((report) => report.severity === "block").length,
+  });
 
   return handlerSuccess({
     jobType: payload.jobType,
@@ -114,6 +254,7 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
     inserted,
     duplicatesSkipped,
     byStrategy,
+    dataQuality,
     symbols,
   });
 };
