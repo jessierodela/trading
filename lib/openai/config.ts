@@ -86,3 +86,21 @@ export function optionalOpenAIHttpError(
     { code, status, body },
   );
 }
+
+export async function fetchOptionalOpenAI(
+  agent: string,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (err) {
+    if (err instanceof TypeError) {
+      throw new OptionalOpenAIError(`[${agent}] OpenAI network error`, {
+        code: "openai_network_error",
+        cause: err,
+      });
+    }
+    throw err;
+  }
+}

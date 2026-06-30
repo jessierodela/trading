@@ -13,8 +13,8 @@
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { Signal } from "@/lib/signals";
 import {
+  fetchOptionalOpenAI,
   isOptionalOpenAIError,
-  OptionalOpenAIError,
   optionalOpenAIHttpError,
 } from "@/lib/openai/config";
 
@@ -213,7 +213,7 @@ ${JSON.stringify(thresholds, null, 2)}
 
 Return structured JSON only.`.trim();
 
-  const res = await fetch(OPENAI_API_URL, {
+  const res = await fetchOptionalOpenAI(`mean-reversion:${symbol}`, OPENAI_API_URL, {
     method:  "POST",
     headers: {
       "Content-Type":  "application/json",
@@ -337,10 +337,7 @@ export async function runMeanReversion(
     if (result.status === "rejected") {
       if (isOptionalOpenAIError(result.reason)) throw result.reason;
       if (result.reason instanceof TypeError) {
-        throw new OptionalOpenAIError(`[mean-reversion] OpenAI network error for ${symbols[i]}`, {
-          code: "openai_network_error",
-          cause: result.reason,
-        });
+        throw result.reason;
       }
       console.warn(`[mean-reversion] ${symbols[i]} failed:`, result.reason);
       return;

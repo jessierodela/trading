@@ -30,6 +30,7 @@
 import type { Signal }        from "@/lib/signals";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import {
+  fetchOptionalOpenAI,
   isOptionalOpenAIError,
   OptionalOpenAIError,
   optionalOpenAIHttpError,
@@ -286,57 +287,47 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
     });
   }
 
+  const res = await fetchOptionalOpenAI("momentumScout", "https://api.openai.com/v1/chat/completions", {
+    method:  "POST",
+    headers: {
+      "Content-Type":  "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model:       "gpt-4o",
+      temperature: 0,
+      max_tokens:  900,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user",   content: JSON.stringify(payload, null, 2) },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    const optionalErr = optionalOpenAIHttpError("momentumScout", res.status, err);
+    if (optionalErr) throw optionalErr;
+    console.error(`[momentumScout] GPT-4o error ${res.status}:`, err);
+    return null;
+  }
+
+  const data         = await res.json();
+  const choice       = data.choices?.[0];
+  const raw          = choice?.message?.content ?? "";
+  const finishReason = choice?.finish_reason as string | undefined;
+
+  if (finishReason === "length") {
+    console.warn("[momentumScout] GPT-4o response truncated (finish_reason=length) — increase max_tokens");
+  }
+
+  const clean = raw.replace(/```json|```/gi, "").trim();
+
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method:  "POST",
-      headers: {
-        "Content-Type":  "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model:       "gpt-4o",
-        temperature: 0,
-        max_tokens:  900,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user",   content: JSON.stringify(payload, null, 2) },
-        ],
-      }),
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      const optionalErr = optionalOpenAIHttpError("momentumScout", res.status, err);
-      if (optionalErr) throw optionalErr;
-      console.error(`[momentumScout] GPT-4o error ${res.status}:`, err);
-      return null;
-    }
-
-    const data         = await res.json();
-    const choice       = data.choices?.[0];
-    const raw          = choice?.message?.content ?? "";
-    const finishReason = choice?.finish_reason as string | undefined;
-
-    if (finishReason === "length") {
-      console.warn("[momentumScout] GPT-4o response truncated (finish_reason=length) — increase max_tokens");
-    }
-
-    const clean = raw.replace(/```json|```/gi, "").trim();
-
-    try {
-      return JSON.parse(clean) as MomentumScoutResponse;
-    } catch {
-      console.error(`[momentumScout] JSON.parse failed. finish_reason=${finishReason}. Raw:`, raw);
-      return null;
-    }
-
-  } catch (err) {
-    if (isOptionalOpenAIError(err)) throw err;
-    console.error("[momentumScout] Fetch error:", err);
-    throw new OptionalOpenAIError("[momentumScout] OpenAI network error", {
-      code: "openai_network_error",
-      cause: err,
-    });
+    return JSON.parse(clean) as MomentumScoutResponse;
+  } catch {
+    console.error(`[momentumScout] JSON.parse failed. finish_reason=${finishReason}. Raw:`, raw);
+    return null;
   }
 }
 
@@ -408,6 +399,8 @@ export async function runMomentumScoutAI(
     if (result.status === "fulfilled" && result.value) {
       signals.push(result.value);
     } else if (result.status === "rejected" && isOptionalOpenAIError(result.reason)) {
+      throw result.reason;
+    } else if (result.status === "rejected") {
       throw result.reason;
     }
   }
