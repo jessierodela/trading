@@ -11,6 +11,7 @@ import {
 } from "@/lib/pipeline";
 import { assertNoLiveExecutionJobTypes, FORBIDDEN_LIVE_JOB_TYPES, JOB_TYPES } from "@/lib/jobs";
 import { InMemoryBarStore } from "@/lib/storage/barStore";
+import { OptionalOpenAIError } from "@/lib/openai/config";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { CacheSnapshot1d } from "@/lib/indicatorCache1d";
 import type { Bar, FeatureSnapshot } from "@/lib/quant/types";
@@ -124,8 +125,17 @@ function snapshot1d(): CacheSnapshot1d {
 
 async function runDashboardChecks(): Promise<void> {
   console.log("\n=== dashboard pipeline service ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  const oldOpenAIRegimeEnabled = process.env.OPENAI_REGIME_ENABLED;
+  const oldOpenAIStrategyAgentsEnabled = process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  delete process.env.OPENAI_API_KEY;
+  process.env.OPENAI_ENABLED = "false";
+  process.env.OPENAI_REGIME_ENABLED = "false";
+  process.env.OPENAI_STRATEGY_AGENTS_ENABLED = "false";
   const waits: number[] = [];
   let confluenceSawA6 = false;
+  let openAIAgentCalled = false;
   const result = await runDashboardRefreshPipeline({
     cache: {
       async forceRefresh() {},
@@ -147,26 +157,30 @@ async function runDashboardChecks(): Promise<void> {
         return value;
       };
     })(),
-    runRegimeDetectorFn: async () => [
-      {
-        symbol: "BTC",
-        agent: "Regime Detector",
-        type: "watch",
-        reason: "test regime",
-        confidence: "high",
-        regime: "TREND_UP",
-        reliability: 0.9,
-        emaContext: { ema20Slope: "rising", ema50Above200: true },
-        volContext: { atrPct: 1.923, atrRegime: "normal" },
-      },
-    ],
-    runMomentumScoutFn: async () => [
-      { symbol: "BTC", agent: "Momentum Scout", type: "buy", reason: "test momentum", confidence: "high" },
-    ],
-    runBreakoutWatcherFn: async () => [],
-    runTrendFollowerFn: async () => [],
-    runVolatilityArbiterFn: async () => [],
-    runMeanReversionFn: async () => [],
+    runRegimeDetectorFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI regime detector should be skipped");
+    },
+    runMomentumScoutFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI momentum scout should be skipped");
+    },
+    runBreakoutWatcherFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI breakout watcher should be skipped");
+    },
+    runTrendFollowerFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI trend follower should be skipped");
+    },
+    runVolatilityArbiterFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI volatility arbiter should be skipped");
+    },
+    runMeanReversionFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI mean reversion should be skipped");
+    },
     runConfluenceEngineFn: async (signals, regimeMap) => {
       confluenceSawA6 = signals.some((signal) => signal.agent === "Regime Detector");
       eq("confluence receives A6 regime context", regimeMap?.BTC?.regime, "TREND_UP");
@@ -195,9 +209,160 @@ async function runDashboardChecks(): Promise<void> {
     assert("dashboard response includes durationMs", typeof result.body.durationMs === "number");
     eq("dashboard preserves A6 ordering after A1-A5", result.body.agentResults.map((a) => a.id), ["A1", "A2", "A3", "A4", "A5", "A6"]);
     eq("dashboard response includes regime map", result.body.regimeMap.BTC.regime, "TREND_UP");
+    eq("dashboard reports regime OpenAI skipped", (result.body.openai?.regime as { reason?: string }).reason, "openai_disabled");
+    eq("dashboard reports strategy OpenAI skipped", (result.body.openai?.strategyAgents as { reason?: string }).reason, "openai_disabled");
   }
   eq("dashboard waits before 1D refresh", waits, [15_000]);
   eq("confluence voting excludes A6", confluenceSawA6, false);
+  eq("dashboard disabled env avoids OpenAI agent calls", openAIAgentCalled, false);
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+  if (oldOpenAIRegimeEnabled === undefined) delete process.env.OPENAI_REGIME_ENABLED;
+  else process.env.OPENAI_REGIME_ENABLED = oldOpenAIRegimeEnabled;
+  if (oldOpenAIStrategyAgentsEnabled === undefined) delete process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
+}
+
+async function runDashboardOpenAIQuotaFallbackChecks(): Promise<void> {
+  console.log("\n=== dashboard OpenAI quota fallback ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  const oldOpenAIRegimeEnabled = process.env.OPENAI_REGIME_ENABLED;
+  const oldOpenAIStrategyAgentsEnabled = process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  process.env.OPENAI_API_KEY = "dummy";
+  process.env.OPENAI_ENABLED = "true";
+  process.env.OPENAI_REGIME_ENABLED = "false";
+  process.env.OPENAI_STRATEGY_AGENTS_ENABLED = "true";
+
+  let openAIAgentCalls = 0;
+  const quotaFailure = (agent: string) => {
+    openAIAgentCalls += 1;
+    throw new OptionalOpenAIError(`${agent} simulated quota failure`, {
+      code: "openai_quota_or_rate_limit",
+      status: 429,
+      body: "insufficient_quota",
+    });
+  };
+
+  const result = await runDashboardRefreshPipeline({
+    cache: {
+      async forceRefresh() {},
+      read: snapshot1h,
+    },
+    cache1d: {
+      async forceRefresh() {},
+      read: snapshot1d,
+    },
+    writeMemCache: false,
+    sleepMs: async () => {},
+    now: () => new Date("2026-06-17T10:00:05.000Z"),
+    nowMs: (() => {
+      let value = 2_000;
+      return () => {
+        value += 25;
+        return value;
+      };
+    })(),
+    runMomentumScoutFn: async () => quotaFailure("momentumScout"),
+    runBreakoutWatcherFn: async () => quotaFailure("breakoutWatcher"),
+    runTrendFollowerFn: async () => quotaFailure("trendFollower"),
+    runVolatilityArbiterFn: async () => quotaFailure("volatilityArbiter"),
+    runMeanReversionFn: async () => quotaFailure("meanReversion"),
+    runConfluenceEngineFn: async () => [],
+  });
+
+  assert("dashboard.snapshot succeeds when enabled OpenAI hits quota", result.ok);
+  if (result.ok) {
+    const a1 = result.body.agentResults.find((agent) => agent.id === "A1");
+    assert(
+      "dashboard quota fallback uses deterministic evaluator",
+      a1?.signals.some((signal) => signal.reason.includes("Momentum acceleration")) === true,
+      a1,
+    );
+    eq(
+      "dashboard quota fallback reports strategy fallback",
+      (result.body.openai?.strategyAgents as { fallback?: string }).fallback,
+      "deterministic_optional_openai_error",
+    );
+    eq(
+      "dashboard quota fallback reports OpenAI quota code",
+      (result.body.openai?.strategyAgents as { code?: string }).code,
+      "openai_quota_or_rate_limit",
+    );
+    eq("dashboard quota fallback keeps success body", result.body.success, true);
+  }
+  assert("dashboard quota test invoked OpenAI strategy agents", openAIAgentCalls > 0);
+
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+  if (oldOpenAIRegimeEnabled === undefined) delete process.env.OPENAI_REGIME_ENABLED;
+  else process.env.OPENAI_REGIME_ENABLED = oldOpenAIRegimeEnabled;
+  if (oldOpenAIStrategyAgentsEnabled === undefined) delete process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
+}
+
+async function runDashboardNonOptionalAgentErrorChecks(): Promise<void> {
+  console.log("\n=== dashboard non-optional agent error ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  const oldOpenAIRegimeEnabled = process.env.OPENAI_REGIME_ENABLED;
+  const oldOpenAIStrategyAgentsEnabled = process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  process.env.OPENAI_API_KEY = "dummy";
+  process.env.OPENAI_ENABLED = "true";
+  process.env.OPENAI_REGIME_ENABLED = "false";
+  process.env.OPENAI_STRATEGY_AGENTS_ENABLED = "true";
+
+  let threw = false;
+  let message = "";
+  try {
+    await runDashboardRefreshPipeline({
+      cache: {
+        async forceRefresh() {},
+        read: snapshot1h,
+      },
+      cache1d: {
+        async forceRefresh() {},
+        read: snapshot1d,
+      },
+      writeMemCache: false,
+      sleepMs: async () => {},
+      now: () => new Date("2026-06-17T10:00:05.000Z"),
+      nowMs: (() => {
+        let value = 3_000;
+        return () => {
+          value += 25;
+          return value;
+        };
+      })(),
+      runMomentumScoutFn: async () => {
+        throw new TypeError("simulated non-optional agent bug");
+      },
+      runBreakoutWatcherFn: async () => [],
+      runTrendFollowerFn: async () => [],
+      runVolatilityArbiterFn: async () => [],
+      runMeanReversionFn: async () => [],
+      runConfluenceEngineFn: async () => [],
+    });
+  } catch (err) {
+    threw = err instanceof TypeError;
+    message = err instanceof Error ? err.message : String(err);
+  }
+
+  assert("dashboard rethrows non-optional A1-A5 TypeError", threw, { message });
+  assert("dashboard does not fall back for non-optional TypeError", message.includes("simulated non-optional agent bug"), { message });
+
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+  if (oldOpenAIRegimeEnabled === undefined) delete process.env.OPENAI_REGIME_ENABLED;
+  else process.env.OPENAI_REGIME_ENABLED = oldOpenAIRegimeEnabled;
+  if (oldOpenAIStrategyAgentsEnabled === undefined) delete process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
 }
 
 async function runRegimeChecks(): Promise<void> {
@@ -429,6 +594,8 @@ async function runStaticChecks(): Promise<void> {
 
 async function main(): Promise<void> {
   await runDashboardChecks();
+  await runDashboardOpenAIQuotaFallbackChecks();
+  await runDashboardNonOptionalAgentErrorChecks();
   await runRegimeChecks();
   await runMarketIngestChecks();
   await runSnapshotChecks();

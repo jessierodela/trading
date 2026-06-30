@@ -19,8 +19,10 @@ import { runJobWorkerOnce } from "@/lib/jobs/worker";
 import { handleDashboardSnapshot } from "@/lib/jobs/handlers/dashboardSnapshot";
 import { handleMarketIngestLatest } from "@/lib/jobs/handlers/marketIngestLatest";
 import { handlePaperMonitor } from "@/lib/jobs/handlers/paperMonitor";
+import { handleRegimeCompute } from "@/lib/jobs/handlers/regimeCompute";
 import { handleTelegramRefresh } from "@/lib/jobs/handlers/telegramRefresh";
-import type { Bar } from "@/lib/quant/types";
+import type { Bar, FeatureSnapshot } from "@/lib/quant/types";
+import type { RegimeSnapshotRow } from "@/lib/storage";
 
 let failed = 0;
 
@@ -186,6 +188,55 @@ function fakeBarStore(): NonNullable<JobHandlerServices["barStore"]> {
   };
 }
 
+function fakeFeatureStore(
+  feature1h: FeatureSnapshot | null,
+  feature1d: FeatureSnapshot | null,
+): NonNullable<JobHandlerServices["featureStore"]> {
+  return {
+    async insert(snapshot) {
+      return { id: 1, ...snapshot };
+    },
+    async insertMany() {
+      return 0;
+    },
+    async fetchRange() {
+      return [];
+    },
+    async fetchLatest(filter) {
+      if (filter.timeframe === "1h") return feature1h;
+      if (filter.timeframe === "1d") return feature1d;
+      return null;
+    },
+  };
+}
+
+function fakeRegimeStore(): {
+  store: NonNullable<JobHandlerServices["regimeStore"]>;
+  rows: Array<RegimeSnapshotRow & { id: number }>;
+} {
+  const rows: Array<RegimeSnapshotRow & { id: number }> = [];
+  return {
+    rows,
+    store: {
+      async insert(row) {
+        const persisted = { id: rows.length + 1, ...row };
+        rows.push(persisted);
+        return persisted;
+      },
+      async latest() {
+        return rows.at(-1) ?? null;
+      },
+      async fetchRecent() {
+        return [...rows].reverse();
+      },
+      async latestAsContext() {
+        const row = rows.at(-1);
+        return row ? { regime: row.regime, reliability: row.reliability, ts: row.ts } : null;
+      },
+    },
+  };
+}
+
 function fakePaperStore(): NonNullable<JobHandlerServices["paperStore"]> {
   return {
     async listPositions() {
@@ -248,6 +299,98 @@ async function runHandlerChecks(): Promise<void> {
   });
   assert("market handler succeeds", marketResult.success);
   eq("market handler calls ingest service", marketCalled, true);
+
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  const oldOpenAIRegimeEnabled = process.env.OPENAI_REGIME_ENABLED;
+  const oldOpenAIStrategyAgentsEnabled = process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  delete process.env.OPENAI_API_KEY;
+  process.env.OPENAI_ENABLED = "false";
+  process.env.OPENAI_REGIME_ENABLED = "false";
+  process.env.OPENAI_STRATEGY_AGENTS_ENABLED = "false";
+  const feature1h: FeatureSnapshot = {
+    symbol: "BTC-USD",
+    exchange: "COINBASE",
+    timeframe: "1h",
+    ts: "2026-06-17T11:00:00.000Z",
+    close: 104,
+    rsi14: 58,
+    macd: 1,
+    macdSignal: 0.5,
+    macdHist: 0.5,
+    ema20: 100,
+    ema50: 95,
+    ema200: 90,
+    ema20Slope: 1,
+    ema50Slope: 1,
+    ema200Slope: 0.5,
+    atr14: 2,
+    atrPct: 1.923,
+    bbUpper: 110,
+    bbMiddle: 100,
+    bbLower: 90,
+    bbWidth: 0.2,
+    bbWidthPrev: 0.18,
+    relativeVolume20: null,
+    candleRangeAtr: 1.2,
+    daily_ema50AboveEma200: true,
+    daily_priceAboveEma200: true,
+    featureVersion: "features.test.v1",
+  };
+  const regimeRows = fakeRegimeStore();
+  let openAIDetectorCalled = false;
+  const regimePayload: Extract<JobPayload, { jobType: "regime.compute" }> = {
+    jobType: "regime.compute",
+    symbols: ["BTC-USD"],
+    exchange: "COINBASE",
+    timeframe: "1h",
+    regimeModelVersion: "requested.regime.test.v1",
+    source: "persisted_features",
+  };
+  const regimeResult = await handleRegimeCompute(regimePayload, {
+    workerId: "smoke",
+    job: job(regimePayload),
+    store: new FakeJobStore(),
+    now: () => new Date("2026-06-17T12:00:00.000Z"),
+    services: {
+      featureStore: fakeFeatureStore(feature1h, null),
+      regimeStore: regimeRows.store,
+      async runRegimeDetector() {
+        openAIDetectorCalled = true;
+        throw new Error("429 insufficient_quota");
+      },
+    },
+  });
+  assert("regime compute succeeds without OpenAI key", regimeResult.success);
+  eq("regime compute does not call OpenAI detector service", openAIDetectorCalled, false);
+  eq("regime compute persists deterministic row", regimeRows.rows.length, 1);
+  eq("regime compute marks aiUsed false", (regimeRows.rows[0].rawResponse as { aiUsed?: boolean }).aiUsed, false);
+  if (regimeResult.success) {
+    eq("regime compute reports deterministic mode", (regimeResult.result as { aiUsed?: boolean }).aiUsed, false);
+  }
+
+  const sparseRows = fakeRegimeStore();
+  const sparseRegimeResult = await handleRegimeCompute(regimePayload, {
+    workerId: "smoke",
+    job: job(regimePayload),
+    store: new FakeJobStore(),
+    now: () => new Date("2026-06-17T12:00:00.000Z"),
+    services: {
+      featureStore: fakeFeatureStore(null, null),
+      regimeStore: sparseRows.store,
+    },
+  });
+  assert("regime compute persists safe fallback for missing features", sparseRegimeResult.success);
+  eq("regime missing features persisted as CHOP", sparseRows.rows[0].regime, "CHOP");
+  eq("regime missing features blocks trading through reliability floor", sparseRows.rows[0].tradePermission, "BLOCK");
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+  if (oldOpenAIRegimeEnabled === undefined) delete process.env.OPENAI_REGIME_ENABLED;
+  else process.env.OPENAI_REGIME_ENABLED = oldOpenAIRegimeEnabled;
+  if (oldOpenAIStrategyAgentsEnabled === undefined) delete process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
 
   let dashboardRefreshCalled = false;
   let snapshotWriteCalled = false;

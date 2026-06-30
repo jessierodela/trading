@@ -59,6 +59,7 @@ export interface DashboardRefreshPayload {
   generatedAt: string;
   indicators: Record<string, IndicatorValues>;
   derived: Record<string, unknown>;
+  openai?: Record<string, unknown>;
 }
 
 export type DashboardRefreshResponseBody = {

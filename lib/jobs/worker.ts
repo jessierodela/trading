@@ -12,10 +12,8 @@ import {
 import {
   runDashboardRefreshPipeline,
   runMarketIngestLatestPipeline,
-  runRegimeRefreshPipeline,
   writeDashboardSnapshot,
 } from "@/lib/pipeline";
-import { runRegimeDetector } from "@/lib/agents/regimeDetector";
 import {
   PgBarStore,
   PgFeatureStore,
@@ -163,8 +161,6 @@ export function createJobWorkerServices(pool: Pool): JobHandlerServices {
     dashboardSnapshotStore: new DashboardSnapshotStore(pool),
     runDashboardRefreshPipeline,
     runMarketIngestLatestPipeline,
-    runRegimeDetector,
-    runRegimeRefreshPipeline,
     writeDashboardSnapshot,
   };
 }

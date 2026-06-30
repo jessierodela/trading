@@ -1,4 +1,4 @@
-import { FEATURE_VERSION, REGIME_MODEL_VERSION } from "@/lib/versions";
+import { DETERMINISTIC_REGIME_MODEL_VERSION, FEATURE_VERSION } from "@/lib/versions";
 import type { JobRecord, JobStatus } from "@/lib/jobs/jobStore";
 import type { JobPayload } from "@/lib/jobs/types";
 import { validateJobPayload } from "@/lib/jobs/types";
@@ -133,7 +133,7 @@ function payloadForStage(
         symbols: config.symbols,
         exchange: config.exchange,
         timeframe: config.timeframe,
-        regimeModelVersion: REGIME_MODEL_VERSION,
+        regimeModelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,
         source: "persisted_features",
       };
     case "strategies.evaluate":

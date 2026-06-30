@@ -119,8 +119,13 @@ export const MEAN_REVERSION_BOUNCE_VERSION = STRATEGY_VERSIONS.meanReversionBoun
  *   a6.2026-05-13.v1  - Reset baseline. From this point forward all regime_snapshots
  *                        rows stamp this version. Earlier rows in the DB
  *                        (if any) predate the lineage system.
+ *   deterministic_regime.2026-06-30.v1
+ *                     - P9 scheduled path baseline. No OpenAI dependency;
+ *                       classifies from persisted feature snapshots and maps
+ *                       RANGE/UNKNOWN to safe CHOP rows for storage.
  */
 export const REGIME_MODEL_VERSION = "a6.2026-05-13.v1";
+export const DETERMINISTIC_REGIME_MODEL_VERSION = "deterministic_regime.2026-06-30.v1";
 
 // ─── GPT prompt versions ───────────────────────────────────────────────────
 // One per agent prompt. Bump when prompt text changes in a way that could

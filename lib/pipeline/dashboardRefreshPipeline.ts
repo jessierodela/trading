@@ -1,19 +1,39 @@
 import { runBreakoutWatcher } from "@/lib/agents/breakoutWatcher";
 import { runMeanReversion } from "@/lib/agents/meanReversion";
 import { runMomentumScoutAI } from "@/lib/agents/momentumScout";
-import { runRegimeDetector } from "@/lib/agents/regimeDetector";
+import { runRegimeDetector, type RegimeSignal } from "@/lib/agents/regimeDetector";
 import { runTrendFollower } from "@/lib/agents/trendFollower";
 import { runVolatilityArbiter } from "@/lib/agents/volatilityArbiter";
 import { runConfluenceEngine, type RegimeMap } from "@/lib/confluence/confluenceEngine";
 import { getCache } from "@/lib/indicatorCache";
+import type { CacheSnapshot } from "@/lib/indicatorCache";
 import { getCache1d } from "@/lib/indicatorCache1d";
+import type { CacheSnapshot1d } from "@/lib/indicatorCache1d";
+import {
+  isOpenAIEnabled,
+  isOpenAIRegimeEnabled,
+  isOpenAIStrategyAgentsEnabled,
+  isOptionalOpenAIError,
+  openAIDisabledResult,
+  type OpenAISkipReason,
+} from "@/lib/openai/config";
 import type {
   DashboardRefreshPipelineInput,
   DashboardRefreshPipelineResult,
   DashboardRegimeContext,
 } from "@/lib/pipeline/types";
-import { buildActivityLog, type AgentResult, type DashboardStats, type Signal } from "@/lib/signals";
+import {
+  buildActivityLog,
+  evaluateSignals,
+  type AgentResult,
+  type DashboardStats,
+  type Signal,
+} from "@/lib/signals";
 import { memCache, MEMORY_TTL_MS } from "@/lib/signalsCache";
+import {
+  classifyDeterministicRegime,
+  toPersistableRegime,
+} from "@/lib/regime/deterministicRegimeClassifier";
 
 const DEFAULT_WAIT_BEFORE_1D_MS = 15_000;
 
@@ -41,6 +61,133 @@ function buildTradingAgentResult(
       : emptyAction,
     signals,
   };
+}
+
+function regimeSkipReason(): OpenAISkipReason | null {
+  if (!isOpenAIEnabled()) return "openai_disabled";
+  if (!process.env.OPENAI_API_KEY) return "openai_api_key_missing";
+  return isOpenAIRegimeEnabled() ? null : "openai_regime_disabled";
+}
+
+function strategyAgentsSkipReason(): OpenAISkipReason | null {
+  if (!isOpenAIEnabled()) return "openai_disabled";
+  if (!process.env.OPENAI_API_KEY) return "openai_api_key_missing";
+  return isOpenAIStrategyAgentsEnabled() ? null : "openai_strategy_agents_disabled";
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function openAIErrorMetadata(err: unknown): Record<string, unknown> {
+  if (!isOptionalOpenAIError(err)) return { error: errorMessage(err) };
+  return {
+    error: err.message,
+    code: err.code,
+    status: err.status ?? null,
+  };
+}
+
+function confidenceForReliability(reliability: number): Signal["confidence"] {
+  if (reliability >= 0.75) return "high";
+  if (reliability >= 0.5) return "medium";
+  return "low";
+}
+
+function ema20SlopeBucket(value: number | null | undefined): RegimeSignal["emaContext"]["ema20Slope"] {
+  if (value == null) return "flat";
+  if (value > 0.01) return "rising";
+  if (value < -0.01) return "falling";
+  return "flat";
+}
+
+function atrRegimeBucket(value: number | null | undefined): RegimeSignal["volContext"]["atrRegime"] {
+  if (value == null) return "normal";
+  if (value < 0.5) return "compressed";
+  if (value < 1.5) return "normal";
+  if (value < 3.0) return "elevated";
+  return "extreme";
+}
+
+function buildDeterministicRegimeSignals(
+  snapshot: CacheSnapshot,
+  snapshot1d: CacheSnapshot1d,
+  timestamp: string,
+): RegimeSignal[] {
+  const symbols = [...snapshot.stockSymbols, ...snapshot.cryptoSymbols];
+
+  return symbols.flatMap((symbol) => {
+    const entry = snapshot.data.get(symbol);
+    if (!entry) return [];
+
+    const entry1d = snapshot1d.data.get(symbol);
+    const classifier = classifyDeterministicRegime({
+      symbol,
+      timestamp,
+      source: "dashboard_cache_deterministic",
+      close: entry.indicators.currentClose ?? entry.quote?.price ?? null,
+      rsi14: entry.indicators.rsi,
+      macdHist: entry.indicators.macd?.valueMACDHist ?? null,
+      ema20: entry.indicators.ema20,
+      ema20Slope: entry.derived.ema20Slope,
+      ema50: entry1d?.indicators.ema50 ?? entry.indicators.ema50,
+      ema200: entry1d?.indicators.ema200 ?? entry.indicators.ema200,
+      ema50Slope: entry1d?.derived.ema50Slope ?? null,
+      ema200Slope: entry1d?.derived.ema200Slope ?? null,
+      atrPct: entry.derived.atrPct,
+      bbWidth: entry.indicators.bb_width,
+      bbWidthPrev: entry.indicators.bb_width_prev,
+      relativeVolume20: entry.derived.relativeVolume,
+      candleRangeAtr: entry.derived.candleRangeInAtr,
+      dailyEma50AboveEma200: entry1d?.derived.ema50AboveEma200 ?? null,
+      dailyPriceAboveEma200: entry1d?.derived.priceAboveEma200 ?? null,
+    });
+    const persisted = toPersistableRegime(classifier);
+    const ema50Above200 =
+      entry1d?.derived.ema50AboveEma200 ??
+      (
+        entry.indicators.ema50 != null && entry.indicators.ema200 != null
+          ? entry.indicators.ema50 > entry.indicators.ema200
+          : null
+      );
+
+    return [{
+      symbol,
+      agent: "Regime Detector",
+      type: "watch",
+      confidence: confidenceForReliability(persisted.reliability),
+      reason: `[${classifier.regime}] ${persisted.reason} | source=deterministic_cache | aiUsed=false`,
+      regime: persisted.regime,
+      reliability: persisted.reliability,
+      emaContext: {
+        ema20Slope: ema20SlopeBucket(entry.derived.ema20Slope),
+        ema50Above200,
+      },
+      volContext: {
+        atrPct: entry.derived.atrPct,
+        atrRegime: atrRegimeBucket(entry.derived.atrPct),
+      },
+    }];
+  });
+}
+
+type TradingAgentResults = [AgentResult, AgentResult, AgentResult, AgentResult, AgentResult];
+
+function buildDeterministicAgentResults(snapshot: CacheSnapshot): TradingAgentResults {
+  const indicators = new Map([...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.indicators]));
+  const quotes = new Map(
+    [...snapshot.data.entries()].flatMap(([sym, entry]) => {
+      const price = entry.quote?.price ?? entry.indicators.currentClose;
+      return price == null ? [] : [[sym, { price }]];
+    }),
+  );
+
+  return evaluateSignals(
+    indicators,
+    quotes,
+    snapshot.stockSymbols,
+    snapshot.cryptoSymbols,
+  ).agentResults as TradingAgentResults;
 }
 
 export async function runDashboardRefreshPipeline(
@@ -90,8 +237,36 @@ export async function runDashboardRefreshPipeline(
   const runMeanReversionFn = input.runMeanReversionFn ?? runMeanReversion;
   const runConfluenceEngineFn = input.runConfluenceEngineFn ?? runConfluenceEngine;
 
-  console.log("[cache/refresh] Running Regime Detector (A6)...");
-  const a6Signals = await runRegimeDetectorFn(snapshot, snapshot1d);
+  const timestamp = now().toISOString();
+  const regimeOpenAISkip = regimeSkipReason();
+  let regimeOpenAIStatus: unknown = regimeOpenAISkip
+    ? openAIDisabledResult(regimeOpenAISkip)
+    : { enabled: true };
+  let a6Signals: RegimeSignal[];
+
+  if (regimeOpenAISkip) {
+    console.log(`[cache/refresh] Regime Detector OpenAI skipped (${regimeOpenAISkip}); using deterministic classifier`);
+    a6Signals = buildDeterministicRegimeSignals(snapshot, snapshot1d, timestamp);
+  } else {
+    try {
+      console.log("[cache/refresh] Running Regime Detector (A6)...");
+      a6Signals = await runRegimeDetectorFn(snapshot, snapshot1d);
+      if (a6Signals.length === 0) {
+        console.warn("[cache/refresh] Regime Detector returned no output; using deterministic classifier");
+        regimeOpenAIStatus = { enabled: true, fallback: "deterministic_empty_output" };
+        a6Signals = buildDeterministicRegimeSignals(snapshot, snapshot1d, timestamp);
+      }
+    } catch (err) {
+      if (!isOptionalOpenAIError(err)) throw err;
+      console.warn("[cache/refresh] Regime Detector optional OpenAI failure; using deterministic classifier", openAIErrorMetadata(err));
+      regimeOpenAIStatus = {
+        enabled: true,
+        fallback: "deterministic_optional_openai_error",
+        ...openAIErrorMetadata(err),
+      };
+      a6Signals = buildDeterministicRegimeSignals(snapshot, snapshot1d, timestamp);
+    }
+  }
 
   console.log(
     `[cache/refresh] Regime Detector complete - ` +
@@ -99,45 +274,76 @@ export async function runDashboardRefreshPipeline(
       a6Signals.map((s) => `${s.symbol}=${s.regime}(${s.reliability.toFixed(2)})`).join(", "),
   );
 
-  console.log("[cache/refresh] Running agents A1-A5...");
-  const [a1Signals, a2Signals, a3Signals, a4Signals, a5Signals] = await Promise.all([
-    runMomentumScoutFn(snapshot),
-    runBreakoutWatcherFn(snapshot, "1h"),
-    runTrendFollowerFn(snapshot1d, "1d"),
-    runVolatilityArbiterFn(snapshot, "1h"),
-    runMeanReversionFn(snapshot),
-  ]);
+  const strategyOpenAISkip = strategyAgentsSkipReason();
+  let strategyOpenAIStatus: unknown = strategyOpenAISkip
+    ? openAIDisabledResult(strategyOpenAISkip)
+    : { enabled: true };
+  let tradingAgentResults: TradingAgentResults;
 
-  const a1Result = buildTradingAgentResult(
-    "A1",
-    "Momentum Scout",
-    "Scanning \u2014 no qualifying setups",
-    a1Signals,
-  );
-  const a2Result = buildTradingAgentResult(
-    "A2",
-    "Breakout Watcher",
-    "Scanning \u2014 no breakout conditions met",
-    a2Signals,
-  );
-  const a3Result = buildTradingAgentResult(
-    "A3",
-    "Trend Follower",
-    "Scanning \u2014 no trend structure available",
-    a3Signals,
-  );
-  const a4Result = buildTradingAgentResult(
-    "A4",
-    "Volatility Arbiter",
-    "Scanning \u2014 no volatility conditions met",
-    a4Signals,
-  );
-  const a5Result = buildTradingAgentResult(
-    "A5",
-    "Mean Reversion",
-    "Scanning \u2014 no oversold bounce conditions met",
-    a5Signals,
-  );
+  if (strategyOpenAISkip) {
+    console.log(`[cache/refresh] Agents A1-A5 OpenAI skipped (${strategyOpenAISkip}); using deterministic evaluator`);
+    tradingAgentResults = buildDeterministicAgentResults(snapshot);
+  } else {
+    try {
+      console.log("[cache/refresh] Running agents A1-A5...");
+      const [a1Signals, a2Signals, a3Signals, a4Signals, a5Signals] = await Promise.all([
+        runMomentumScoutFn(snapshot),
+        runBreakoutWatcherFn(snapshot, "1h"),
+        runTrendFollowerFn(snapshot1d, "1d"),
+        runVolatilityArbiterFn(snapshot, "1h"),
+        runMeanReversionFn(snapshot),
+      ]);
+
+      tradingAgentResults = [
+        buildTradingAgentResult(
+          "A1",
+          "Momentum Scout",
+          "Scanning - no qualifying setups",
+          a1Signals,
+        ),
+        buildTradingAgentResult(
+          "A2",
+          "Breakout Watcher",
+          "Scanning - no breakout conditions met",
+          a2Signals,
+        ),
+        buildTradingAgentResult(
+          "A3",
+          "Trend Follower",
+          "Scanning - no trend structure available",
+          a3Signals,
+        ),
+        buildTradingAgentResult(
+          "A4",
+          "Volatility Arbiter",
+          "Scanning - no volatility conditions met",
+          a4Signals,
+        ),
+        buildTradingAgentResult(
+          "A5",
+          "Mean Reversion",
+          "Scanning - no oversold bounce conditions met",
+          a5Signals,
+        ),
+      ];
+    } catch (err) {
+      if (!isOptionalOpenAIError(err)) throw err;
+      console.warn("[cache/refresh] Agents A1-A5 optional OpenAI failure; using deterministic evaluator", openAIErrorMetadata(err));
+      strategyOpenAIStatus = {
+        enabled: true,
+        fallback: "deterministic_optional_openai_error",
+        ...openAIErrorMetadata(err),
+      };
+      tradingAgentResults = buildDeterministicAgentResults(snapshot);
+    }
+  }
+
+  const [a1Result, a2Result, a3Result, a4Result, a5Result] = tradingAgentResults;
+  const a1Signals = a1Result.signals;
+  const a2Signals = a2Result.signals;
+  const a3Signals = a3Result.signals;
+  const a4Signals = a4Result.signals;
+  const a5Signals = a5Result.signals;
 
   const a6AverageReliability =
     a6Signals.length > 0
@@ -215,6 +421,11 @@ export async function runDashboardRefreshPipeline(
   const derived = Object.fromEntries(
     [...snapshot.data.entries()].map(([sym, entry]) => [sym, entry.derived]),
   );
+  const confluenceNarrativeStatus = !isOpenAIEnabled()
+    ? openAIDisabledResult("openai_disabled")
+    : process.env.OPENAI_API_KEY
+      ? { enabled: true }
+      : openAIDisabledResult("openai_api_key_missing");
 
   const payload = {
     agentResults,
@@ -225,6 +436,11 @@ export async function runDashboardRefreshPipeline(
     generatedAt,
     indicators,
     derived,
+    openai: {
+      regime: regimeOpenAIStatus,
+      strategyAgents: strategyOpenAIStatus,
+      confluenceNarrative: confluenceNarrativeStatus,
+    },
   };
 
   if (writeMemCache) {
