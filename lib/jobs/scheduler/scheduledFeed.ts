@@ -1,4 +1,8 @@
 import { DETERMINISTIC_REGIME_MODEL_VERSION, FEATURE_VERSION } from "@/lib/versions";
+import {
+  isUsdtQuoteMarketSymbol,
+  scheduledMarketIdentityErrorMessage,
+} from "@/lib/dataQuality/marketIdentity";
 import type { JobRecord, JobStatus } from "@/lib/jobs/jobStore";
 import type { JobPayload } from "@/lib/jobs/types";
 import { validateJobPayload } from "@/lib/jobs/types";
@@ -51,9 +55,12 @@ function csv(values: string[]): string {
 }
 
 function normalizeSymbol(value: string): string {
-  const normalized = value.trim().toUpperCase().replace("/", "-");
-  if (normalized.length === 0) return "";
-  if (normalized.endsWith("-USDT")) return `${normalized.slice(0, -5)}-USD`;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return "";
+  if (isUsdtQuoteMarketSymbol(trimmed)) {
+    throw new Error(scheduledMarketIdentityErrorMessage(trimmed));
+  }
+  const normalized = trimmed.toUpperCase().replace("/", "-");
   return normalized.includes("-") ? normalized : `${normalized}-USD`;
 }
 

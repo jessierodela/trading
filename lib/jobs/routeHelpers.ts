@@ -1,6 +1,10 @@
 import type { JobRecord, JobStatus, JobStore } from "./jobStore";
 import type { JobPayload, JobType } from "./types";
 import { isJobType, validateJobPayload } from "./types";
+import {
+  isUsdtQuoteMarketSymbol,
+  scheduledMarketIdentityErrorMessage,
+} from "@/lib/dataQuality/marketIdentity";
 import { DETERMINISTIC_REGIME_MODEL_VERSION, FEATURE_VERSION } from "@/lib/versions";
 
 export type RouteExchange = "COINBASE" | "BINANCE" | "POLYGON";
@@ -52,6 +56,19 @@ export interface EnqueueJobForRouteResult {
 const EXCHANGES: RouteExchange[] = ["COINBASE", "BINANCE", "POLYGON"];
 const TIMEFRAMES: RefreshTimeframe[] = ["1h", "1d"];
 const ACTIVE_STATUSES: JobStatus[] = ["queued", "running"];
+
+export class UnsupportedScheduledMarketSymbolError extends Error {
+  readonly code = "UNSUPPORTED_SCHEDULED_MARKET_SYMBOL";
+
+  constructor(symbol: string) {
+    super(scheduledMarketIdentityErrorMessage(symbol));
+    this.name = "UnsupportedScheduledMarketSymbolError";
+  }
+}
+
+export function isUnsupportedScheduledMarketSymbolError(err: unknown): err is UnsupportedScheduledMarketSymbolError {
+  return err instanceof UnsupportedScheduledMarketSymbolError;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -110,14 +127,18 @@ export function routeDatabaseUnavailableError(): string {
 }
 
 export function normalizeRegimeSymbol(value: string | null | undefined): string {
-  const raw = normalizePlainSymbol(value && value.trim().length > 0 ? value : "BTC");
-  if (raw.endsWith("-USDT")) return `${raw.slice(0, -5)}-USD`;
+  const input = value && value.trim().length > 0 ? value : "BTC";
+  if (isUsdtQuoteMarketSymbol(input)) {
+    throw new UnsupportedScheduledMarketSymbolError(input);
+  }
+  const raw = normalizePlainSymbol(input);
   if (raw.endsWith("-USD")) return raw;
   return `${raw}-USD`;
 }
 
 export function displayRefreshSymbol(value: string): string {
-  return normalizeRegimeSymbol(value).replace(/-USD$/, "");
+  const raw = normalizePlainSymbol(value && value.trim().length > 0 ? value : "BTC");
+  return raw.endsWith("-USD") ? raw.replace(/-USD$/, "") : raw;
 }
 
 export function dedupeKeyForJob(payload: JobPayload): string {
@@ -200,9 +221,16 @@ export function buildRefreshJobRequest(body: unknown): BuiltRefreshJob | { error
       if (typeof exchange !== "string") return exchange;
       const timeframe = parseTimeframe(obj.timeframe, "1h");
       if (typeof timeframe !== "string") return timeframe;
+      let regimeSymbols: string[];
+      try {
+        regimeSymbols = symbols.map((symbol) => normalizeRegimeSymbol(symbol));
+      } catch (err) {
+        if (isUnsupportedScheduledMarketSymbolError(err)) return { error: err.message };
+        throw err;
+      }
       const payload: JobPayload = {
         jobType: "regime.compute",
-        symbols: symbols.map((symbol) => normalizeRegimeSymbol(symbol)),
+        symbols: regimeSymbols,
         exchange,
         timeframe,
         regimeModelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,

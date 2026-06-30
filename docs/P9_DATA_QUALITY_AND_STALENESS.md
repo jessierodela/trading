@@ -13,7 +13,7 @@ source: coinbase
 quote: USD
 ```
 
-Scheduled jobs and route helpers already normalize toward `-USD`, and the P9A deterministic scheduled regime path consumes persisted feature rows from that scheduled path. `BTC/USDT` on Binance/TAAPI is a different market identity and is not equivalent to `BTC-USD` unless a future explicit normalization record says how the conversion was performed.
+Scheduled jobs and route helpers use `-USD` symbols for the canonical scheduled path, and the P9A deterministic scheduled regime path consumes persisted feature rows from that scheduled path. Explicit USDT markets such as `BTC/USDT`, `BTC-USDT`, and `BTCUSDT` are rejected at scheduled route boundaries instead of being silently converted to `BTC-USD`. `BTC/USDT` on Binance/TAAPI is a different market identity and is not equivalent to `BTC-USD` unless a future explicit normalization record says how the conversion was performed.
 
 ## Symbol Normalization Policy
 

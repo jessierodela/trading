@@ -24,6 +24,20 @@ export interface MarketIdentityInput {
 
 const KNOWN_QUOTES = ["USDT", "USD", "USDC", "BTC", "ETH"] as const;
 
+export function isUsdtQuoteMarketSymbol(value: string): boolean {
+  const normalized = value.trim().toUpperCase().replace("/", "-");
+  if (normalized.length === 0) return false;
+  if (normalized.endsWith("-USDT")) return true;
+  return normalized.endsWith("USDT") && normalized.length > "USDT".length && !normalized.includes("-");
+}
+
+export function scheduledMarketIdentityErrorMessage(symbol: string): string {
+  const rendered = symbol.trim().toUpperCase() || "UNKNOWN";
+  const parsed = parseSymbol(symbol);
+  const canonical = parsed.base ? `${parsed.base}-USD` : "BTC-USD";
+  return `${rendered} is not the canonical scheduled market. Use ${canonical} on COINBASE/coinbase, or add an explicit normalization policy.`;
+}
+
 function normalizeExchange(value: string | null | undefined, source: MarketDataSource): Exchange {
   const upper = value?.trim().toUpperCase();
   if (upper === "COINBASE" || upper === "BINANCE" || upper === "POLYGON") return upper;

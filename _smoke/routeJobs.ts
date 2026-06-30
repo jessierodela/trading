@@ -186,6 +186,30 @@ async function runPayloadBuilderChecks(): Promise<void> {
   eq("regime refresh normalizes symbol", regime.payload.jobType === "regime.compute" ? regime.payload.symbols : [], ["BTC-USD"]);
   eq("regime refresh dedupe key", regime.dedupeKey, "regime.compute:COINBASE:1h:BTC-USD");
 
+  const usdtRegimeRequest = buildRefreshJobRequest({
+    type: "regime",
+    symbols: ["BTC/USDT"],
+    exchange: "COINBASE",
+    timeframe: "1h",
+  });
+  assert(
+    "route request BTC/USDT is rejected instead of normalized to BTC-USD",
+    "error" in usdtRegimeRequest && usdtRegimeRequest.error.includes("not the canonical scheduled market"),
+    usdtRegimeRequest,
+  );
+
+  let directUsdtRegimeError: string | null = null;
+  try {
+    buildRegimeRefreshJob({ symbol: "BTC-USDT" });
+  } catch (err) {
+    directUsdtRegimeError = err instanceof Error ? err.message : String(err);
+  }
+  assert(
+    "regime helper BTC-USDT does not silently enqueue BTC-USD",
+    directUsdtRegimeError !== null && directUsdtRegimeError.includes("Use BTC-USD on COINBASE/coinbase"),
+    directUsdtRegimeError,
+  );
+
   const regimeAgain = buildRegimeRefreshJob({ symbol: "BTC-USD" });
   eq("dedupe key generation is stable", regimeAgain.dedupeKey, regime.dedupeKey);
 
@@ -293,6 +317,11 @@ async function runRegimeRouteReaderChecks(): Promise<void> {
   const lookup = normalizeRegimeRouteSymbol("btc");
   eq("regime route normalizes persisted symbol", lookup.persistedSymbol, "BTC-USD");
   assert("regime route can match dashboard BTC key", lookup.dashboardCandidates.includes("BTC"));
+  const usdtLookup = normalizeRegimeRouteSymbol("BTC/USDT");
+  eq("regime route preserves USDT persisted symbol", usdtLookup.persistedSymbol, "BTC-USDT");
+  assert("regime route USDT lookup does not include BTC-USD", !usdtLookup.persistedCandidates.includes("BTC-USD"), usdtLookup);
+  assert("regime route USDT dashboard lookup does not include BTC", !usdtLookup.dashboardCandidates.includes("BTC"), usdtLookup);
+  eq("regime route compact BTCUSDT preserves quote", normalizeRegimeRouteSymbol("BTCUSDT").persistedSymbol, "BTC-USDT");
 
   const persisted = await readRegimeRouteState({
     symbol: "btc",
