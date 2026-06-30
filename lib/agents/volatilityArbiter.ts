@@ -21,8 +21,8 @@
 import type { Signal } from "@/lib/signals";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import {
+  fetchOptionalOpenAI,
   isOptionalOpenAIError,
-  OptionalOpenAIError,
   optionalOpenAIHttpError,
 } from "@/lib/openai/config";
 
@@ -222,7 +222,7 @@ export async function runVolatilityArbiter(
     };
 
     try {
-      const res = await fetch(OPENAI_API_URL, {
+      const res = await fetchOptionalOpenAI(`volatilityArbiter:${symbol}`, OPENAI_API_URL, {
         method: "POST",
         headers: {
           "Content-Type":  "application/json",
@@ -279,10 +279,7 @@ export async function runVolatilityArbiter(
     } catch (err) {
       if (isOptionalOpenAIError(err)) throw err;
       if (err instanceof TypeError) {
-        throw new OptionalOpenAIError(`[volatilityArbiter] OpenAI network error for ${symbol}`, {
-          code: "openai_network_error",
-          cause: err,
-        });
+        throw err;
       }
       console.error(`[volatilityArbiter] GPT-4o error for ${symbol}:`, err);
       // Skip this symbol — don't crash the whole agent run

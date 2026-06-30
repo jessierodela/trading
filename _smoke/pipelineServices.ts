@@ -305,6 +305,66 @@ async function runDashboardOpenAIQuotaFallbackChecks(): Promise<void> {
   else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
 }
 
+async function runDashboardNonOptionalAgentErrorChecks(): Promise<void> {
+  console.log("\n=== dashboard non-optional agent error ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  const oldOpenAIRegimeEnabled = process.env.OPENAI_REGIME_ENABLED;
+  const oldOpenAIStrategyAgentsEnabled = process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  process.env.OPENAI_API_KEY = "dummy";
+  process.env.OPENAI_ENABLED = "true";
+  process.env.OPENAI_REGIME_ENABLED = "false";
+  process.env.OPENAI_STRATEGY_AGENTS_ENABLED = "true";
+
+  let threw = false;
+  let message = "";
+  try {
+    await runDashboardRefreshPipeline({
+      cache: {
+        async forceRefresh() {},
+        read: snapshot1h,
+      },
+      cache1d: {
+        async forceRefresh() {},
+        read: snapshot1d,
+      },
+      writeMemCache: false,
+      sleepMs: async () => {},
+      now: () => new Date("2026-06-17T10:00:05.000Z"),
+      nowMs: (() => {
+        let value = 3_000;
+        return () => {
+          value += 25;
+          return value;
+        };
+      })(),
+      runMomentumScoutFn: async () => {
+        throw new TypeError("simulated non-optional agent bug");
+      },
+      runBreakoutWatcherFn: async () => [],
+      runTrendFollowerFn: async () => [],
+      runVolatilityArbiterFn: async () => [],
+      runMeanReversionFn: async () => [],
+      runConfluenceEngineFn: async () => [],
+    });
+  } catch (err) {
+    threw = err instanceof TypeError;
+    message = err instanceof Error ? err.message : String(err);
+  }
+
+  assert("dashboard rethrows non-optional A1-A5 TypeError", threw, { message });
+  assert("dashboard does not fall back for non-optional TypeError", message.includes("simulated non-optional agent bug"), { message });
+
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+  if (oldOpenAIRegimeEnabled === undefined) delete process.env.OPENAI_REGIME_ENABLED;
+  else process.env.OPENAI_REGIME_ENABLED = oldOpenAIRegimeEnabled;
+  if (oldOpenAIStrategyAgentsEnabled === undefined) delete process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
+}
+
 async function runRegimeChecks(): Promise<void> {
   console.log("\n=== regime pipeline service ===");
   resetRegimeRefreshPipelineCacheForSmoke();
@@ -535,6 +595,7 @@ async function runStaticChecks(): Promise<void> {
 async function main(): Promise<void> {
   await runDashboardChecks();
   await runDashboardOpenAIQuotaFallbackChecks();
+  await runDashboardNonOptionalAgentErrorChecks();
   await runRegimeChecks();
   await runMarketIngestChecks();
   await runSnapshotChecks();
