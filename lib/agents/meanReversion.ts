@@ -12,6 +12,11 @@
 
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { Signal } from "@/lib/signals";
+import {
+  isOptionalOpenAIError,
+  OptionalOpenAIError,
+  optionalOpenAIHttpError,
+} from "@/lib/openai/config";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -227,6 +232,8 @@ Return structured JSON only.`.trim();
 
   if (!res.ok) {
     const errText = await res.text();
+    const optionalErr = optionalOpenAIHttpError("mean-reversion", res.status, errText);
+    if (optionalErr) throw optionalErr;
     throw new Error(`[mean-reversion] OpenAI error for ${symbol}: ${res.status} — ${errText}`);
   }
 
@@ -328,6 +335,13 @@ export async function runMeanReversion(
 
   settled.forEach((result, i) => {
     if (result.status === "rejected") {
+      if (isOptionalOpenAIError(result.reason)) throw result.reason;
+      if (result.reason instanceof TypeError) {
+        throw new OptionalOpenAIError(`[mean-reversion] OpenAI network error for ${symbols[i]}`, {
+          code: "openai_network_error",
+          cause: result.reason,
+        });
+      }
       console.warn(`[mean-reversion] ${symbols[i]} failed:`, result.reason);
       return;
     }

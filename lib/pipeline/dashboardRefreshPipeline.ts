@@ -13,6 +13,7 @@ import {
   isOpenAIEnabled,
   isOpenAIRegimeEnabled,
   isOpenAIStrategyAgentsEnabled,
+  isOptionalOpenAIError,
   openAIDisabledResult,
   type OpenAISkipReason,
 } from "@/lib/openai/config";
@@ -76,6 +77,15 @@ function strategyAgentsSkipReason(): OpenAISkipReason | null {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function openAIErrorMetadata(err: unknown): Record<string, unknown> {
+  if (!isOptionalOpenAIError(err)) return { error: errorMessage(err) };
+  return {
+    error: err.message,
+    code: err.code,
+    status: err.status ?? null,
+  };
 }
 
 function confidenceForReliability(reliability: number): Signal["confidence"] {
@@ -247,8 +257,13 @@ export async function runDashboardRefreshPipeline(
         a6Signals = buildDeterministicRegimeSignals(snapshot, snapshot1d, timestamp);
       }
     } catch (err) {
-      console.warn("[cache/refresh] Regime Detector failed; using deterministic classifier", err);
-      regimeOpenAIStatus = { enabled: true, fallback: "deterministic_error", error: errorMessage(err) };
+      if (!isOptionalOpenAIError(err)) throw err;
+      console.warn("[cache/refresh] Regime Detector optional OpenAI failure; using deterministic classifier", openAIErrorMetadata(err));
+      regimeOpenAIStatus = {
+        enabled: true,
+        fallback: "deterministic_optional_openai_error",
+        ...openAIErrorMetadata(err),
+      };
       a6Signals = buildDeterministicRegimeSignals(snapshot, snapshot1d, timestamp);
     }
   }
@@ -312,8 +327,13 @@ export async function runDashboardRefreshPipeline(
         ),
       ];
     } catch (err) {
-      console.warn("[cache/refresh] Agents A1-A5 failed; using deterministic evaluator", err);
-      strategyOpenAIStatus = { enabled: true, fallback: "deterministic_error", error: errorMessage(err) };
+      if (!isOptionalOpenAIError(err)) throw err;
+      console.warn("[cache/refresh] Agents A1-A5 optional OpenAI failure; using deterministic evaluator", openAIErrorMetadata(err));
+      strategyOpenAIStatus = {
+        enabled: true,
+        fallback: "deterministic_optional_openai_error",
+        ...openAIErrorMetadata(err),
+      };
       tradingAgentResults = buildDeterministicAgentResults(snapshot);
     }
   }

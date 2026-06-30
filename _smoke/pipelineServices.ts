@@ -11,6 +11,7 @@ import {
 } from "@/lib/pipeline";
 import { assertNoLiveExecutionJobTypes, FORBIDDEN_LIVE_JOB_TYPES, JOB_TYPES } from "@/lib/jobs";
 import { InMemoryBarStore } from "@/lib/storage/barStore";
+import { OptionalOpenAIError } from "@/lib/openai/config";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { CacheSnapshot1d } from "@/lib/indicatorCache1d";
 import type { Bar, FeatureSnapshot } from "@/lib/quant/types";
@@ -214,6 +215,86 @@ async function runDashboardChecks(): Promise<void> {
   eq("dashboard waits before 1D refresh", waits, [15_000]);
   eq("confluence voting excludes A6", confluenceSawA6, false);
   eq("dashboard disabled env avoids OpenAI agent calls", openAIAgentCalled, false);
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+  if (oldOpenAIRegimeEnabled === undefined) delete process.env.OPENAI_REGIME_ENABLED;
+  else process.env.OPENAI_REGIME_ENABLED = oldOpenAIRegimeEnabled;
+  if (oldOpenAIStrategyAgentsEnabled === undefined) delete process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
+}
+
+async function runDashboardOpenAIQuotaFallbackChecks(): Promise<void> {
+  console.log("\n=== dashboard OpenAI quota fallback ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  const oldOpenAIRegimeEnabled = process.env.OPENAI_REGIME_ENABLED;
+  const oldOpenAIStrategyAgentsEnabled = process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  process.env.OPENAI_API_KEY = "dummy";
+  process.env.OPENAI_ENABLED = "true";
+  process.env.OPENAI_REGIME_ENABLED = "false";
+  process.env.OPENAI_STRATEGY_AGENTS_ENABLED = "true";
+
+  let openAIAgentCalls = 0;
+  const quotaFailure = (agent: string) => {
+    openAIAgentCalls += 1;
+    throw new OptionalOpenAIError(`${agent} simulated quota failure`, {
+      code: "openai_quota_or_rate_limit",
+      status: 429,
+      body: "insufficient_quota",
+    });
+  };
+
+  const result = await runDashboardRefreshPipeline({
+    cache: {
+      async forceRefresh() {},
+      read: snapshot1h,
+    },
+    cache1d: {
+      async forceRefresh() {},
+      read: snapshot1d,
+    },
+    writeMemCache: false,
+    sleepMs: async () => {},
+    now: () => new Date("2026-06-17T10:00:05.000Z"),
+    nowMs: (() => {
+      let value = 2_000;
+      return () => {
+        value += 25;
+        return value;
+      };
+    })(),
+    runMomentumScoutFn: async () => quotaFailure("momentumScout"),
+    runBreakoutWatcherFn: async () => quotaFailure("breakoutWatcher"),
+    runTrendFollowerFn: async () => quotaFailure("trendFollower"),
+    runVolatilityArbiterFn: async () => quotaFailure("volatilityArbiter"),
+    runMeanReversionFn: async () => quotaFailure("meanReversion"),
+    runConfluenceEngineFn: async () => [],
+  });
+
+  assert("dashboard.snapshot succeeds when enabled OpenAI hits quota", result.ok);
+  if (result.ok) {
+    const a1 = result.body.agentResults.find((agent) => agent.id === "A1");
+    assert(
+      "dashboard quota fallback uses deterministic evaluator",
+      a1?.signals.some((signal) => signal.reason.includes("Momentum acceleration")) === true,
+      a1,
+    );
+    eq(
+      "dashboard quota fallback reports strategy fallback",
+      (result.body.openai?.strategyAgents as { fallback?: string }).fallback,
+      "deterministic_optional_openai_error",
+    );
+    eq(
+      "dashboard quota fallback reports OpenAI quota code",
+      (result.body.openai?.strategyAgents as { code?: string }).code,
+      "openai_quota_or_rate_limit",
+    );
+    eq("dashboard quota fallback keeps success body", result.body.success, true);
+  }
+  assert("dashboard quota test invoked OpenAI strategy agents", openAIAgentCalls > 0);
+
   if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = oldOpenAIKey;
   if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
@@ -453,6 +534,7 @@ async function runStaticChecks(): Promise<void> {
 
 async function main(): Promise<void> {
   await runDashboardChecks();
+  await runDashboardOpenAIQuotaFallbackChecks();
   await runRegimeChecks();
   await runMarketIngestChecks();
   await runSnapshotChecks();

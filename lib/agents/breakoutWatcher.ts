@@ -15,6 +15,11 @@
 
 import type { Signal } from "@/lib/signals";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
+import {
+  isOptionalOpenAIError,
+  OptionalOpenAIError,
+  optionalOpenAIHttpError,
+} from "@/lib/openai/config";
 
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -218,6 +223,8 @@ export async function runBreakoutWatcher(
 
       if (!res.ok) {
         const errText = await res.text();
+        const optionalErr = optionalOpenAIHttpError("breakoutWatcher", res.status, errText);
+        if (optionalErr) throw optionalErr;
         console.error(`[breakoutWatcher] OpenAI error for ${symbol}: ${res.status} — ${errText}`);
         continue;
       }
@@ -256,6 +263,13 @@ export async function runBreakoutWatcher(
 
       results.push(signal);
     } catch (err) {
+      if (isOptionalOpenAIError(err)) throw err;
+      if (err instanceof TypeError) {
+        throw new OptionalOpenAIError(`[breakoutWatcher] OpenAI network error for ${symbol}`, {
+          code: "openai_network_error",
+          cause: err,
+        });
+      }
       console.error(`[breakoutWatcher] GPT-4o error for ${symbol}:`, err);
       // Skip this symbol — don't crash the whole agent run
     }

@@ -29,6 +29,11 @@
 
 import type { Signal }        from "@/lib/signals";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
+import {
+  isOptionalOpenAIError,
+  OptionalOpenAIError,
+  optionalOpenAIHttpError,
+} from "@/lib/openai/config";
 
 // ─── Classification taxonomy ───────────────────────────────────────────────
 // Unchanged — same 8 categories, same signal mapping.
@@ -276,8 +281,9 @@ function buildPayload(symbol: string, snapshot: CacheSnapshot): object | null {
 async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    console.error("[momentumScout] OPENAI_API_KEY not set");
-    return null;
+    throw new OptionalOpenAIError("[momentumScout] OPENAI_API_KEY not set", {
+      code: "openai_api_key_missing",
+    });
   }
 
   try {
@@ -300,6 +306,8 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
 
     if (!res.ok) {
       const err = await res.text();
+      const optionalErr = optionalOpenAIHttpError("momentumScout", res.status, err);
+      if (optionalErr) throw optionalErr;
       console.error(`[momentumScout] GPT-4o error ${res.status}:`, err);
       return null;
     }
@@ -323,8 +331,12 @@ async function callGpt4o(payload: object): Promise<MomentumScoutResponse | null>
     }
 
   } catch (err) {
+    if (isOptionalOpenAIError(err)) throw err;
     console.error("[momentumScout] Fetch error:", err);
-    return null;
+    throw new OptionalOpenAIError("[momentumScout] OpenAI network error", {
+      code: "openai_network_error",
+      cause: err,
+    });
   }
 }
 
@@ -395,6 +407,8 @@ export async function runMomentumScoutAI(
   for (const result of results) {
     if (result.status === "fulfilled" && result.value) {
       signals.push(result.value);
+    } else if (result.status === "rejected" && isOptionalOpenAIError(result.reason)) {
+      throw result.reason;
     }
   }
 

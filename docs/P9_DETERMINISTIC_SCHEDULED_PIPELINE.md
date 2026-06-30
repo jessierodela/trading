@@ -59,9 +59,12 @@ Storage still uses the existing regime taxonomy. `RANGE` and `UNKNOWN` are persi
 
 - A6 uses deterministic regime classification when `OPENAI_REGIME_ENABLED` is false or the key is missing.
 - A1-A5 use deterministic `evaluateSignals` when `OPENAI_STRATEGY_AGENTS_ENABLED` is false or the key is missing.
+- If A1-A5 are enabled but OpenAI returns an optional provider failure, such as `429 insufficient_quota`, the dashboard falls back to deterministic `evaluateSignals` and records `openai.strategyAgents.fallback`.
 - Confluence still scores deterministically.
 - GPT narrative is replaced by an `AI commentary skipped` string when `OPENAI_ENABLED=false` or the key is missing.
 - The response includes `openai.regime`, `openai.strategyAgents`, and `openai.confluenceNarrative` status for review.
+
+Optional OpenAI failures are represented with `OptionalOpenAIError`. The dashboard catches that type and falls back deterministically. Unexpected non-OpenAI exceptions are not swallowed by the fallback path.
 
 ## Symbol/data-source risk
 
@@ -72,6 +75,6 @@ This change does not attempt to normalize the existing TAAPI Binance `BTC/USDT` 
 Focused P9 coverage:
 
 - `smoke:job-worker` proves `regime.compute` succeeds without `OPENAI_API_KEY`, does not call an injected OpenAI detector that throws `429 insufficient_quota`, and persists a safe `CHOP` row for missing features.
-- `smoke:pipeline-services` proves dashboard refresh succeeds with OpenAI disabled, avoids injected OpenAI agent functions, and reports skipped OpenAI status.
+- `smoke:pipeline-services` proves dashboard refresh succeeds with OpenAI disabled, avoids injected OpenAI agent functions, reports skipped OpenAI status, and also covers the enabled/dummy-key/quota-failure path where A1-A5 throw `OptionalOpenAIError` and deterministic strategy fallback is used.
 
 Full validation should include the commands listed in the P9 task spec before review.
