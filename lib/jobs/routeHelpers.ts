@@ -1,7 +1,7 @@
 import type { JobRecord, JobStatus, JobStore } from "./jobStore";
 import type { JobPayload, JobType } from "./types";
 import { isJobType, validateJobPayload } from "./types";
-import { FEATURE_VERSION, REGIME_MODEL_VERSION } from "@/lib/versions";
+import { DETERMINISTIC_REGIME_MODEL_VERSION, FEATURE_VERSION } from "@/lib/versions";
 
 export type RouteExchange = "COINBASE" | "BINANCE" | "POLYGON";
 export type RefreshTimeframe = "1h" | "1d";
@@ -167,7 +167,7 @@ export function buildRegimeRefreshJob(input: {
     symbols: [symbol],
     exchange: input.exchange ?? "COINBASE",
     timeframe: input.timeframe ?? "1h",
-    regimeModelVersion: REGIME_MODEL_VERSION,
+    regimeModelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,
     source: "persisted_features",
   };
   validateJobPayload(payload);
@@ -205,7 +205,7 @@ export function buildRefreshJobRequest(body: unknown): BuiltRefreshJob | { error
         symbols: symbols.map((symbol) => normalizeRegimeSymbol(symbol)),
         exchange,
         timeframe,
-        regimeModelVersion: REGIME_MODEL_VERSION,
+        regimeModelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,
         source: "persisted_features",
       };
       validateJobPayload(payload);

@@ -124,8 +124,17 @@ function snapshot1d(): CacheSnapshot1d {
 
 async function runDashboardChecks(): Promise<void> {
   console.log("\n=== dashboard pipeline service ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  const oldOpenAIRegimeEnabled = process.env.OPENAI_REGIME_ENABLED;
+  const oldOpenAIStrategyAgentsEnabled = process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  delete process.env.OPENAI_API_KEY;
+  process.env.OPENAI_ENABLED = "false";
+  process.env.OPENAI_REGIME_ENABLED = "false";
+  process.env.OPENAI_STRATEGY_AGENTS_ENABLED = "false";
   const waits: number[] = [];
   let confluenceSawA6 = false;
+  let openAIAgentCalled = false;
   const result = await runDashboardRefreshPipeline({
     cache: {
       async forceRefresh() {},
@@ -147,26 +156,30 @@ async function runDashboardChecks(): Promise<void> {
         return value;
       };
     })(),
-    runRegimeDetectorFn: async () => [
-      {
-        symbol: "BTC",
-        agent: "Regime Detector",
-        type: "watch",
-        reason: "test regime",
-        confidence: "high",
-        regime: "TREND_UP",
-        reliability: 0.9,
-        emaContext: { ema20Slope: "rising", ema50Above200: true },
-        volContext: { atrPct: 1.923, atrRegime: "normal" },
-      },
-    ],
-    runMomentumScoutFn: async () => [
-      { symbol: "BTC", agent: "Momentum Scout", type: "buy", reason: "test momentum", confidence: "high" },
-    ],
-    runBreakoutWatcherFn: async () => [],
-    runTrendFollowerFn: async () => [],
-    runVolatilityArbiterFn: async () => [],
-    runMeanReversionFn: async () => [],
+    runRegimeDetectorFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI regime detector should be skipped");
+    },
+    runMomentumScoutFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI momentum scout should be skipped");
+    },
+    runBreakoutWatcherFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI breakout watcher should be skipped");
+    },
+    runTrendFollowerFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI trend follower should be skipped");
+    },
+    runVolatilityArbiterFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI volatility arbiter should be skipped");
+    },
+    runMeanReversionFn: async () => {
+      openAIAgentCalled = true;
+      throw new Error("OpenAI mean reversion should be skipped");
+    },
     runConfluenceEngineFn: async (signals, regimeMap) => {
       confluenceSawA6 = signals.some((signal) => signal.agent === "Regime Detector");
       eq("confluence receives A6 regime context", regimeMap?.BTC?.regime, "TREND_UP");
@@ -195,9 +208,20 @@ async function runDashboardChecks(): Promise<void> {
     assert("dashboard response includes durationMs", typeof result.body.durationMs === "number");
     eq("dashboard preserves A6 ordering after A1-A5", result.body.agentResults.map((a) => a.id), ["A1", "A2", "A3", "A4", "A5", "A6"]);
     eq("dashboard response includes regime map", result.body.regimeMap.BTC.regime, "TREND_UP");
+    eq("dashboard reports regime OpenAI skipped", (result.body.openai?.regime as { reason?: string }).reason, "openai_disabled");
+    eq("dashboard reports strategy OpenAI skipped", (result.body.openai?.strategyAgents as { reason?: string }).reason, "openai_disabled");
   }
   eq("dashboard waits before 1D refresh", waits, [15_000]);
   eq("confluence voting excludes A6", confluenceSawA6, false);
+  eq("dashboard disabled env avoids OpenAI agent calls", openAIAgentCalled, false);
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+  if (oldOpenAIRegimeEnabled === undefined) delete process.env.OPENAI_REGIME_ENABLED;
+  else process.env.OPENAI_REGIME_ENABLED = oldOpenAIRegimeEnabled;
+  if (oldOpenAIStrategyAgentsEnabled === undefined) delete process.env.OPENAI_STRATEGY_AGENTS_ENABLED;
+  else process.env.OPENAI_STRATEGY_AGENTS_ENABLED = oldOpenAIStrategyAgentsEnabled;
 }
 
 async function runRegimeChecks(): Promise<void> {

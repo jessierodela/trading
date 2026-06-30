@@ -1,12 +1,11 @@
-import { runRegimeDetector } from "@/lib/agents/regimeDetector";
 import type { JobPayload } from "@/lib/jobs/types";
 import {
-  adaptFeatureSnapshotsToRegimeDetectorInput,
-  runRegimeRefreshPipeline,
-} from "@/lib/pipeline";
-import type { Exchange, RegimeLabel } from "@/lib/quant/types";
+  classifyFeatureRegime,
+  toPersistableRegime,
+} from "@/lib/regime/deterministicRegimeClassifier";
+import type { Exchange } from "@/lib/quant/types";
 import { mapRegimeToPermission } from "@/lib/regime/permissionMap";
-import { REGIME_DETECTOR_PROMPT_VERSION, REGIME_MODEL_VERSION } from "@/lib/versions";
+import { DETERMINISTIC_REGIME_MODEL_VERSION } from "@/lib/versions";
 import {
   handlerSuccess,
   invalidPayload,
@@ -17,10 +16,6 @@ import {
 
 function isExchange(value: string): value is Exchange {
   return value === "COINBASE" || value === "BINANCE" || value === "POLYGON";
-}
-
-function refreshSymbolFor(symbol: string): string {
-  return symbol.endsWith("-USD") ? symbol.slice(0, -4) : symbol;
 }
 
 type RegimePayload = Extract<JobPayload, { jobType: "regime.compute" }>;
@@ -37,11 +32,10 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
 
   const regimeStore = requireService(context.services, "regimeStore", undefined);
   const featureStore = context.services.featureStore;
-  const runDetector = context.services.runRegimeDetector ?? runRegimeDetector;
-  const runRefresh = context.services.runRegimeRefreshPipeline ?? runRegimeRefreshPipeline;
   const symbols: Record<string, unknown> = {};
+  let deterministicComputes = 0;
   let persistedFeatureComputes = 0;
-  let transitionalFallbackComputes = 0;
+  let unknownComputes = 0;
 
   try {
     for (const symbol of payload.symbols) {
@@ -53,91 +47,52 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
           })
         : null;
 
-      if (feature1h) {
-        const feature1d = featureStore
-          ? await featureStore.fetchLatest({
-              symbol,
-              exchange: payload.exchange,
-              timeframe: "1d",
-            })
-          : null;
-        const { snapshot, snapshot1d } = adaptFeatureSnapshotsToRegimeDetectorInput({
-          features1h: [feature1h],
-          features1d: feature1d ? [feature1d] : [],
-          now: context.now,
-        });
-        const signals = await runDetector(snapshot, snapshot1d, [symbol]);
-        const signal = signals.find((s) => s.symbol === symbol);
-        if (!signal) {
-          return retryableFailure("regime_compute_no_output", { symbol, source: "persisted_features" });
-        }
-        const mapped = mapRegimeToPermission(signal.regime, signal.reliability);
-        const row = await regimeStore.insert({
-          symbol,
-          exchange: payload.exchange,
-          ts: feature1h.ts,
-          regime: signal.regime as RegimeLabel,
-          reliability: signal.reliability,
-          directionalBias: mapped.directionalBias,
-          tradePermission: mapped.tradePermission,
-          edgeMultiplier: mapped.edgeMultiplier,
-          sizeMultiplier: mapped.sizeMultiplier,
-          reason: signal.reason,
-          rawResponse: {
-            source: "persisted_features",
-            signal,
-            featureTs: feature1h.ts,
-            dailyFeatureTs: feature1d?.ts ?? null,
-          },
-          regimeModelVersion: payload.regimeModelVersion,
-          promptVersion: REGIME_DETECTOR_PROMPT_VERSION,
-          featureVersion: feature1h.featureVersion,
-        });
-        persistedFeatureComputes++;
-        symbols[symbol] = {
-          source: "persisted_features",
-          regime: row.regime,
-          reliability: row.reliability,
-          ts: row.ts,
-          id: row.id,
-        };
-        continue;
-      }
+      const feature1d = featureStore
+        ? await featureStore.fetchLatest({
+            symbol,
+            exchange: payload.exchange,
+            timeframe: "1d",
+          })
+        : null;
 
-      const refresh = await runRefresh({
-        symbol: refreshSymbolFor(symbol),
-        now: context.now,
+      const classifier = classifyFeatureRegime(feature1h, feature1d, {
+        symbol,
+        timestamp: feature1h?.ts ?? context.now().toISOString(),
+        source: feature1h ? "persisted_feature_snapshots" : "missing_feature_snapshot_safe_fallback",
       });
-      if (!refresh.ok) {
-        return retryableFailure("regime_refresh_fallback_failed", {
-          symbol,
-          status: refresh.status,
-          body: refresh.body,
-        });
-      }
+      const persisted = toPersistableRegime(classifier);
+      const mapped = mapRegimeToPermission(persisted.regime, persisted.reliability);
       const row = await regimeStore.insert({
         symbol,
         exchange: payload.exchange,
-        ts: refresh.body.updatedAt,
-        regime: refresh.body.regime as RegimeLabel,
-        reliability: refresh.body.reliability,
-        directionalBias: refresh.body.directionalBias as "UP" | "DOWN" | "NEUTRAL",
-        tradePermission: refresh.body.tradePermission,
-        edgeMultiplier: refresh.body.edgeMultiplier,
-        sizeMultiplier: refresh.body.sizeMultiplier,
-        reason: refresh.body.reason,
+        ts: feature1h?.ts ?? classifier.timestamp,
+        regime: persisted.regime,
+        reliability: persisted.reliability,
+        directionalBias: mapped.directionalBias,
+        tradePermission: mapped.tradePermission,
+        edgeMultiplier: mapped.edgeMultiplier,
+        sizeMultiplier: mapped.sizeMultiplier,
+        reason: persisted.reason,
         rawResponse: {
-          source: "taapi_transitional_fallback",
-          refreshSymbol: refresh.body.symbol,
-          body: refresh.body,
+          source: "deterministic_regime_classifier",
+          classifier,
+          persisted,
+          featureTs: feature1h?.ts ?? null,
+          dailyFeatureTs: feature1d?.ts ?? null,
+          requestedRegimeModelVersion: payload.regimeModelVersion,
+          aiUsed: false,
         },
-        regimeModelVersion: REGIME_MODEL_VERSION,
-        promptVersion: REGIME_DETECTOR_PROMPT_VERSION,
-        featureVersion: null,
+        regimeModelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,
+        promptVersion: null,
+        featureVersion: feature1h?.featureVersion ?? null,
       });
-      transitionalFallbackComputes++;
+      deterministicComputes++;
+      if (feature1h) persistedFeatureComputes++;
+      if (classifier.regime === "UNKNOWN") unknownComputes++;
       symbols[symbol] = {
-        source: "taapi_transitional_fallback",
+        source: "deterministic_regime_classifier",
+        classifierRegime: classifier.regime,
+        persistedRegime: persisted.regime,
         regime: row.regime,
         reliability: row.reliability,
         ts: row.ts,
@@ -155,9 +110,12 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
     exchange: payload.exchange,
     timeframe: payload.timeframe,
     requestedRegimeModelVersion: payload.regimeModelVersion,
+    regimeModelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,
     source: payload.source,
+    aiUsed: false,
+    deterministicComputes,
     persistedFeatureComputes,
-    transitionalFallbackComputes,
+    unknownComputes,
     symbols,
   });
 };

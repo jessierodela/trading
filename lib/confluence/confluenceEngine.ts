@@ -44,6 +44,7 @@
  */
 
 import type { Signal } from "@/lib/signals";
+import { isOpenAIEnabled } from "@/lib/openai/config";
 import {
   scoreSymbol,
   type ConfluenceVerdict,
@@ -170,8 +171,10 @@ Write the confluence narrative.`.trim();
 // ─── GPT narrative call ─────────────────────────────────────────────────────
 
 async function fetchNarrative(input: string): Promise<string> {
+  if (!isOpenAIEnabled()) return "AI commentary skipped: openai_disabled.";
+
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return "Narrative unavailable — OPENAI_API_KEY not set.";
+  if (!apiKey) return "AI commentary skipped: openai_api_key_missing.";
 
   try {
     const res = await fetch(OPENAI_API_URL, {
