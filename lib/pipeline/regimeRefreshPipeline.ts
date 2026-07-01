@@ -189,6 +189,26 @@ function latestBySymbol(features: FeatureSnapshot[]): Map<string, FeatureSnapsho
 }
 
 /**
+ * The cache-shaped snapshot has a single scalar `lastUpdated` for the whole
+ * batch (a holdover from the TAAPI model, where one HTTP fetch refreshed
+ * every symbol at once). When bridging persisted feature_snapshots — where
+ * each symbol's latest row can be a different age — we pick the OLDEST of
+ * the per-symbol latest timestamps rather than the newest. That's the
+ * conservative choice: a single stale symbol correctly drags the batch-level
+ * freshness check into "stale," instead of a fresh symbol masking it. Using
+ * adapter execution time here (the previous behavior) always looked "just
+ * refreshed" regardless of how old the underlying persisted rows actually
+ * were, which defeated the freshness check entirely.
+ */
+function oldestTsAcross(featuresBySymbol: Map<string, FeatureSnapshot>): string | null {
+  let oldest: string | null = null;
+  for (const feature of featuresBySymbol.values()) {
+    if (oldest === null || feature.ts < oldest) oldest = feature.ts;
+  }
+  return oldest;
+}
+
+/**
  * P8B compatibility bridge.
  *
  * The existing Regime Detector still consumes the legacy indicator cache
@@ -247,18 +267,24 @@ export function adaptFeatureSnapshotsToRegimeDetectorInput(
     });
   }
 
-  const timestamp = now().toISOString();
+  // Only used as a fallback label when there are no persisted rows at all —
+  // lastFetchFailed already makes that case explicit downstream, so the
+  // fallback value is never used to judge freshness.
+  const fallbackTimestamp = now().toISOString();
+  const lastUpdated1h = oldestTsAcross(latest1h) ?? fallbackTimestamp;
+  const lastUpdated1d = oldestTsAcross(latest1d) ?? fallbackTimestamp;
+
   return {
     snapshot: {
-      lastUpdated: timestamp,
+      lastUpdated: lastUpdated1h,
       refreshing: false,
-      lastFetchFailed: false,
+      lastFetchFailed: data.size === 0,
       stockSymbols,
       cryptoSymbols,
       data,
     },
     snapshot1d: {
-      lastUpdated: timestamp,
+      lastUpdated: lastUpdated1d,
       refreshing: false,
       lastFetchFailed: data1d.size === 0,
       stockSymbols,

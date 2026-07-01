@@ -27,6 +27,7 @@ import {
   type OpenAISkipReason,
 } from "@/lib/openai/config";
 import type {
+  DashboardDataSource,
   DashboardRefreshPayload,
   DashboardRefreshPipelineInput,
   DashboardRefreshPipelineResult,
@@ -210,12 +211,43 @@ function dashboardCanonicalIdentity(symbol: string): MarketIdentity {
   });
 }
 
-export function buildDashboardMarketContext(generatedAt: string): DashboardRefreshPayload["marketContext"] {
+export function buildDashboardMarketContext(
+  generatedAt: string,
+  dataSource: DashboardDataSource = "taapi_live_cache",
+): DashboardRefreshPayload["marketContext"] {
   const canonicalScheduled = normalizeMarketIdentity({
     symbol: "BTC-USD",
     exchange: "COINBASE",
     source: "coinbase",
   });
+
+  if (dataSource === "persisted_feature_snapshots") {
+    return {
+      canonicalScheduled: {
+        market: canonicalScheduled,
+        sourceLineage: sourceLineageFromIdentity({
+          identity: canonicalScheduled,
+          kind: "market_bar",
+          dataSourceVersion: "coinbase.rest.v1",
+          transformedAt: generatedAt,
+        }),
+        trustedForScheduledJobs: true,
+      },
+      dashboardDisplay: {
+        market: canonicalScheduled,
+        providers: ["coinbase"],
+        sourceLineage: sourceLineageFromIdentity({
+          identity: canonicalScheduled,
+          kind: "dashboard_display",
+          transformedAt: generatedAt,
+          notes: ["reads_same_persisted_feature_snapshots_as_scheduled_jobs"],
+        }),
+        trustedForScheduledJobs: false,
+        warning: "Dashboard reads the same canonical Coinbase feature_snapshots used by scheduled jobs; no mixed-provider risk.",
+      },
+    };
+  }
+
   const dashboardDisplay = normalizeMarketIdentity({
     symbol: "BTC/USDT",
     exchange: "BINANCE",
@@ -303,6 +335,7 @@ function buildDashboardDataQuality(
   snapshot1d: CacheSnapshot1d,
   generatedAt: string,
   generatedAtMs: number,
+  dataSource: DashboardDataSource = "taapi_live_cache",
 ): {
   severity: DataQualityReport["severity"];
   issues: DataQualityIssue[];
@@ -320,6 +353,7 @@ function buildDashboardDataQuality(
     freshness: Record<string, unknown>;
   }> = {};
   const reports: DataQualityReport[] = [];
+  const sourceTag = dataSource === "persisted_feature_snapshots" ? "persisted_feature_snapshots" : "taapi+yahoo";
 
   for (const symbol of snapshot.cryptoSymbols) {
     const market = dashboardCanonicalIdentity(symbol);
@@ -328,7 +362,10 @@ function buildDashboardDataQuality(
     const entry1d = snapshot1d.data.get(symbol);
     if (!entry) continue;
 
-    const barIssues: DataQualityIssue[] = [
+    // The mixed-identity warning only applies to the legacy TAAPI/Yahoo live
+    // cache — the persisted path reads the same canonical feature_snapshots
+    // rows that scheduled jobs use, so there is no identity mismatch here.
+    const barIssues: DataQualityIssue[] = dataSource === "persisted_feature_snapshots" ? [] : [
       {
         code: "DASHBOARD_BAR_TIMESTAMP_UNAVAILABLE",
         severity: "warn",
@@ -368,7 +405,7 @@ function buildDashboardDataQuality(
         message: "Dashboard cache volume is unavailable and must not be interpreted as zero.",
         symbol: canonicalSymbol,
         exchange: market.exchange,
-        source: "taapi+yahoo",
+        source: sourceTag,
         timeframe: "1h",
       });
     }
@@ -379,7 +416,7 @@ function buildDashboardDataQuality(
         message: "Dashboard 1D feature context is missing or failed to refresh.",
         symbol: canonicalSymbol,
         exchange: market.exchange,
-        source: "taapi",
+        source: sourceTag,
         timeframe: "1d",
       });
     } else {
@@ -400,7 +437,7 @@ function buildDashboardDataQuality(
       checkedAt: generatedAt,
       symbol: canonicalSymbol,
       exchange: market.exchange,
-      source: "taapi+yahoo",
+      source: sourceTag,
       timeframe: "1h",
       issues: barIssues,
     });
@@ -409,7 +446,7 @@ function buildDashboardDataQuality(
       checkedAt: generatedAt,
       symbol: canonicalSymbol,
       exchange: market.exchange,
-      source: "taapi+yahoo",
+      source: sourceTag,
       timeframe: "1h",
       issues: featureIssues,
     });
@@ -458,16 +495,18 @@ export async function runDashboardRefreshPipeline(
   const sleepMs = input.sleepMs ?? defaultSleep;
   const waitBefore1dMs = input.waitBefore1dMs ?? DEFAULT_WAIT_BEFORE_1D_MS;
   const writeMemCache = input.writeMemCache ?? true;
+  const dataSource = input.dataSource ?? "taapi_live_cache";
+  const LOG = input.logPrefix ?? "[cache/refresh]";
   const startMs = nowMs();
 
-  console.log("[cache/refresh] Manual refresh triggered");
+  console.log(`${LOG} Manual refresh triggered`);
 
   const cache = input.cache ?? getCache();
   const cache1d = input.cache1d ?? getCache1d();
 
   await cache.forceRefresh();
 
-  console.log("[cache/refresh] 1H fetch complete - waiting 15s before 1D fetch...");
+  console.log(`${LOG} 1H fetch complete - waiting ${waitBefore1dMs}ms before 1D fetch...`);
   await sleepMs(waitBefore1dMs);
 
   await cache1d.forceRefresh();
@@ -485,7 +524,7 @@ export async function runDashboardRefreshPipeline(
 
   if (snapshot1d.lastFetchFailed) {
     console.warn(
-      "[cache/refresh] 1D fetch failed - Trend Follower and Regime Detector will have reduced 1D context",
+      `${LOG} 1D fetch failed - Trend Follower and Regime Detector will have reduced 1D context`,
     );
   }
 
@@ -505,20 +544,20 @@ export async function runDashboardRefreshPipeline(
   let a6Signals: RegimeSignal[];
 
   if (regimeOpenAISkip) {
-    console.log(`[cache/refresh] Regime Detector OpenAI skipped (${regimeOpenAISkip}); using deterministic classifier`);
+    console.log(`${LOG} Regime Detector OpenAI skipped (${regimeOpenAISkip}); using deterministic classifier`);
     a6Signals = buildDeterministicRegimeSignals(snapshot, snapshot1d, timestamp);
   } else {
     try {
-      console.log("[cache/refresh] Running Regime Detector (A6)...");
+      console.log(`${LOG} Running Regime Detector (A6)...`);
       a6Signals = await runRegimeDetectorFn(snapshot, snapshot1d);
       if (a6Signals.length === 0) {
-        console.warn("[cache/refresh] Regime Detector returned no output; using deterministic classifier");
+        console.warn(`${LOG} Regime Detector returned no output; using deterministic classifier`);
         regimeOpenAIStatus = { enabled: true, fallback: "deterministic_empty_output" };
         a6Signals = buildDeterministicRegimeSignals(snapshot, snapshot1d, timestamp);
       }
     } catch (err) {
       if (!isOptionalOpenAIError(err)) throw err;
-      console.warn("[cache/refresh] Regime Detector optional OpenAI failure; using deterministic classifier", openAIErrorMetadata(err));
+      console.warn(`${LOG} Regime Detector optional OpenAI failure; using deterministic classifier`, openAIErrorMetadata(err));
       regimeOpenAIStatus = {
         enabled: true,
         fallback: "deterministic_optional_openai_error",
@@ -529,7 +568,7 @@ export async function runDashboardRefreshPipeline(
   }
 
   console.log(
-    `[cache/refresh] Regime Detector complete - ` +
+    `${LOG} Regime Detector complete - ` +
       `${a6Signals.length} regime(s) classified: ` +
       a6Signals.map((s) => `${s.symbol}=${s.regime}(${s.reliability.toFixed(2)})`).join(", "),
   );
@@ -541,11 +580,11 @@ export async function runDashboardRefreshPipeline(
   let tradingAgentResults: TradingAgentResults;
 
   if (strategyOpenAISkip) {
-    console.log(`[cache/refresh] Agents A1-A5 OpenAI skipped (${strategyOpenAISkip}); using deterministic evaluator`);
+    console.log(`${LOG} Agents A1-A5 OpenAI skipped (${strategyOpenAISkip}); using deterministic evaluator`);
     tradingAgentResults = buildDeterministicAgentResults(snapshot);
   } else {
     try {
-      console.log("[cache/refresh] Running agents A1-A5...");
+      console.log(`${LOG} Running agents A1-A5...`);
       const [a1Signals, a2Signals, a3Signals, a4Signals, a5Signals] = await Promise.all([
         runMomentumScoutFn(snapshot),
         runBreakoutWatcherFn(snapshot, "1h"),
@@ -588,7 +627,7 @@ export async function runDashboardRefreshPipeline(
       ];
     } catch (err) {
       if (!isOptionalOpenAIError(err)) throw err;
-      console.warn("[cache/refresh] Agents A1-A5 optional OpenAI failure; using deterministic evaluator", openAIErrorMetadata(err));
+      console.warn(`${LOG} Agents A1-A5 optional OpenAI failure; using deterministic evaluator`, openAIErrorMetadata(err));
       strategyOpenAIStatus = {
         enabled: true,
         fallback: "deterministic_optional_openai_error",
@@ -630,7 +669,7 @@ export async function runDashboardRefreshPipeline(
     a6Result,
   ];
 
-  console.log("[cache/refresh] Running confluence engine...");
+  console.log(`${LOG} Running confluence engine...`);
 
   const regimeMap: Record<string, DashboardRegimeContext> = Object.fromEntries(
     a6Signals.map((s) => [
@@ -658,7 +697,7 @@ export async function runDashboardRefreshPipeline(
 
   const confluence = await runConfluenceEngineFn(tradingSignals, regimeCtxForEngine);
 
-  console.log(`[cache/refresh] Confluence complete - ${confluence.length} symbol(s) evaluated`);
+  console.log(`${LOG} Confluence complete - ${confluence.length} symbol(s) evaluated`);
 
   const buySignals = tradingSignals.filter((s) => s.type === "buy");
   const highConf = buySignals.filter((s) => s.confidence === "high");
@@ -679,6 +718,7 @@ export async function runDashboardRefreshPipeline(
     snapshot1d,
     generatedAt,
     Date.parse(generatedAt),
+    dataSource,
   );
 
   const indicators = Object.fromEntries(
@@ -703,7 +743,7 @@ export async function runDashboardRefreshPipeline(
     indicators,
     derived,
     dataQuality,
-    marketContext: buildDashboardMarketContext(generatedAt),
+    marketContext: buildDashboardMarketContext(generatedAt, dataSource),
     openai: {
       regime: regimeOpenAIStatus,
       strategyAgents: strategyOpenAIStatus,
@@ -717,7 +757,7 @@ export async function runDashboardRefreshPipeline(
   }
 
   console.log(
-    `[cache/refresh] Complete - ${a1Signals.length} momentum, ` +
+    `${LOG} Complete - ${a1Signals.length} momentum, ` +
       `${a2Signals.length} breakout, ${a3Signals.length} trend, ` +
       `${a4Signals.length} volatility, ${a5Signals.length} mean-reversion, ` +
       `${a6Signals.length} regime signals, ` +

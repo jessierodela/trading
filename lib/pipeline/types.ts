@@ -22,6 +22,15 @@ export type SleepFn = (ms: number) => Promise<void>;
 export type NowFn = () => Date;
 export type NowMsFn = () => number;
 
+/**
+ * "taapi_live_cache" (default) preserves the legacy behavior used by the
+ * debug-only /api/cache/refresh route. "persisted_feature_snapshots" is the
+ * production dashboard.snapshot job path (P10B) — no TAAPI/Yahoo mixed-source
+ * warnings, since the dashboard reads the same canonical feature_snapshots
+ * rows that regime.compute and strategies.evaluate read.
+ */
+export type DashboardDataSource = "taapi_live_cache" | "persisted_feature_snapshots";
+
 export interface PipelineErrorBody {
   success: false;
   error: string;
@@ -103,6 +112,10 @@ export interface DashboardRefreshPipelineInput {
   now?: NowFn;
   nowMs?: NowMsFn;
   writeMemCache?: boolean;
+  /** Defaults to "[cache/refresh]" to preserve the legacy debug-route log prefix. */
+  logPrefix?: string;
+  /** Defaults to "taapi_live_cache" to preserve legacy debug-route behavior. */
+  dataSource?: DashboardDataSource;
   runRegimeDetectorFn?: (
     snapshot: CacheSnapshot,
     snapshot1d: CacheSnapshot1d,

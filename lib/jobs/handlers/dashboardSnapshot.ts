@@ -1,5 +1,10 @@
+import { DEFAULT_SCHEDULED_FEED_EXCHANGE, DEFAULT_SCHEDULED_FEED_SYMBOLS } from "@/lib/jobs/scheduler";
 import type { JobPayload } from "@/lib/jobs/types";
-import { runDashboardRefreshPipeline, writeDashboardSnapshot } from "@/lib/pipeline";
+import {
+  createPersistedFeatureCacheAdapters,
+  runDashboardRefreshPipeline,
+  writeDashboardSnapshot,
+} from "@/lib/pipeline";
 import {
   handlerNotImplemented,
   handlerSuccess,
@@ -10,6 +15,8 @@ import {
 
 type DashboardPayload = Extract<JobPayload, { jobType: "dashboard.snapshot" }>;
 
+const LOG_PREFIX = "[dashboard.snapshot]";
+
 export const handleDashboardSnapshot: JobHandler<DashboardPayload> = async (payload, context) => {
   if (payload.snapshotType !== "dashboard") {
     return handlerNotImplemented(
@@ -19,11 +26,34 @@ export const handleDashboardSnapshot: JobHandler<DashboardPayload> = async (payl
   }
 
   const dashboardSnapshotStore = requireService(context.services, "dashboardSnapshotStore", undefined);
+  const featureStore = requireService(context.services, "featureStore", undefined);
   const runDashboard = context.services.runDashboardRefreshPipeline ?? runDashboardRefreshPipeline;
   const writeSnapshot = context.services.writeDashboardSnapshot ?? writeDashboardSnapshot;
 
+  // P10B: dashboard.snapshot reads persisted feature_snapshots only — it never
+  // reaches the legacy live-vendor indicator cache or the debug-only manual
+  // refresh route. createPersistedFeatureCacheAdapters bridges persisted rows
+  // into the same cache-shaped input the deterministic agent/regime logic
+  // already consumes, so no external round-trip (and no artificial 1D wait)
+  // is needed.
+  const symbols = payload.symbols ?? [...DEFAULT_SCHEDULED_FEED_SYMBOLS];
+  const { cache, cache1d } = createPersistedFeatureCacheAdapters({
+    featureStore,
+    symbols,
+    exchange: DEFAULT_SCHEDULED_FEED_EXCHANGE,
+    now: context.now,
+  });
+
   try {
-    const refreshed = await runDashboard();
+    const refreshed = await runDashboard({
+      cache,
+      cache1d,
+      waitBefore1dMs: 0,
+      dataSource: "persisted_feature_snapshots",
+      logPrefix: LOG_PREFIX,
+      now: context.now,
+      nowMs: () => context.now().getTime(),
+    });
     if (!refreshed.ok) {
       return retryableFailure("dashboard_refresh_failed", {
         status: refreshed.status,

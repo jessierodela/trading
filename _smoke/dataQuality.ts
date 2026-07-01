@@ -8,7 +8,7 @@ import { handleStrategiesEvaluate } from "@/lib/jobs/handlers/strategiesEvaluate
 import { assertNoLiveExecutionJobTypes, FORBIDDEN_LIVE_JOB_TYPES, JOB_TYPES, type JobPayload } from "@/lib/jobs";
 import type { JobRecord, JobStore, JobEventRecord, JobRetryPolicy, RecoverExpiredJobsResult } from "@/lib/jobs/jobStore";
 import type { JobHandlerServices } from "@/lib/jobs/handlers";
-import { runDashboardRefreshPipeline } from "@/lib/pipeline";
+import { createPersistedFeatureCacheAdapters, runDashboardRefreshPipeline } from "@/lib/pipeline";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { CacheSnapshot1d } from "@/lib/indicatorCache1d";
 import type { Bar, FeatureSnapshot } from "@/lib/quant/types";
@@ -474,6 +474,130 @@ async function runDashboardQualityChecks(): Promise<void> {
   else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
 }
 
+async function runPersistedDashboardQualityChecks(): Promise<void> {
+  console.log("\n=== dashboard.snapshot persisted feature data quality behavior (P10B) ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  process.env.OPENAI_ENABLED = "false";
+  delete process.env.OPENAI_API_KEY;
+
+  const result = await runDashboardRefreshPipeline({
+    cache: {
+      async forceRefresh() {},
+      read: snapshot1h,
+    },
+    cache1d: {
+      async forceRefresh() {},
+      read: snapshot1d,
+    },
+    writeMemCache: false,
+    sleepMs: async () => {},
+    waitBefore1dMs: 0,
+    dataSource: "persisted_feature_snapshots",
+    logPrefix: "[dashboard.snapshot]",
+    now: () => new Date("2026-06-17T10:00:05.000Z"),
+    nowMs: () => Date.parse("2026-06-17T10:00:05.000Z"),
+    runConfluenceEngineFn: async () => [],
+  });
+
+  assert("persisted dashboard.snapshot includes dataQuality metadata", result.ok && !!result.body.dataQuality);
+  if (result.ok) {
+    assert(
+      "persisted dashboard.snapshot does not flag mixed TAAPI/Yahoo context",
+      !result.body.dataQuality.issues.some((issue) => issue.code === "DASHBOARD_PROVIDER_MIXED_CONTEXT"),
+      result.body.dataQuality,
+    );
+    eq(
+      "persisted dashboard.snapshot marketContext reads persisted feature snapshots",
+      result.body.marketContext.dashboardDisplay.providers,
+      ["coinbase"],
+    );
+  }
+
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+}
+
+async function runPersistedDashboardStalenessChecks(): Promise<void> {
+  console.log("\n=== dashboard.snapshot persisted feature staleness behavior (P10B follow-up) ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  process.env.OPENAI_ENABLED = "false";
+  delete process.env.OPENAI_API_KEY;
+
+  const now = () => new Date("2026-06-17T12:00:00.000Z");
+  // 6h old (> 2h DASHBOARD_1H_MAX_STALENESS_MS) and 7d old (> 2d
+  // DASHBOARD_1D_MAX_STALENESS_MS) — intentionally stale persisted rows.
+  const staleFeatureStore = fakeFeatureStore({
+    latest1h: feature("2026-06-17T06:00:00.000Z"),
+    latest1d: dailyFeature("2026-06-10T00:00:00.000Z"),
+  });
+
+  const { cache, cache1d } = createPersistedFeatureCacheAdapters({
+    featureStore: staleFeatureStore,
+    symbols: ["BTC-USD"],
+    exchange: "COINBASE",
+    now,
+  });
+
+  const result = await runDashboardRefreshPipeline({
+    cache,
+    cache1d,
+    writeMemCache: false,
+    sleepMs: async () => {},
+    waitBefore1dMs: 0,
+    dataSource: "persisted_feature_snapshots",
+    logPrefix: "[dashboard.snapshot]",
+    now,
+    nowMs: () => now().getTime(),
+    runConfluenceEngineFn: async () => [],
+  });
+
+  assert(
+    "persisted stale dashboard.snapshot still succeeds (staleness is a data-quality flag, not a hard failure)",
+    result.ok,
+  );
+  if (result.ok) {
+    const symbolQuality = result.body.dataQuality.symbols["BTC-USD"];
+    eq(
+      "persisted dashboard.snapshot 1H freshness reflects the real feature row ts, not adapter run time",
+      symbolQuality?.freshness.oneHourLastUpdated,
+      "2026-06-17T06:00:00.000Z",
+    );
+    eq(
+      "persisted dashboard.snapshot 1D freshness reflects the real feature row ts, not adapter run time",
+      symbolQuality?.freshness.oneDayLastUpdated,
+      "2026-06-10T00:00:00.000Z",
+    );
+    assert(
+      "persisted dashboard.snapshot flags stale 1H feature data as block severity",
+      result.body.dataQuality.issues.some(
+        (issue) => issue.code === "DASHBOARD_1H_CACHE_STALE" && issue.severity === "block",
+      ),
+      result.body.dataQuality,
+    );
+    assert(
+      "persisted dashboard.snapshot flags stale 1D feature data as warn severity",
+      result.body.dataQuality.issues.some(
+        (issue) => issue.code === "DASHBOARD_1D_CACHE_STALE" && issue.severity === "warn",
+      ),
+      result.body.dataQuality,
+    );
+    eq(
+      "persisted dashboard.snapshot overall severity escalates to block on stale 1H feature data",
+      result.body.dataQuality.severity,
+      "block",
+    );
+  }
+
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+}
+
 function runLiveExecutionCheck(): void {
   console.log("\n=== no live execution boundary ===");
   assertNoLiveExecutionJobTypes();
@@ -485,6 +609,8 @@ async function main(): Promise<void> {
   await runRegimeQualityChecks();
   await runStrategyQualityChecks();
   await runDashboardQualityChecks();
+  await runPersistedDashboardQualityChecks();
+  await runPersistedDashboardStalenessChecks();
   runLiveExecutionCheck();
 
   console.log(`\n${failed === 0 ? "all checks passed" : `${failed} check(s) failed`}`);

@@ -430,8 +430,11 @@ async function runHandlerChecks(): Promise<void> {
     now: () => new Date("2026-06-17T12:00:00.000Z"),
     services: {
       dashboardSnapshotStore: {} as never,
-      async runDashboardRefreshPipeline() {
+      featureStore: fakeFeatureStore(feature1h, null),
+      async runDashboardRefreshPipeline(refreshInput) {
         dashboardRefreshCalled = true;
+        eq("dashboard handler requests persisted feature snapshot source", refreshInput?.dataSource, "persisted_feature_snapshots");
+        eq("dashboard handler skips artificial 1D wait", refreshInput?.waitBefore1dMs, 0);
         return {
           ok: true,
           status: 200,

@@ -573,6 +573,29 @@ async function runStaticChecks(): Promise<void> {
   assert("market ingest does not import taapi", !marketIngestText.includes("taapi"));
   assert("market ingest names closed bar behavior", marketIngestText.includes("closedbar"));
 
+  // P10B: dashboard.snapshot job handler must read persisted feature_snapshots
+  // only — no indicatorCache/taapi/taapi1d and no /api/cache/refresh call.
+  const dashboardSnapshotHandlerText = readText("lib/jobs/handlers/dashboardSnapshot.ts").toLowerCase();
+  assert(
+    "dashboard.snapshot handler does not import indicatorCache",
+    !dashboardSnapshotHandlerText.includes("indicatorcache"),
+  );
+  assert("dashboard.snapshot handler does not import taapi", !dashboardSnapshotHandlerText.includes("taapi"));
+  assert(
+    "dashboard.snapshot handler does not fetch /api/cache/refresh",
+    !dashboardSnapshotHandlerText.includes("api/cache/refresh"),
+  );
+  assert(
+    "dashboard.snapshot handler requests the persisted feature snapshot data source",
+    dashboardSnapshotHandlerText.includes("persisted_feature_snapshots"),
+  );
+
+  const persistedDashboardSourceText = readText("lib/pipeline/persistedDashboardSource.ts").toLowerCase();
+  assert(
+    "persisted dashboard source does not call taapi/taapi1d",
+    !persistedDashboardSourceText.includes("from \"@/lib/taapi") && !persistedDashboardSourceText.includes("from '@/lib/taapi"),
+  );
+
   const forbiddenFiles = [
     "lib/jobs/scheduler.ts",
     "scripts/jobScheduler.ts",
