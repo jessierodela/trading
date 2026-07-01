@@ -2,6 +2,7 @@ import type {
   DashboardSnapshotFilter,
   DashboardSnapshotRecord,
 } from "@/lib/jobs/dashboardSnapshotStore";
+import { isUsdtQuoteMarketSymbol } from "@/lib/dataQuality/marketIdentity";
 import { mapRegimeToPermission, type RegimeLabel } from "@/lib/regime/permissionMap";
 import type { Exchange } from "@/lib/quant/types";
 import type { RegimeSnapshotRow, RegimeStore } from "@/lib/storage/interfaces";
@@ -63,6 +64,14 @@ function normalizePlainSymbol(value: string): string {
   return value.trim().toUpperCase().replace("/", "-");
 }
 
+function preserveUsdtRouteSymbol(value: string): string {
+  if (value.endsWith("-USDT")) return value;
+  if (value.endsWith("USDT") && value.length > "USDT".length) {
+    return `${value.slice(0, -"USDT".length)}-USDT`;
+  }
+  return value;
+}
+
 export function normalizeRegimeRouteSymbol(symbol: string): {
   requestedSymbol: string;
   persistedSymbol: string;
@@ -70,20 +79,27 @@ export function normalizeRegimeRouteSymbol(symbol: string): {
   dashboardCandidates: string[];
 } {
   const requestedSymbol = normalizePlainSymbol(symbol || "BTC");
-  const persistedSymbol = requestedSymbol.endsWith("-USDT")
-    ? `${requestedSymbol.slice(0, -5)}-USD`
+  const hasUsdtQuote = isUsdtQuoteMarketSymbol(requestedSymbol);
+  const persistedSymbol = hasUsdtQuote
+    ? preserveUsdtRouteSymbol(requestedSymbol)
     : requestedSymbol.endsWith("-USD")
       ? requestedSymbol
       : `${requestedSymbol}-USD`;
   const base = persistedSymbol.replace(/-USD$/, "");
-  const dashboardCandidates = [
-    requestedSymbol,
-    persistedSymbol,
-    base,
-    `${base}-USDT`,
-    `${base}/USDT`,
-  ];
-  const persistedCandidates = [persistedSymbol, requestedSymbol, base];
+  const usdtBase = persistedSymbol.replace(/-USDT$/, "");
+  const dashboardCandidates = hasUsdtQuote
+    ? [
+        requestedSymbol,
+        `${usdtBase}/USDT`,
+      ]
+    : [
+        requestedSymbol,
+        persistedSymbol,
+        base,
+      ];
+  const persistedCandidates = hasUsdtQuote
+    ? [persistedSymbol, requestedSymbol]
+    : [persistedSymbol, requestedSymbol, base];
 
   return {
     requestedSymbol,

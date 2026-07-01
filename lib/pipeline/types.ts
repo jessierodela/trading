@@ -13,6 +13,9 @@ import type { Bar, Exchange, FeatureSnapshot, Timeframe } from "@/lib/quant/type
 import type { AgentResult, DashboardStats, LiveActivityEntry, Signal } from "@/lib/signals";
 import type { BarStore } from "@/lib/storage/interfaces";
 import type { IndicatorValues } from "@/lib/taapi";
+import type { DataQualityIssue, DataQualityReport } from "@/lib/dataQuality/types";
+import type { VolumePolicy } from "@/lib/dataQuality/barQuality";
+import type { MarketIdentity } from "@/lib/dataQuality/marketIdentity";
 
 export type SleepFn = (ms: number) => Promise<void>;
 export type NowFn = () => Date;
@@ -59,6 +62,16 @@ export interface DashboardRefreshPayload {
   generatedAt: string;
   indicators: Record<string, IndicatorValues>;
   derived: Record<string, unknown>;
+  dataQuality: {
+    severity: DataQualityReport["severity"];
+    issues: DataQualityIssue[];
+    symbols: Record<string, {
+      market: MarketIdentity;
+      barQuality: DataQualityReport | null;
+      featureQuality: DataQualityReport | null;
+      freshness: Record<string, unknown>;
+    }>;
+  };
   openai?: Record<string, unknown>;
 }
 
@@ -154,6 +167,7 @@ export interface MarketIngestLatestPipelineInput {
   endTs?: string;
   barStore: Pick<BarStore, "insertMany">;
   dataSourceVersion?: string;
+  volumePolicy?: VolumePolicy;
   now?: NowFn;
   fetchBarsFn?: (input: {
     symbol: string;
@@ -180,7 +194,19 @@ export interface MarketIngestLatestPipelineResult {
     insertedBars: number;
     skippedBars: number;
     latestTs: string | null;
+    dataQuality?: DataQualityReport & {
+      checkedBars: number;
+      passedBars: number;
+      warnedBars: number;
+      blockedBars: number;
+    };
   }>;
+  dataQuality: DataQualityReport & {
+    checkedBars: number;
+    passedBars: number;
+    warnedBars: number;
+    blockedBars: number;
+  };
 }
 
 export interface DashboardSnapshotWriteInput extends InsertDashboardSnapshotInput {

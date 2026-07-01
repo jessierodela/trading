@@ -1,7 +1,10 @@
 import type { JobPayload } from "@/lib/jobs/types";
+import { isDataQualityGateError, jobDataQualitySummary } from "@/lib/dataQuality/qualityGate";
+import type { DataQualityReport } from "@/lib/dataQuality/types";
 import { runMarketIngestLatestPipeline } from "@/lib/pipeline";
 import type { Exchange, Timeframe } from "@/lib/quant/types";
 import {
+  handlerFailure,
   handlerSuccess,
   invalidPayload,
   requireService,
@@ -44,6 +47,11 @@ export const handleMarketIngestLatest: JobHandler<MarketPayload> = async (payloa
   let skippedBars = 0;
   let latestTs: string | null = null;
   const symbols: Record<string, unknown> = {};
+  const dataQualityReports: DataQualityReport[] = [];
+  let checkedBars = 0;
+  let passedBars = 0;
+  let warnedBars = 0;
+  let blockedBars = 0;
 
   try {
     for (const symbol of payload.symbols) {
@@ -71,16 +79,37 @@ export const handleMarketIngestLatest: JobHandler<MarketPayload> = async (payloa
       fetchedBars += result.fetchedBars;
       insertedBars += result.insertedBars;
       skippedBars += result.skippedBars;
+      dataQualityReports.push(result.dataQuality);
+      checkedBars += result.dataQuality.checkedBars;
+      passedBars += result.dataQuality.passedBars;
+      warnedBars += result.dataQuality.warnedBars;
+      blockedBars += result.dataQuality.blockedBars;
       if (result.latestTs !== null && (latestTs === null || result.latestTs > latestTs)) {
         latestTs = result.latestTs;
       }
       symbols[symbol] = result.symbols[symbol] ?? null;
     }
   } catch (err) {
+    if (isDataQualityGateError(err)) {
+      return handlerFailure(err.code, false, {
+        message: err.message,
+        dataQuality: err.report,
+      });
+    }
     return retryableFailure("market_ingest_failed", {
       message: err instanceof Error ? err.message : String(err),
     });
   }
+
+  const dataQuality = jobDataQualitySummary({
+    scope: "market.ingest.latest",
+    checkedAt: context.now().toISOString(),
+    reports: dataQualityReports,
+    checkedBars,
+    passedBars,
+    warnedBars,
+    blockedBars,
+  });
 
   return handlerSuccess({
     jobType: payload.jobType,
@@ -92,6 +121,7 @@ export const handleMarketIngestLatest: JobHandler<MarketPayload> = async (payloa
     insertedBars,
     skippedBars,
     latestTs,
+    dataQuality,
     symbols,
   });
 };

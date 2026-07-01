@@ -4,6 +4,7 @@ import {
   buildRegimeRefreshJob,
   enqueueJobForRoute,
   hasRouteDatabaseUrl,
+  isUnsupportedScheduledMarketSymbolError,
   routeDatabaseUnavailableError,
 } from "@/lib/jobs/routeHelpers";
 import { getPgPool } from "@/lib/storage";
@@ -20,6 +21,16 @@ export async function POST(req: NextRequest) {
     // path enqueues persisted-feature regime work instead of running inline.
     const result = await runRegimeRefreshPipeline({ symbol });
     return NextResponse.json(result.body, { status: result.status });
+  }
+
+  let built: ReturnType<typeof buildRegimeRefreshJob>;
+  try {
+    built = buildRegimeRefreshJob({ symbol });
+  } catch (err) {
+    if (isUnsupportedScheduledMarketSymbolError(err)) {
+      return NextResponse.json({ success: false, error: err.message }, { status: 400 });
+    }
+    throw err;
   }
 
   if (!hasRouteDatabaseUrl()) {
@@ -39,7 +50,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const built = buildRegimeRefreshJob({ symbol });
   const { job, deduped } = await enqueueJobForRoute(store, built.payload, {
     dedupeKey: built.dedupeKey,
   });

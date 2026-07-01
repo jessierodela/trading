@@ -228,6 +228,29 @@ async function runEnqueueChecks(): Promise<void> {
     "dry_run",
     "dry_run",
   ]);
+
+  const usdtStore = new FakeSchedulerStore();
+  let usdtError: string | null = null;
+  try {
+    await enqueueScheduledFeed({
+      store: usdtStore,
+      now: new Date("2026-06-18T15:05:00.000Z"),
+      env: { SCHEDULED_FEED_SYMBOLS: "BTC/USDT" } as unknown as NodeJS.ProcessEnv,
+    });
+  } catch (err) {
+    usdtError = err instanceof Error ? err.message : String(err);
+  }
+  assert(
+    "scheduled feed SCHEDULED_FEED_SYMBOLS=BTC/USDT is rejected",
+    usdtError !== null && usdtError.includes("not the canonical scheduled market"),
+    usdtError,
+  );
+  eq("scheduled feed BTC/USDT makes no enqueue calls", usdtStore.enqueueCalls, 0);
+  assert(
+    "scheduled feed BTC/USDT does not silently enqueue BTC-USD",
+    usdtStore.jobs.every((job) => !("symbols" in job.payload) || !job.payload.symbols?.includes("BTC-USD")),
+    usdtStore.jobs,
+  );
 }
 
 function runAuthChecks(): void {
