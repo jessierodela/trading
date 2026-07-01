@@ -34,6 +34,8 @@ export interface ScheduledFeedConfigOverrides {
 }
 
 export type ScheduledFeedStageName =
+  | "daily.market.ingest.latest"
+  | "daily.features.compute"
   | "market.ingest.latest"
   | "features.compute"
   | "regime.compute"
@@ -58,6 +60,8 @@ export interface ScheduledFeedPlan {
   feedName: typeof SCHEDULED_FEED_NAME;
   generatedAt: string;
   closedBarTs: string;
+  /** Closed daily bar timestamp used by the daily.* context stages only. */
+  dailyClosedBarTs: string;
   symbols: string[];
   exchange: ScheduledFeedExchange;
   timeframe: ScheduledFeedTimeframe;
@@ -91,6 +95,8 @@ export interface EnqueueScheduledFeedInput {
   env?: NodeJS.ProcessEnv;
   now?: Date | string;
   closedBarTs?: Date | string;
+  /** Overrides the closed daily bar used by the daily.* context stages only. */
+  dailyClosedBarTs?: Date | string;
   config?: ScheduledFeedConfigOverrides;
   dryRun?: boolean;
 }
@@ -99,6 +105,8 @@ export interface BuildScheduledFeedPlanInput {
   env?: NodeJS.ProcessEnv;
   now?: Date | string;
   closedBarTs?: Date | string;
+  /** Overrides the closed daily bar used by the daily.* context stages only. */
+  dailyClosedBarTs?: Date | string;
   config?: ScheduledFeedConfigOverrides;
 }
 
@@ -108,6 +116,7 @@ export interface EnqueueScheduledFeedResult {
   dryRun: boolean;
   generatedAt: string;
   closedBarTs: string;
+  dailyClosedBarTs: string;
   symbols: string[];
   exchange: ScheduledFeedExchange;
   timeframe: ScheduledFeedTimeframe;
