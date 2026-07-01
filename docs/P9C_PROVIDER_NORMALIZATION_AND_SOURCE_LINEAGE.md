@@ -99,7 +99,7 @@ missing lineage columns
 canonical BTC-USD rows carrying USDT quote/vendor metadata
 ```
 
-Strict mode fails when warnings or blocks are present:
+Strict mode fails on block issues. Legacy rows without lineage remain warning-only unless a future policy explicitly requires historical backfill:
 
 ```bash
 npm run audit:source-lineage -- --strict

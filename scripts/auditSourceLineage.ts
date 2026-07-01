@@ -231,7 +231,7 @@ async function main(): Promise<void> {
   try {
     const report = await auditSourceLineage(pool, strict);
     printReport(report);
-    const hasStrictIssue = report.issues.length > 0;
+    const hasStrictIssue = report.issues.some((issue) => issue.severity === "block");
     process.exit(strict && hasStrictIssue ? 1 : 0);
   } finally {
     await closePgPool();
