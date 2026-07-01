@@ -1,8 +1,8 @@
 # P10 Operational Promotion Report
 
-**Scope:** P10 continuation — merge, deploy, and production-verify P10B dashboard.snapshot hardening (PR #10). No P11 work (schema-safe GPT outputs, versioning, outcome tracking, risk engine, new strategies) was started.
+**Scope:** P10 continuation — merge, deploy, and production-verify P10B dashboard.snapshot hardening (PR #10), plus the P10C daily feature context scheduling fix (PR #12) that resolves the 1D feature staleness this report originally flagged as a warning. No P11 work (schema-safe GPT outputs, versioning, outcome tracking, risk engine, new strategies) was started.
 
-**Date:** 2026-07-01
+**Date:** 2026-07-01 (P10B), updated 2026-07-01 (P10C)
 
 ## Deployment
 - Production URL: `https://trading-teal-phi.vercel.app`
@@ -16,8 +16,8 @@
 - **dashboard.snapshot runtime:** **440ms** post-merge vs **47,363ms** pre-merge (job `2263e906-f287-4dc8-abbf-b9debc0faeaf`, which ran ~20 minutes before the merge and used the legacy `taapi+yahoo` path) — a ~107x reduction, well beyond "materially lower."
 - **Required log prefix observed:** could not be tailed directly (no remote shell access to the worker host — see Issues below). Verified equivalently via structured job-result and `job_events` data instead of raw stdout.
 - **Forbidden log prefixes absent:** confirmed indirectly — the post-merge job's `dataQuality` carries `source: "persisted_feature_snapshots"` everywhere and contains no `DASHBOARD_PROVIDER_MIXED_CONTEXT` issue (that code only appears in the pre-merge job's result, tagged `source: "taapi+yahoo"`).
-- **Persisted feature freshness behavior:** `freshness.oneHourLastUpdated` = `2026-07-01T20:00:00.000Z` (a real feature row timestamp, not adapter execution time) and `freshness.oneDayLastUpdated` = `2026-05-21T00:00:00.000Z`, which correctly triggered `DASHBOARD_1D_CACHE_STALE` (severity `warn`) for all 5 symbols on this run — proving the freshness fix is live and working (see Issues #2 for the root cause of why 1D is genuinely stale).
-- **Stale-data smoke result:** PASS — `_smoke/dataQuality.ts`'s new `runPersistedDashboardStalenessChecks` test (feeds intentionally stale 1H/1D rows through the real `createPersistedFeatureCacheAdapters` path) passes locally against the merged code.
+- **Persisted feature freshness behavior:** `freshness.oneHourLastUpdated` = `2026-07-01T20:00:00.000Z` (a real feature row timestamp, not adapter execution time) and, at the time of the original P10B check, `freshness.oneDayLastUpdated` = `2026-05-21T00:00:00.000Z`, which correctly triggered `DASHBOARD_1D_CACHE_STALE` (severity `warn`) for all 5 symbols — proving the freshness fix was live and working. **This staleness has since been resolved by P10C (PR #12) — see the P10C Verification section below.**
+- **Stale-data smoke result:** PASS — `_smoke/dataQuality.ts`'s `runPersistedDashboardStalenessChecks` test (feeds intentionally stale 1H/1D rows through the real `createPersistedFeatureCacheAdapters` path) passes locally against the merged code. Kept unchanged by P10C; a new `runPersistedDashboardFreshDataChecks` test was added alongside it (see below).
 
 ## Worker Verification
 - **Service status:** not directly queryable (no SSH/remote shell to `joon-OptiPlex-5090`). Inferred via `/api/ops/p8` → `worker.status: "recently_active"`.
@@ -40,6 +40,18 @@
 - **/api/signals result:** HTTP 200; returns live `stats`/`derived`/`openai` fields sourced from the `dashboard_snapshots` row above (agent-disabled reasons show `openai_disabled`, consistent with the near-term P10 setting).
 - **/api/ops/p8 result:** HTTP 200; `snapshot.latestDashboardSnapshot` matches the row above exactly (`publicId 86e6b447-d26c-4061-8291-135cea05b7c0`, `sourceJobPublicId 37f02bdd...`, `agentResultsCount: 6`, `confluenceCount: 5`, `symbols: [AVAX-USD, BTC-USD, ETH-USD, LINK-USD, SOL-USD]`).
 
+## P10C Verification — 1D Feature Freshness Fix (PR #12)
+- **Root cause:** the scheduled feed only ever drove `timeframe: "1h"` — nothing ever ran `market.ingest.latest`/`features.compute` with `timeframe: "1d"` on a recurring basis, even though those handlers already fully supported it. Not a P10B regression; P10B's freshness fix correctly *surfaced* this pre-existing gap instead of masking it.
+- **Fix:** two new scheduled stages, `daily.market.ingest.latest` and `daily.features.compute`, run ahead of the normal 1H flow but dedupe against the closed **daily** bar — so on the existing hourly cron cadence they only do real work once per UTC day. `regime.compute`, `strategies.evaluate`, and `paper.monitor` remain 1h-only; no strategy or execution semantics changed.
+- **1D market ingest job:** `daily.market.ingest.latest` (`f45628a3-d510-4015-bb86-deeef611171d`) — **succeeded**, 200 bars inserted (40/symbol × 5 symbols), `latestTs: 2026-06-30T00:00:00.000Z`.
+- **1D features.compute job:** `daily.features.compute` (`29320dcf-a8bc-494b-9777-9d4d4bec8edf`) — **succeeded**, 200 features computed/inserted, `featureVersion: features.2026-05-20.v3`.
+- **Latest 1D feature timestamp:** `2026-06-30T00:00:00.000Z` for all 5 symbols (BTC-USD, ETH-USD, SOL-USD, LINK-USD, AVAX-USD) — down from ~41 days stale to the latest closed daily bar. `source_lineage` present on all new rows.
+- **Latest dashboard.snapshot (post-fix):** snapshot id `204`, `generatedAt: 2026-07-01T22:03:11.416Z`, source job `1192`. `dataQuality.symbols["BTC-USD"].freshness.oneDayLastUpdated = 2026-06-30T00:00:00.000Z`; `dataQuality.issues` contains only `DASHBOARD_VOLUME_UNAVAILABLE` (warn) × 5 — **`DASHBOARD_1D_CACHE_STALE` is absent.**
+- **P10B guarantees re-confirmed on this run:** `barQuality.source: "persisted_feature_snapshots"`, `marketContext.dashboardDisplay.providers: ["coinbase"]`, no `DASHBOARD_PROVIDER_MIXED_CONTEXT`.
+- **Idempotency:** reran the scheduler after the daily jobs succeeded — both `daily.*` stages returned `skipped_succeeded` referencing the identical job IDs; zero duplicate rows in `market_bars`/`feature_snapshots` for `timeframe=1d`.
+- **Smoke coverage:** `runPersistedDashboardFreshDataChecks` (new) proves fresh 1D data emits no `DASHBOARD_1D_CACHE_STALE`/`DASHBOARD_1H_CACHE_STALE` and still reads `persisted_feature_snapshots`; also proves missing 1D context emits `DASHBOARD_1D_CONTEXT_MISSING` without being conflated with the stale-cache code. `runPersistedDashboardStalenessChecks` (P10B, kept) still passes unchanged. Scheduler plan/enqueue smoke tests updated for the 8-stage plan with isolated daily-vs-hourly dedupe/rollover assertions.
+- **Deploy:** PR #12 merged via merge commit `44b6844`; Vercel auto-deployed to production (`dpl_3ZhHnxFtZioXdoaWcxL9tkVoguAN`, `READY`, commit SHA matches exactly). Post-deploy endpoint recheck: `/dashboard`, `/api/ops/p8`, `/api/signals`, `/api/jobs/status`, `/api/regime/BTC` all HTTP 200.
+
 ## Source Lineage Verification
 - **Audit result:** PASS (exit 0) — warn-only, unchanged in nature from pre-deploy.
 - **Strict audit result:** PASS (exit 0) — same warn-only findings, **no block-severity issues**.
@@ -51,30 +63,31 @@
 |---|---|
 | `npx tsc --noEmit` | PASS |
 | `npm run build` | PASS |
+| `npm run smoke:scheduler-bootstrap` | PASS (P10C: 8-stage plan, daily/hourly dedupe isolation) |
 | `npm run smoke:pipeline-services` | PASS |
 | `npm run smoke:job-worker` | PASS |
-| `npm run smoke:data-quality` | PASS (includes new P10B follow-up staleness smoke test) |
+| `npm run smoke:data-quality` | PASS (P10B stale-1D test kept; P10C fresh-1D + missing-1D-context tests added) |
 | `npm run smoke:source-lineage` | PASS |
 | `npm run audit:source-lineage` | PASS (exit 0, warn-only) |
 | `SOURCE_LINEAGE_STRICT=1 npm run audit:source-lineage` | PASS (exit 0, warn-only, no blocks) |
-| `npm run validate:p8:operational` | PASS |
-| `npm run scheduler:feed -- --once --dry-run` | PASS (6 stages planned, no mutation) |
+| `npm run validate:p8:operational` | PASS (updated for 8-stage plan) |
+| `npm run scheduler:feed -- --once --dry-run` | PASS (8 stages planned, no mutation) |
 
 ## Issues Found
 **Blocking:** none.
 
 **Non-blocking:**
-1. This session has no SSH/remote-shell access to the external Linux worker host (`joon-OptiPlex-5090`), so Steps 5–7 of the original request (`git pull` on the host, `systemctl restart trading-worker.service`, `journalctl` log tailing) could not be executed directly. Worker and scheduler health were instead verified indirectly through the shared production Postgres DB and the `/api/ops/p8` endpoint — sufficient to prove the merged code is running correctly in production, but it does not capture raw stdout log lines or an actual restart count.
-2. Persisted 1D `feature_snapshots` for all 5 tracked symbols are ~41 days stale (last updated 2026-05-21), so `DASHBOARD_1D_CACHE_STALE` (warn) correctly fires on every `dashboard.snapshot` run. This is the freshness fix working exactly as designed, but it surfaces a real upstream gap: the scheduler only drives `timeframe: "1h"` (`DEFAULT_SCHEDULED_FEED_TIMEFRAME`), so the 1D feature pipeline isn't being kept current on any recurring schedule.
-3. `features.compute` (~167s) and `strategies.evaluate` (~557s) took materially longer than the other four stages in the observed run. Not a P10B regression — P10B only touches `dashboard.snapshot` — but it extends closed-bar-to-snapshot latency and may be worth its own investigation.
+1. This session has no SSH/remote-shell access to the external Linux worker host (`joon-OptiPlex-5090`), so direct `systemctl`/`journalctl` verification could not be executed. Worker and scheduler health were instead verified indirectly through the shared production Postgres DB and the `/api/ops/p8` endpoint — sufficient to prove the merged code is running correctly in production (confirmed twice now, across both PR #10 and PR #12 deploys), but it does not capture raw stdout log lines or an actual restart count. **This is the only remaining warning.**
+2. ~~Persisted 1D `feature_snapshots` were ~41 days stale~~ — **resolved by P10C (PR #12).** 1D market ingest and feature compute now run on a recurring daily-context schedule; `DASHBOARD_1D_CACHE_STALE` no longer fires on fresh production runs (verified above).
+3. `features.compute` (~167s) and `strategies.evaluate` (~557s) took materially longer than the other stages in the P10B observation run. Not a P10B or P10C regression — unrelated to either fix — but still worth its own investigation if closed-bar-to-snapshot latency matters operationally.
 
 **Follow-up recommended:**
-1. Add a recurring 1D feature ingestion/compute schedule so `DASHBOARD_1D_CACHE_STALE` stops firing on every run.
-2. If literal systemd/journalctl confirmation is required, run Steps 5–7 from the original request directly on the Linux host, or grant this session remote access.
-3. Update `md/changes-updates/REPOSITORY_ISSUES.md` Tier-2 item #4 to reflect closure (flagged in the prior P10B session, still pending).
+1. If literal systemd/journalctl confirmation is required, run the equivalent verification directly on the Linux host, or grant this session remote access.
+2. Update `md/changes-updates/REPOSITORY_ISSUES.md` Tier-2 item #4 to reflect closure (flagged in the prior P10B session, still pending).
+3. Investigate the `features.compute`/`strategies.evaluate` stage latency noted above (non-blocking, unrelated to P10B/P10C).
 
 ## Promotion Decision
 
 **P10 — PROMOTED WITH WARNINGS**
 
-Every functional acceptance criterion is met: PR #10 merged, `main` auto-deployed to production, the next natural scheduled run completed all six pipeline stages, `dashboard.snapshot` ran from persisted `feature_snapshots` with no TAAPI/cache-refresh signature and a ~107x runtime improvement, freshness correctly reflects real feature timestamps, `/api/signals`/`/api/ops/p8`/`/api/regime/BTC` all read persisted state correctly, source-lineage audits (both modes) pass with no block issues, the build passes, and no live-execution code was introduced. The "warnings" qualifier reflects two environmental/legacy conditions, not production failures: this session's lack of direct shell access to the Linux worker host, and a pre-existing 1D-feature staleness gap that the freshness fix now correctly surfaces rather than causes.
+Every functional acceptance criterion is met across both PR #10 and PR #12: both merged, `main` auto-deployed to production each time, the next natural scheduled run completed all pipeline stages (six, then eight after P10C), `dashboard.snapshot` runs from persisted `feature_snapshots` with no TAAPI/cache-refresh signature and a ~107x runtime improvement, 1H **and 1D** freshness now correctly reflect real, current feature timestamps with no stale-cache issues on fresh runs, `/api/signals`/`/api/ops/p8`/`/api/regime/BTC` all read persisted state correctly, source-lineage audits (both modes) pass with no block issues, the build passes, and no live-execution code was introduced. The sole remaining warning is environmental, not a production failure: this session's lack of direct shell access to the Linux worker host. Per the stated decision rule, that alone keeps this at PROMOTED WITH WARNINGS rather than plain PROMOTED.
