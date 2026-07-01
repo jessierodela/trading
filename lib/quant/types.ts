@@ -26,6 +26,7 @@
  *   - Specific risk rules / multipliers (those live in lib/risk/)
  *   - Version values (those live in lib/versions.ts)
  */
+import type { SourceLineage } from "@/lib/market/types";
 
 // ─── Primitives ────────────────────────────────────────────────────────────
 
@@ -122,6 +123,16 @@ export interface Bar {
   volume:    number | null;
   /** Number of trades aggregated into this bar (when source provides it). */
   tradeCount?: number | null;
+  /** Provider/source that produced this persisted bar, e.g. coinbase. */
+  source?: string | null;
+  /** Provider-native symbol before canonical parsing, e.g. BTC/USDT. */
+  vendorSymbol?: string | null;
+  /** Quote asset proven by the provider symbol, e.g. USD or USDT. */
+  quoteAsset?: string | null;
+  /** Version stamp for the ingestion code/source when attached in memory. */
+  dataSourceVersion?: string | null;
+  /** Durable source lineage for downstream audit and data-quality gates. */
+  sourceLineage?: SourceLineage;
 }
 
 // ─── Features ──────────────────────────────────────────────────────────────
@@ -147,6 +158,9 @@ export interface FeatureSnapshot {
   timeframe: Timeframe;
   ts:        string;
   close:     number;
+  source?:   string | null;
+  vendorSymbol?: string | null;
+  quoteAsset?: string | null;
 
   // Momentum / oscillators
   rsi14?:        number | null;
@@ -185,6 +199,7 @@ export interface FeatureSnapshot {
 
   // Lineage
   featureVersion: string;
+  sourceLineage?: SourceLineage;
 }
 
 // ─── Regime (re-exported from confluence for ergonomic imports) ───────────
@@ -256,6 +271,7 @@ export interface StrategySignal {
   // Lineage
   strategyVersion:  string;
   featureVersion:   string;
+  sourceLineage?:   SourceLineage;
 }
 
 // ─── Risk ──────────────────────────────────────────────────────────────────

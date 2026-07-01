@@ -52,6 +52,8 @@ import type {
   Exchange,
 } from "@/lib/quant/types";
 import { FEATURE_VERSION } from "@/lib/versions";
+import { normalizeMarketIdentity } from "@/lib/dataQuality/marketIdentity";
+import { buildDerivedSourceLineage, sourceLineageFromBar } from "@/lib/market/sourceLineage";
 import {
   validateBarSeries,
   findGaps,
@@ -260,6 +262,14 @@ function _computeContiguous(bars: Bar[]): FeatureSnapshot[] {
 
   for (let i = 0; i < bars.length; i++) {
     const b = bars[i];
+    const barLineage = sourceLineageFromBar(b);
+    const identity = normalizeMarketIdentity({
+      symbol: b.symbol,
+      exchange: b.exchange,
+      source: b.source ?? barLineage.provider,
+      vendorSymbol: b.vendorSymbol ?? barLineage.vendorSymbol ?? b.symbol,
+      quoteAsset: b.quoteAsset ?? barLineage.quoteAsset,
+    });
 
     const rsiVal    = rsi14(b.close);
     const ema20Val  = ema20(b.close);
@@ -302,6 +312,9 @@ function _computeContiguous(bars: Bar[]): FeatureSnapshot[] {
       timeframe: b.timeframe,
       ts:        b.ts,
       close:     b.close,
+      source:    b.source ?? barLineage.source,
+      vendorSymbol: b.vendorSymbol ?? barLineage.vendorSymbol ?? b.symbol,
+      quoteAsset: b.quoteAsset ?? barLineage.quoteAsset,
 
       rsi14:        rsiVal,
       macd:         macdVal?.macd       ?? null,
@@ -335,6 +348,15 @@ function _computeContiguous(bars: Bar[]): FeatureSnapshot[] {
       daily_priceAboveEma200: null,
 
       featureVersion: FEATURE_VERSION,
+      sourceLineage: buildDerivedSourceLineage({
+        kind: "feature_snapshot",
+        source: "features.compute",
+        transform: FEATURE_VERSION,
+        transformedAt: b.ts,
+        identity,
+        inputSources: [barLineage],
+        featureVersion: FEATURE_VERSION,
+      }),
     };
 
     prevEma20  = ema20Val;

@@ -1,9 +1,11 @@
 import { computeFeaturesLatest } from "@/lib/features/engine";
 import type { JobPayload } from "@/lib/jobs/types";
 import { validateBarQuality } from "@/lib/dataQuality/barQuality";
+import { combineDataQualityReports } from "@/lib/dataQuality/types";
 import { normalizeMarketIdentity } from "@/lib/dataQuality/marketIdentity";
 import { jobDataQualitySummary } from "@/lib/dataQuality/qualityGate";
 import type { DataQualityReport } from "@/lib/dataQuality/types";
+import { hasSourceLineage, sourceLineageQualityReport } from "@/lib/market/sourceLineage";
 import type { Exchange } from "@/lib/quant/types";
 import { FEATURE_VERSION } from "@/lib/versions";
 import {
@@ -63,8 +65,9 @@ export const handleFeaturesCompute: JobHandler<FeaturesPayload> = async (payload
       const expectedIdentity = normalizeMarketIdentity({
         symbol,
         exchange: payload.exchange,
+        source: payload.exchange === "COINBASE" ? "coinbase" : "unknown",
       });
-      const reports = bars.map((bar) =>
+      const barReports = bars.map((bar) =>
         validateBarQuality({
           bar,
           expectedIdentity,
@@ -75,20 +78,39 @@ export const handleFeaturesCompute: JobHandler<FeaturesPayload> = async (payload
           source: "unknown",
         })
       );
-      const usableBars = bars.filter((_, index) => reports[index].severity !== "block");
-      const blockedForSymbol = reports.filter((report) => report.severity === "block").length;
-      const warnedForSymbol = reports.filter((report) => report.severity === "warn").length;
-      const passedForSymbol = reports.filter((report) => report.severity === "pass").length;
-      const symbolDataQuality = jobDataQualitySummary({
+      const usableBars = bars.filter((_, index) => barReports[index].severity !== "block");
+      const lineageReport = sourceLineageQualityReport({
+        scope: "features.compute.source_lineage",
+        checkedAt: context.now().toISOString(),
+        expectedIdentity,
+        lineages: usableBars.map((bar) => hasSourceLineage(bar.sourceLineage) ? bar.sourceLineage : undefined),
+        symbol,
+        exchange: payload.exchange,
+        timeframe: payload.timeframe,
+      });
+      const blockedForSymbol = barReports.filter((report) => report.severity === "block").length;
+      const warnedForSymbol = barReports.filter((report) => report.severity === "warn").length;
+      const passedForSymbol = barReports.filter((report) => report.severity === "pass").length;
+      const symbolDataQuality = combineDataQualityReports({
         scope: "features.compute.symbol",
         checkedAt: context.now().toISOString(),
-        reports,
-        checkedBars: bars.length,
-        passedBars: passedForSymbol,
-        warnedBars: warnedForSymbol,
-        blockedBars: blockedForSymbol,
+        reports: [
+          jobDataQualitySummary({
+            scope: "features.compute.bar_quality",
+            checkedAt: context.now().toISOString(),
+            reports: barReports,
+            checkedBars: bars.length,
+            passedBars: passedForSymbol,
+            warnedBars: warnedForSymbol,
+            blockedBars: blockedForSymbol,
+          }),
+          lineageReport,
+        ],
+        symbol,
+        exchange: payload.exchange,
+        timeframe: payload.timeframe,
       });
-      if (usableBars.length === 0) {
+      if (usableBars.length === 0 || !lineageReport.ok) {
         return handlerFailure("features_compute_data_quality_blocked", false, {
           symbol,
           exchange: payload.exchange,

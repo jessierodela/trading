@@ -45,6 +45,7 @@ import type {
   Timeframe,
   Exchange,
 } from "@/lib/quant/types";
+import type { SourceLineage } from "@/lib/market/types";
 
 // ─── Common ────────────────────────────────────────────────────────────────
 
@@ -153,6 +154,7 @@ export interface RegimeSnapshotRow {
   regimeModelVersion:  string;
   promptVersion?:      string | null;
   featureVersion?:     string | null;
+  sourceLineage?:      SourceLineage;
 }
 
 export interface RegimeStore {

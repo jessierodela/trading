@@ -26,8 +26,26 @@ interface SignalRow {
   features_snapshot:  unknown;
   strategy_version:   string;
   feature_version:    string;
+  source_lineage:     unknown;
   inserted_at:        Date;
   deleted_at:         Date | null;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function rowToSignal(row: SignalRow): StrategySignal & { id: number } {
@@ -49,6 +67,7 @@ function rowToSignal(row: SignalRow): StrategySignal & { id: number } {
     features:          row.features_snapshot as StrategySignal["features"],
     strategyVersion:   row.strategy_version,
     featureVersion:    row.feature_version,
+    sourceLineage:     parseJsonObject(row.source_lineage) as StrategySignal["sourceLineage"],
   };
 }
 
@@ -62,8 +81,8 @@ export class PgSignalStore implements SignalStore {
          strategy_id, signal_type, direction, confidence,
          expected_edge, invalidation_price, stop_loss, take_profit,
          reasons, features_snapshot,
-         strategy_version, feature_version)
-       values ($1,$2,$3,$4, $5,$6,$7,$8, $9,$10,$11,$12, $13,$14, $15,$16)
+         strategy_version, feature_version, source_lineage)
+       values ($1,$2,$3,$4, $5,$6,$7,$8, $9,$10,$11,$12, $13,$14, $15,$16,$17)
        returning *`,
       [
         s.symbol, s.exchange, s.timeframe, s.ts,
@@ -71,7 +90,7 @@ export class PgSignalStore implements SignalStore {
         s.expectedEdge ?? null, s.invalidationPrice ?? null,
         s.stopLoss ?? null, s.takeProfit ?? null,
         s.reasons, JSON.stringify(s.features),
-        s.strategyVersion, s.featureVersion,
+        s.strategyVersion, s.featureVersion, JSON.stringify(s.sourceLineage ?? {}),
       ],
     );
     return rowToSignal(rows[0]);

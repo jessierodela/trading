@@ -24,6 +24,27 @@ interface BarRow {
   volume:              string | null;
   trade_count:         number | null;
   data_source_version: string;
+  source:              string | null;
+  vendor_symbol:       string | null;
+  quote_asset:         string | null;
+  source_lineage:      unknown;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function rowToBar(row: BarRow): Bar & { id: number } {
@@ -39,6 +60,11 @@ function rowToBar(row: BarRow): Bar & { id: number } {
     close:       Number(row.close),
     volume:      row.volume === null ? null : Number(row.volume),
     tradeCount:  row.trade_count,
+    dataSourceVersion: row.data_source_version,
+    source:      row.source,
+    vendorSymbol: row.vendor_symbol,
+    quoteAsset:  row.quote_asset,
+    sourceLineage: parseJsonObject(row.source_lineage) as Bar["sourceLineage"],
   };
 }
 
@@ -51,14 +77,19 @@ export class PgBarStore implements BarStore {
     validateBar(bar);
     const { rows } = await this.pool.query<BarRow>(
       `insert into market_bars
-         (symbol, exchange, timeframe, ts, open, high, low, close, volume, trade_count, data_source_version)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         (symbol, exchange, timeframe, ts, open, high, low, close, volume, trade_count, data_source_version,
+          source, vendor_symbol, quote_asset, source_lineage)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        returning *`,
       [
         bar.symbol, bar.exchange, bar.timeframe, bar.ts,
         bar.open, bar.high, bar.low, bar.close,
         bar.volume, bar.tradeCount ?? null,
         dataSourceVersion,
+        bar.source ?? null,
+        bar.vendorSymbol ?? bar.symbol,
+        bar.quoteAsset ?? null,
+        JSON.stringify(bar.sourceLineage ?? {}),
       ],
     );
     return rowToBar(rows[0]);
@@ -76,17 +107,22 @@ export class PgBarStore implements BarStore {
       "symbol", "exchange", "timeframe", "ts",
       "open", "high", "low", "close",
       "volume", "trade_count", "data_source_version",
+      "source", "vendor_symbol", "quote_asset", "source_lineage",
     ];
     const valuesSql: string[] = [];
     const params: unknown[] = [];
     let p = 1;
     for (const bar of bars) {
-      valuesSql.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
+      valuesSql.push(`($${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++}, $${p++})`);
       params.push(
         bar.symbol, bar.exchange, bar.timeframe, bar.ts,
         bar.open, bar.high, bar.low, bar.close,
         bar.volume, bar.tradeCount ?? null,
         dataSourceVersion,
+        bar.source ?? null,
+        bar.vendorSymbol ?? bar.symbol,
+        bar.quoteAsset ?? null,
+        JSON.stringify(bar.sourceLineage ?? {}),
       );
     }
     const conflictClause =

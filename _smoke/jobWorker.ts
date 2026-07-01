@@ -21,6 +21,7 @@ import { handleMarketIngestLatest } from "@/lib/jobs/handlers/marketIngestLatest
 import { handlePaperMonitor } from "@/lib/jobs/handlers/paperMonitor";
 import { handleRegimeCompute } from "@/lib/jobs/handlers/regimeCompute";
 import { handleTelegramRefresh } from "@/lib/jobs/handlers/telegramRefresh";
+import { buildDashboardMarketContext } from "@/lib/pipeline";
 import type { Bar, FeatureSnapshot } from "@/lib/quant/types";
 import type { RegimeSnapshotRow } from "@/lib/storage";
 
@@ -450,6 +451,7 @@ async function runHandlerChecks(): Promise<void> {
               issues: [],
               symbols: {},
             },
+            marketContext: buildDashboardMarketContext("2026-06-17T12:00:00.000Z"),
           },
         };
       },

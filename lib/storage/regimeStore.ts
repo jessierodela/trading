@@ -21,6 +21,24 @@ interface DbRow {
   regime_model_version:  string;
   prompt_version:        string | null;
   feature_version:       string | null;
+  source_lineage:        unknown;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function rowToSnapshot(row: DbRow): RegimeSnapshotRow & { id: number } {
@@ -40,6 +58,7 @@ function rowToSnapshot(row: DbRow): RegimeSnapshotRow & { id: number } {
     regimeModelVersion:  row.regime_model_version,
     promptVersion:       row.prompt_version,
     featureVersion:      row.feature_version,
+    sourceLineage:       parseJsonObject(row.source_lineage) as RegimeSnapshotRow["sourceLineage"],
   };
 }
 
@@ -52,8 +71,8 @@ export class PgRegimeStore implements RegimeStore {
          symbol, exchange, ts,
          regime, reliability, directional_bias, trade_permission,
          edge_multiplier, size_multiplier, reason, raw_response,
-         regime_model_version, prompt_version, feature_version)
-       values ($1,$2,$3, $4,$5,$6,$7, $8,$9,$10,$11, $12,$13,$14)
+         regime_model_version, prompt_version, feature_version, source_lineage)
+       values ($1,$2,$3, $4,$5,$6,$7, $8,$9,$10,$11, $12,$13,$14,$15)
        returning *`,
       [
         r.symbol, r.exchange, r.ts,
@@ -61,6 +80,7 @@ export class PgRegimeStore implements RegimeStore {
         r.edgeMultiplier, r.sizeMultiplier, r.reason ?? null,
         r.rawResponse === undefined ? null : JSON.stringify(r.rawResponse),
         r.regimeModelVersion, r.promptVersion ?? null, r.featureVersion ?? null,
+        JSON.stringify(r.sourceLineage ?? {}),
       ],
     );
     return rowToSnapshot(rows[0]);

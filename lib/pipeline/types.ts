@@ -16,6 +16,7 @@ import type { IndicatorValues } from "@/lib/taapi";
 import type { DataQualityIssue, DataQualityReport } from "@/lib/dataQuality/types";
 import type { VolumePolicy } from "@/lib/dataQuality/barQuality";
 import type { MarketIdentity } from "@/lib/dataQuality/marketIdentity";
+import type { SourceLineage } from "@/lib/market/types";
 
 export type SleepFn = (ms: number) => Promise<void>;
 export type NowFn = () => Date;
@@ -71,6 +72,20 @@ export interface DashboardRefreshPayload {
       featureQuality: DataQualityReport | null;
       freshness: Record<string, unknown>;
     }>;
+  };
+  marketContext: {
+    canonicalScheduled: {
+      market: MarketIdentity;
+      sourceLineage: SourceLineage;
+      trustedForScheduledJobs: true;
+    };
+    dashboardDisplay: {
+      market: MarketIdentity;
+      providers: string[];
+      sourceLineage: SourceLineage;
+      trustedForScheduledJobs: false;
+      warning: string;
+    };
   };
   openai?: Record<string, unknown>;
 }
