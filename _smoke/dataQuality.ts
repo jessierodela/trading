@@ -474,6 +474,52 @@ async function runDashboardQualityChecks(): Promise<void> {
   else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
 }
 
+async function runPersistedDashboardQualityChecks(): Promise<void> {
+  console.log("\n=== dashboard.snapshot persisted feature data quality behavior (P10B) ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  process.env.OPENAI_ENABLED = "false";
+  delete process.env.OPENAI_API_KEY;
+
+  const result = await runDashboardRefreshPipeline({
+    cache: {
+      async forceRefresh() {},
+      read: snapshot1h,
+    },
+    cache1d: {
+      async forceRefresh() {},
+      read: snapshot1d,
+    },
+    writeMemCache: false,
+    sleepMs: async () => {},
+    waitBefore1dMs: 0,
+    dataSource: "persisted_feature_snapshots",
+    logPrefix: "[dashboard.snapshot]",
+    now: () => new Date("2026-06-17T10:00:05.000Z"),
+    nowMs: () => Date.parse("2026-06-17T10:00:05.000Z"),
+    runConfluenceEngineFn: async () => [],
+  });
+
+  assert("persisted dashboard.snapshot includes dataQuality metadata", result.ok && !!result.body.dataQuality);
+  if (result.ok) {
+    assert(
+      "persisted dashboard.snapshot does not flag mixed TAAPI/Yahoo context",
+      !result.body.dataQuality.issues.some((issue) => issue.code === "DASHBOARD_PROVIDER_MIXED_CONTEXT"),
+      result.body.dataQuality,
+    );
+    eq(
+      "persisted dashboard.snapshot marketContext reads persisted feature snapshots",
+      result.body.marketContext.dashboardDisplay.providers,
+      ["coinbase"],
+    );
+  }
+
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+}
+
 function runLiveExecutionCheck(): void {
   console.log("\n=== no live execution boundary ===");
   assertNoLiveExecutionJobTypes();
@@ -485,6 +531,7 @@ async function main(): Promise<void> {
   await runRegimeQualityChecks();
   await runStrategyQualityChecks();
   await runDashboardQualityChecks();
+  await runPersistedDashboardQualityChecks();
   runLiveExecutionCheck();
 
   console.log(`\n${failed === 0 ? "all checks passed" : `${failed} check(s) failed`}`);
