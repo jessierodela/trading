@@ -10,6 +10,11 @@ import {
 import { normalizeMarketIdentity } from "@/lib/dataQuality/marketIdentity";
 import { jobDataQualitySummary } from "@/lib/dataQuality/qualityGate";
 import {
+  buildDerivedSourceLineage,
+  sourceLineageFromFeature,
+  sourceLineageQualityReport,
+} from "@/lib/market/sourceLineage";
+import {
   classifyFeatureRegime,
   toPersistableRegime,
   type PersistableRegimeResult,
@@ -129,17 +134,26 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
             now,
             severity: "warn",
           });
+      const lineageReport = sourceLineageQualityReport({
+        scope: "regime.compute.source_lineage",
+        checkedAt: now.toISOString(),
+        expectedIdentity,
+        lineages: [feature1h?.sourceLineage, feature1d?.sourceLineage],
+        symbol,
+        exchange: payload.exchange,
+        timeframe: "1h",
+      });
       const symbolDataQuality = combineDataQualityReports({
         scope: "regime.compute.symbol",
         checkedAt: now.toISOString(),
-        reports: [feature1hQuality, feature1dQuality],
+        reports: [feature1hQuality, feature1dQuality, lineageReport],
         symbol,
         exchange: payload.exchange,
         timeframe: "1h",
       });
       dataQualityReports.push(symbolDataQuality);
 
-      const block1h = !feature1hQuality.ok;
+      const block1h = !feature1hQuality.ok || !lineageReport.ok;
       const reducedDailyContext = shouldDropDailyContext(feature1dQuality);
       const classifier = classifyFeatureRegime(
         block1h ? null : feature1h,
@@ -161,6 +175,22 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
         persisted = capReliability(persisted, 0.55, "reduced_daily_context");
       }
       const mapped = mapRegimeToPermission(persisted.regime, persisted.reliability);
+      const regimeSourceLineage = buildDerivedSourceLineage({
+        kind: "regime_snapshot",
+        source: "regime.compute",
+        transform: DETERMINISTIC_REGIME_MODEL_VERSION,
+        transformedAt: block1h ? now.toISOString() : feature1h?.ts ?? classifier.timestamp,
+        identity: expectedIdentity,
+        inputSources: [feature1h, reducedDailyContext ? null : feature1d]
+          .filter((feature): feature is NonNullable<typeof feature1h> => feature !== null && feature !== undefined)
+          .map(sourceLineageFromFeature),
+        featureVersion: feature1h?.featureVersion ?? null,
+        modelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,
+        notes: [
+          block1h ? "data_quality_blocked_1h_feature" : "1h_feature_trusted",
+          reducedDailyContext ? "reduced_daily_context" : "daily_context_included",
+        ],
+      });
       const row = await regimeStore.insert({
         symbol,
         exchange: payload.exchange,
@@ -179,12 +209,14 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
           featureTs: feature1h?.ts ?? null,
           dailyFeatureTs: feature1d?.ts ?? null,
           dataQuality: symbolDataQuality,
+          sourceLineage: regimeSourceLineage,
           requestedRegimeModelVersion: payload.regimeModelVersion,
           aiUsed: false,
         },
         regimeModelVersion: DETERMINISTIC_REGIME_MODEL_VERSION,
         promptVersion: null,
         featureVersion: feature1h?.featureVersion ?? null,
+        sourceLineage: regimeSourceLineage,
       });
       deterministicComputes++;
       if (feature1h && !block1h) persistedFeatureComputes++;
@@ -197,6 +229,7 @@ export const handleRegimeCompute: JobHandler<RegimePayload> = async (payload, co
         regime: row.regime,
         reliability: row.reliability,
         tradePermission: row.tradePermission,
+        sourceLineage: row.sourceLineage,
         ts: row.ts,
         id: row.id,
       };

@@ -3,6 +3,7 @@ import { validateBarQuality } from "@/lib/dataQuality/barQuality";
 import { normalizeMarketIdentity } from "@/lib/dataQuality/marketIdentity";
 import { DataQualityGateError, jobDataQualitySummary } from "@/lib/dataQuality/qualityGate";
 import type { DataQualityReport } from "@/lib/dataQuality/types";
+import { attachBarLineage } from "@/lib/market/sourceLineage";
 import type { MarketIngestLatestPipelineInput, MarketIngestLatestPipelineResult } from "@/lib/pipeline/types";
 import type { Bar, Timeframe } from "@/lib/quant/types";
 import { DATA_SOURCE_COINBASE_REST } from "@/lib/versions";
@@ -132,7 +133,14 @@ export async function runMarketIngestLatestPipeline(
       })
     );
     allReports.push(...reports);
-    const trustedBars = rawBars.filter((_, index) => reports[index].severity !== "block");
+    const trustedBars = rawBars
+      .filter((_, index) => reports[index].severity !== "block")
+      .map((bar) => attachBarLineage({
+        bar,
+        expectedIdentity,
+        source: input.source,
+        dataSourceVersion,
+      }));
     const inserted = await input.barStore.insertMany(trustedBars, dataSourceVersion, {
       onConflict: "ignore",
     });

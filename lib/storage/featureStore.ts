@@ -53,8 +53,37 @@ interface FeatureRow {
   ts:                       Date;
   close:                    string;
   feature_version:          string;
+  source:                   string | null;
+  vendor_symbol:            string | null;
+  quote_asset:              string | null;
+  source_lineage:           unknown;
   extras:                   Record<string, unknown> | null;
   [key: string]:            unknown;     // for the dynamic feature columns
+}
+
+interface BarSourceMeta {
+  id: number;
+  source: string | null;
+  vendor_symbol: string | null;
+  quote_asset: string | null;
+  source_lineage: unknown;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function rowToFeature(row: FeatureRow): FeatureSnapshot & { id: number } {
@@ -65,6 +94,10 @@ function rowToFeature(row: FeatureRow): FeatureSnapshot & { id: number } {
     timeframe:      row.timeframe as Timeframe,
     ts:             row.ts.toISOString(),
     close:          Number(row.close),
+    source:         row.source,
+    vendorSymbol:   row.vendor_symbol,
+    quoteAsset:     row.quote_asset,
+    sourceLineage:  parseJsonObject(row.source_lineage) as FeatureSnapshot["sourceLineage"],
     featureVersion: row.feature_version,
   };
   for (const { col, field } of FEATURE_COLS) {
@@ -81,9 +114,9 @@ function rowToFeature(row: FeatureRow): FeatureSnapshot & { id: number } {
 export class PgFeatureStore implements FeatureStore {
   constructor(private readonly pool: Pool) {}
 
-  private async _resolveBarId(s: FeatureSnapshot): Promise<number> {
-    const { rows } = await this.pool.query<{ id: number }>(
-      `select id from market_bars
+  private async _resolveBarMeta(s: FeatureSnapshot): Promise<BarSourceMeta> {
+    const { rows } = await this.pool.query<BarSourceMeta>(
+      `select id, source, vendor_symbol, quote_asset, source_lineage from market_bars
        where symbol = $1 and exchange = $2 and timeframe = $3 and ts = $4`,
       [s.symbol, s.exchange, s.timeframe, s.ts],
     );
@@ -93,12 +126,24 @@ export class PgFeatureStore implements FeatureStore {
         `(${s.symbol}/${s.exchange}/${s.timeframe}/${s.ts})`,
       );
     }
-    return rows[0].id;
+    return rows[0];
   }
 
-  private _buildInsertArgs(s: FeatureSnapshot, barId: number): { cols: string[]; params: unknown[] } {
-    const cols = ["bar_id", "symbol", "exchange", "timeframe", "ts", "close", "feature_version"];
-    const params: unknown[] = [barId, s.symbol, s.exchange, s.timeframe, s.ts, s.close, s.featureVersion];
+  private _buildInsertArgs(s: FeatureSnapshot, barMeta: BarSourceMeta): { cols: string[]; params: unknown[] } {
+    const cols = [
+      "bar_id", "symbol", "exchange", "timeframe", "ts", "close",
+      "source", "vendor_symbol", "quote_asset", "source_lineage",
+      "feature_version",
+    ];
+    const sourceLineage = s.sourceLineage ?? parseJsonObject(barMeta.source_lineage) ?? {};
+    const params: unknown[] = [
+      barMeta.id, s.symbol, s.exchange, s.timeframe, s.ts, s.close,
+      s.source ?? barMeta.source,
+      s.vendorSymbol ?? barMeta.vendor_symbol ?? s.symbol,
+      s.quoteAsset ?? barMeta.quote_asset,
+      JSON.stringify(sourceLineage),
+      s.featureVersion,
+    ];
     for (const { col, field } of FEATURE_COLS) {
       const v = s[field];
       if (v === undefined || v === null) continue;
@@ -110,8 +155,8 @@ export class PgFeatureStore implements FeatureStore {
 
   async insert(s: FeatureSnapshot): Promise<FeatureSnapshot & { id: number }> {
     validateFeatureSnapshot(s);
-    const barId = await this._resolveBarId(s);
-    const { cols, params } = this._buildInsertArgs(s, barId);
+    const barMeta = await this._resolveBarMeta(s);
+    const { cols, params } = this._buildInsertArgs(s, barMeta);
     const placeholders = params.map((_, i) => `$${i + 1}`).join(", ");
     const { rows } = await this.pool.query<FeatureRow>(
       `insert into feature_snapshots (${cols.join(", ")})
@@ -135,8 +180,8 @@ export class PgFeatureStore implements FeatureStore {
     let inserted = 0;
     for (const s of snapshots) {
       validateFeatureSnapshot(s);
-      const barId = await this._resolveBarId(s);
-      const { cols, params } = this._buildInsertArgs(s, barId);
+      const barMeta = await this._resolveBarMeta(s);
+      const { cols, params } = this._buildInsertArgs(s, barMeta);
       const placeholders = params.map((_, i) => `$${i + 1}`).join(", ");
       const result = await this.pool.query(
         `insert into feature_snapshots (${cols.join(", ")})

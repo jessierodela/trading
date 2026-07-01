@@ -12,6 +12,11 @@ import {
 import { closedBarAge, maxStalenessBarsFor } from "@/lib/dataQuality/freshness";
 import { normalizeMarketIdentity } from "@/lib/dataQuality/marketIdentity";
 import { jobDataQualitySummary } from "@/lib/dataQuality/qualityGate";
+import {
+  buildDerivedSourceLineage,
+  sourceLineageFromFeature,
+  sourceLineageQualityReport,
+} from "@/lib/market/sourceLineage";
 import type { Exchange } from "@/lib/quant/types";
 import { getStrategyById } from "@/lib/strategies/strategyRegistry";
 import { runStrategyWindow } from "@/lib/strategies/runStrategyWindow";
@@ -134,6 +139,18 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
             now,
             severity: "warn",
           });
+      const lineageReport = sourceLineageQualityReport({
+        scope: "strategies.evaluate.source_lineage",
+        checkedAt: now.toISOString(),
+        expectedIdentity,
+        lineages: [
+          ...features.map((feature) => feature.sourceLineage),
+          latestDaily?.sourceLineage,
+        ],
+        symbol,
+        exchange: payload.exchange,
+        timeframe: payload.timeframe,
+      });
       const regimeIssues: DataQualityIssue[] = [];
       let usableRegime = regime;
       if (regime) {
@@ -165,14 +182,17 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
       const symbolDataQuality = combineDataQualityReports({
         scope: "strategies.evaluate.symbol",
         checkedAt: now.toISOString(),
-        reports: [...structuralReports, latestFeatureQuality, dailyQuality, regimeQuality],
+        reports: [...structuralReports, latestFeatureQuality, dailyQuality, regimeQuality, lineageReport],
         symbol,
         exchange: payload.exchange,
         timeframe: payload.timeframe,
       });
       dataQualityReports.push(symbolDataQuality);
 
-      const hasBlockedWindow = structuralReports.some((report) => !report.ok) || !latestFeatureQuality.ok;
+      const hasBlockedWindow =
+        structuralReports.some((report) => !report.ok) ||
+        !latestFeatureQuality.ok ||
+        !lineageReport.ok;
       if (hasBlockedWindow) {
         symbols[symbol] = {
           featuresRead: features.length,
@@ -201,9 +221,23 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
       const filteredSignals = allowed
         ? result.signals.filter((signal) => allowed.has(signal.strategyId))
         : result.signals;
+      const lineagedSignals = filteredSignals.map((signal) => ({
+        ...signal,
+        sourceLineage: buildDerivedSourceLineage({
+          kind: "strategy_signal",
+          source: "strategies.evaluate",
+          transform: signal.strategyId,
+          transformedAt: signal.ts,
+          identity: expectedIdentity,
+          inputSources: [sourceLineageFromFeature(signal.features)],
+          featureVersion: signal.featureVersion,
+          strategyVersion: signal.strategyVersion,
+          notes: dailyContextBlocked ? ["reduced_daily_context"] : ["daily_context_included"],
+        }),
+      }));
       let insertedForSymbol = 0;
       let duplicatesForSymbol = 0;
-      for (const signal of filteredSignals) {
+      for (const signal of lineagedSignals) {
         try {
           await signalStore.insert(signal);
           inserted++;
@@ -216,11 +250,11 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
         byStrategy[signal.strategyId] = (byStrategy[signal.strategyId] ?? 0) + 1;
       }
       featuresRead += result.featuresRead;
-      signalsEvaluated += filteredSignals.length;
+      signalsEvaluated += lineagedSignals.length;
       symbols[symbol] = {
         featuresRead: result.featuresRead,
         dailyFeaturesRead: dailyFeatures.length,
-        signalsEvaluated: filteredSignals.length,
+        signalsEvaluated: lineagedSignals.length,
         inserted: insertedForSymbol,
         duplicatesSkipped: duplicatesForSymbol,
         skipped: false,

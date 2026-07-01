@@ -13,6 +13,7 @@ import {
 } from "@/lib/dataQuality/types";
 import { TIMEFRAME_MS } from "@/lib/dataQuality/freshness";
 import { normalizeMarketIdentity, type MarketIdentity } from "@/lib/dataQuality/marketIdentity";
+import { sourceLineageFromIdentity } from "@/lib/market/sourceLineage";
 import { getCache } from "@/lib/indicatorCache";
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import { getCache1d } from "@/lib/indicatorCache1d";
@@ -26,6 +27,7 @@ import {
   type OpenAISkipReason,
 } from "@/lib/openai/config";
 import type {
+  DashboardRefreshPayload,
   DashboardRefreshPipelineInput,
   DashboardRefreshPipelineResult,
   DashboardRegimeContext,
@@ -206,6 +208,49 @@ function dashboardCanonicalIdentity(symbol: string): MarketIdentity {
     exchange: "COINBASE",
     source: "coinbase",
   });
+}
+
+export function buildDashboardMarketContext(generatedAt: string): DashboardRefreshPayload["marketContext"] {
+  const canonicalScheduled = normalizeMarketIdentity({
+    symbol: "BTC-USD",
+    exchange: "COINBASE",
+    source: "coinbase",
+  });
+  const dashboardDisplay = normalizeMarketIdentity({
+    symbol: "BTC/USDT",
+    exchange: "BINANCE",
+    source: "taapi",
+    vendorSymbol: "BTC/USDT",
+    quoteAsset: "USDT",
+  });
+
+  return {
+    canonicalScheduled: {
+      market: canonicalScheduled,
+      sourceLineage: sourceLineageFromIdentity({
+        identity: canonicalScheduled,
+        kind: "market_bar",
+        dataSourceVersion: "coinbase.rest.v1",
+        transformedAt: generatedAt,
+      }),
+      trustedForScheduledJobs: true,
+    },
+    dashboardDisplay: {
+      market: dashboardDisplay,
+      providers: ["taapi", "yahoo"],
+      sourceLineage: sourceLineageFromIdentity({
+        identity: dashboardDisplay,
+        kind: "dashboard_display",
+        transformedAt: generatedAt,
+        notes: [
+          "display_only_non_canonical",
+          "not trusted for scheduled signal/regime/strategy jobs",
+        ],
+      }),
+      trustedForScheduledJobs: false,
+      warning: "Dashboard crypto display uses mixed TAAPI/Yahoo-style inputs and is not the canonical scheduled Coinbase BTC-USD feed.",
+    },
+  };
 }
 
 function cacheFreshnessIssue(input: {
@@ -658,6 +703,7 @@ export async function runDashboardRefreshPipeline(
     indicators,
     derived,
     dataQuality,
+    marketContext: buildDashboardMarketContext(generatedAt),
     openai: {
       regime: regimeOpenAIStatus,
       strategyAgents: strategyOpenAIStatus,
