@@ -6,6 +6,7 @@ interface SchedulerCliArgs {
   once: true;
   dryRun: boolean;
   closedBarTs?: string;
+  dailyClosedBarTs?: string;
   config: ScheduledFeedConfigOverrides;
 }
 
@@ -15,6 +16,7 @@ function usage(): string {
     "  npm.cmd run scheduler:feed -- --once [--dry-run]",
     "  npm.cmd run scheduler:feed -- --once --symbols BTC-USD,ETH-USD --exchange COINBASE --timeframe 1h --source coinbase",
     "  npm.cmd run scheduler:feed -- --once --closed-bar-ts 2026-06-18T14:00:00.000Z",
+    "  npm.cmd run scheduler:feed -- --once --daily-closed-bar-ts 2026-06-17T00:00:00.000Z",
   ].join("\n");
 }
 
@@ -24,10 +26,10 @@ function requireValue(argv: string[], index: number, label: string): string {
   return value;
 }
 
-function assertTimestamp(value: string | undefined): void {
+function assertTimestamp(value: string | undefined, label = "--closed-bar-ts"): void {
   if (value === undefined) return;
   if (!Number.isFinite(Date.parse(value))) {
-    throw new Error("--closed-bar-ts must be a valid ISO timestamp");
+    throw new Error(`${label} must be a valid ISO timestamp`);
   }
 }
 
@@ -35,6 +37,7 @@ export function parseSchedulerFeedArgs(argv: string[]): SchedulerCliArgs {
   let once = false;
   let dryRun = false;
   let closedBarTs: string | undefined;
+  let dailyClosedBarTs: string | undefined;
   const config: ScheduledFeedConfigOverrides = {};
 
   for (let i = 0; i < argv.length; i++) {
@@ -66,6 +69,10 @@ export function parseSchedulerFeedArgs(argv: string[]): SchedulerCliArgs {
         closedBarTs = requireValue(argv, i, "--closed-bar-ts");
         i++;
         break;
+      case "--daily-closed-bar-ts":
+        dailyClosedBarTs = requireValue(argv, i, "--daily-closed-bar-ts");
+        i++;
+        break;
       case "--help":
       case "-h":
         throw new Error(usage());
@@ -75,8 +82,9 @@ export function parseSchedulerFeedArgs(argv: string[]): SchedulerCliArgs {
   }
 
   if (!once) throw new Error("--once is required");
-  assertTimestamp(closedBarTs);
-  return { once: true, dryRun, closedBarTs, config };
+  assertTimestamp(closedBarTs, "--closed-bar-ts");
+  assertTimestamp(dailyClosedBarTs, "--daily-closed-bar-ts");
+  return { once: true, dryRun, closedBarTs, dailyClosedBarTs, config };
 }
 
 async function main(): Promise<void> {
@@ -96,6 +104,7 @@ async function main(): Promise<void> {
       dryRun: args.dryRun,
       config: args.config,
       closedBarTs: args.closedBarTs,
+      dailyClosedBarTs: args.dailyClosedBarTs,
       now: new Date(),
     });
     console.log(JSON.stringify(result, null, 2));

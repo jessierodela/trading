@@ -47,6 +47,9 @@ const REQUIRED_JOB_CONSTRAINTS = [
 
 const FIXED_NOW = "2026-06-18T15:05:00.000Z";
 const FIXED_CLOSED_BAR_TS = "2026-06-18T14:00:00.000Z";
+/** P10C: daily context stages dedupe against the closed daily bar, not FIXED_CLOSED_BAR_TS. */
+const FIXED_DAILY_CLOSED_BAR_TS = "2026-06-17T00:00:00.000Z";
+const DAILY_CONTEXT_STAGE_NAMES = new Set(["daily.market.ingest.latest", "daily.features.compute"]);
 
 let failures = 0;
 
@@ -268,11 +271,14 @@ async function main(): Promise<void> {
       env: { NODE_ENV: "test" },
     });
     check("scheduled feed name matches contract", plan.feedName === SCHEDULED_FEED_NAME);
-    check("scheduled feed plan contains six stages", plan.stages.length === 6);
+    check("scheduled feed plan contains eight stages (incl. P10C daily context)", plan.stages.length === 8);
     check("scheduled feed uses fixed closed bar", plan.closedBarTs === FIXED_CLOSED_BAR_TS);
+    check("scheduled feed daily context uses the fixed daily closed bar", plan.dailyClosedBarTs === FIXED_DAILY_CLOSED_BAR_TS);
     check(
-      "every scheduled dedupe key includes closedBarTs",
-      plan.stages.every((stage) => stage.dedupeKey.includes(FIXED_CLOSED_BAR_TS)),
+      "every scheduled dedupe key includes the correct closed bar (hourly or daily)",
+      plan.stages.every((stage) =>
+        stage.dedupeKey.includes(DAILY_CONTEXT_STAGE_NAMES.has(stage.stage) ? FIXED_DAILY_CLOSED_BAR_TS : FIXED_CLOSED_BAR_TS),
+      ),
     );
 
     const jobsBeforeDryRun = await countJobs(pool);
@@ -285,8 +291,8 @@ async function main(): Promise<void> {
     const jobsAfterDryRun = await countJobs(pool);
     check("scheduled feed dry run succeeds", dryRun.success && dryRun.dryRun);
     check(
-      "scheduled feed dry run plans six jobs",
-      dryRun.jobs.length === 6 && dryRun.jobs.every((job) => job.action === "dry_run"),
+      "scheduled feed dry run plans eight jobs",
+      dryRun.jobs.length === 8 && dryRun.jobs.every((job) => job.action === "dry_run"),
     );
     check("scheduled feed dry run does not mutate jobs", jobsAfterDryRun === jobsBeforeDryRun);
   } catch (error) {

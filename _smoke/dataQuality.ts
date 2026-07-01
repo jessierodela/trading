@@ -598,6 +598,122 @@ async function runPersistedDashboardStalenessChecks(): Promise<void> {
   else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
 }
 
+async function runPersistedDashboardFreshDataChecks(): Promise<void> {
+  console.log("\n=== dashboard.snapshot persisted feature freshness behavior (P10C) ===");
+  const oldOpenAIKey = process.env.OPENAI_API_KEY;
+  const oldOpenAIEnabled = process.env.OPENAI_ENABLED;
+  process.env.OPENAI_ENABLED = "false";
+  delete process.env.OPENAI_API_KEY;
+
+  const now = () => new Date("2026-06-17T12:00:00.000Z");
+  // 1h old (well within 2h DASHBOARD_1H_MAX_STALENESS_MS) and 12h old (well
+  // within 2d DASHBOARD_1D_CACHE_STALE threshold) — daily context stages
+  // (P10C) are what keep this 1D row from going stale in production.
+  const freshFeatureStore = fakeFeatureStore({
+    latest1h: feature("2026-06-17T11:00:00.000Z"),
+    latest1d: dailyFeature("2026-06-17T00:00:00.000Z"),
+  });
+
+  const { cache, cache1d } = createPersistedFeatureCacheAdapters({
+    featureStore: freshFeatureStore,
+    symbols: ["BTC-USD"],
+    exchange: "COINBASE",
+    now,
+  });
+
+  const result = await runDashboardRefreshPipeline({
+    cache,
+    cache1d,
+    writeMemCache: false,
+    sleepMs: async () => {},
+    waitBefore1dMs: 0,
+    dataSource: "persisted_feature_snapshots",
+    logPrefix: "[dashboard.snapshot]",
+    now,
+    nowMs: () => now().getTime(),
+    runConfluenceEngineFn: async () => [],
+  });
+
+  assert("persisted fresh dashboard.snapshot succeeds", result.ok);
+  if (result.ok) {
+    const symbolQuality = result.body.dataQuality.symbols["BTC-USD"];
+    eq(
+      "persisted dashboard.snapshot 1H freshness reflects the fresh feature row ts",
+      symbolQuality?.freshness.oneHourLastUpdated,
+      "2026-06-17T11:00:00.000Z",
+    );
+    eq(
+      "persisted dashboard.snapshot 1D freshness reflects the fresh feature row ts",
+      symbolQuality?.freshness.oneDayLastUpdated,
+      "2026-06-17T00:00:00.000Z",
+    );
+    assert(
+      "fresh persisted 1H feature data does not emit DASHBOARD_1H_CACHE_STALE",
+      !result.body.dataQuality.issues.some((issue) => issue.code === "DASHBOARD_1H_CACHE_STALE"),
+      result.body.dataQuality,
+    );
+    assert(
+      "fresh persisted 1D feature data does not emit DASHBOARD_1D_CACHE_STALE (P10C daily context keeps this current)",
+      !result.body.dataQuality.issues.some((issue) => issue.code === "DASHBOARD_1D_CACHE_STALE"),
+      result.body.dataQuality,
+    );
+    assert(
+      "fresh persisted dashboard.snapshot still does not flag mixed TAAPI/Yahoo context",
+      !result.body.dataQuality.issues.some((issue) => issue.code === "DASHBOARD_PROVIDER_MIXED_CONTEXT"),
+      result.body.dataQuality,
+    );
+    eq(
+      "fresh persisted dashboard.snapshot still reads persisted_feature_snapshots",
+      symbolQuality?.barQuality?.source,
+      "persisted_feature_snapshots",
+    );
+  }
+
+  // Missing 1D context (no row at all) is a distinct condition from stale 1D
+  // context (a row exists but is old) — it must still surface as
+  // DASHBOARD_1D_CONTEXT_MISSING, not be conflated with the stale-cache code.
+  const missingDailyFeatureStore = fakeFeatureStore({
+    latest1h: feature("2026-06-17T11:00:00.000Z"),
+    latest1d: null,
+  });
+  const missingDaily = createPersistedFeatureCacheAdapters({
+    featureStore: missingDailyFeatureStore,
+    symbols: ["BTC-USD"],
+    exchange: "COINBASE",
+    now,
+  });
+  const missingResult = await runDashboardRefreshPipeline({
+    cache: missingDaily.cache,
+    cache1d: missingDaily.cache1d,
+    writeMemCache: false,
+    sleepMs: async () => {},
+    waitBefore1dMs: 0,
+    dataSource: "persisted_feature_snapshots",
+    logPrefix: "[dashboard.snapshot]",
+    now,
+    nowMs: () => now().getTime(),
+    runConfluenceEngineFn: async () => [],
+  });
+  assert("persisted dashboard.snapshot with missing 1D context still succeeds", missingResult.ok);
+  if (missingResult.ok) {
+    assert(
+      "missing 1D context emits DASHBOARD_1D_CONTEXT_MISSING",
+      missingResult.body.dataQuality.issues.some((issue) => issue.code === "DASHBOARD_1D_CONTEXT_MISSING"),
+      missingResult.body.dataQuality,
+    );
+    assert(
+      "missing 1D context does not emit DASHBOARD_1D_CACHE_STALE",
+      !missingResult.body.dataQuality.issues.some((issue) => issue.code === "DASHBOARD_1D_CACHE_STALE"),
+      missingResult.body.dataQuality,
+    );
+  }
+
+  if (oldOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = oldOpenAIKey;
+  if (oldOpenAIEnabled === undefined) delete process.env.OPENAI_ENABLED;
+  else process.env.OPENAI_ENABLED = oldOpenAIEnabled;
+}
+
 function runLiveExecutionCheck(): void {
   console.log("\n=== no live execution boundary ===");
   assertNoLiveExecutionJobTypes();
@@ -611,6 +727,7 @@ async function main(): Promise<void> {
   await runDashboardQualityChecks();
   await runPersistedDashboardQualityChecks();
   await runPersistedDashboardStalenessChecks();
+  await runPersistedDashboardFreshDataChecks();
   runLiveExecutionCheck();
 
   console.log(`\n${failed === 0 ? "all checks passed" : `${failed} check(s) failed`}`);

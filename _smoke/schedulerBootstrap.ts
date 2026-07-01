@@ -121,7 +121,19 @@ async function runClosedBarChecks(): Promise<void> {
     floorToClosedBar(new Date("2026-06-18T00:05:00.000Z"), "1h"),
     "2026-06-17T23:00:00.000Z",
   );
+  eq(
+    "daily closed bar example (P10C) selects the prior UTC day",
+    floorToClosedBar(new Date("2026-06-18T15:05:00.000Z"), "1d"),
+    "2026-06-17T00:00:00.000Z",
+  );
+  eq(
+    "daily closed bar never selects the still-open current day at exact midnight",
+    floorToClosedBar(new Date("2026-06-18T00:00:00.000Z"), "1d"),
+    "2026-06-17T00:00:00.000Z",
+  );
 }
+
+const DAILY_CONTEXT_STAGE_NAMES = new Set(["daily.market.ingest.latest", "daily.features.compute"]);
 
 async function runPlanChecks(): Promise<void> {
   console.log("\n=== scheduled feed plan ===");
@@ -131,7 +143,9 @@ async function runPlanChecks(): Promise<void> {
   });
 
   eq("scheduled feed name is exact", plan.feedName, "non-stop scheduled feed");
-  eq("scheduled feed builds all six stages", plan.stages.map((stage) => stage.stage), [
+  eq("scheduled feed builds all eight stages", plan.stages.map((stage) => stage.stage), [
+    "daily.market.ingest.latest",
+    "daily.features.compute",
     "market.ingest.latest",
     "features.compute",
     "regime.compute",
@@ -146,14 +160,37 @@ async function runPlanChecks(): Promise<void> {
     "LINK-USD",
     "AVAX-USD",
   ]);
+  eq(
+    "daily closed bar (P10C) is the prior UTC day, independent of the hourly closed bar",
+    plan.dailyClosedBarTs,
+    "2026-06-17T00:00:00.000Z",
+  );
+  eq("hourly closed bar is unchanged by the daily context addition", plan.closedBarTs, "2026-06-18T14:00:00.000Z");
 
   for (const stage of plan.stages) {
     eq(`payload validates for ${stage.stage}`, validateJobPayload(stage.payload).jobType, stage.payload.jobType);
-    assert(`dedupe key for ${stage.stage} includes closedBarTs`, stage.dedupeKey.includes(plan.closedBarTs));
+    const expectedSuffix = DAILY_CONTEXT_STAGE_NAMES.has(stage.stage) ? plan.dailyClosedBarTs : plan.closedBarTs;
+    assert(`dedupe key for ${stage.stage} includes the correct closed bar`, stage.dedupeKey.includes(expectedSuffix));
   }
+  eq(
+    "daily context payloads request timeframe=1d",
+    plan.stages
+      .filter((stage) => DAILY_CONTEXT_STAGE_NAMES.has(stage.stage))
+      .map((stage) => (stage.payload as { timeframe?: string }).timeframe),
+    ["1d", "1d"],
+  );
+  eq(
+    "daily context stages never touch regime/strategy/paper/execution job types",
+    plan.stages
+      .filter((stage) => DAILY_CONTEXT_STAGE_NAMES.has(stage.stage))
+      .map((stage) => stage.jobType),
+    ["market.ingest.latest", "features.compute"],
+  );
 
-  eq("priorities are staged", plan.stages.map((stage) => stage.priority), [10, 20, 30, 40, 50, 60]);
-  eq("runAfter offsets are staged from closed bar timestamp", plan.stages.map((stage) => stage.runAfter), [
+  eq("priorities are staged", plan.stages.map((stage) => stage.priority), [5, 7, 10, 20, 30, 40, 50, 60]);
+  eq("runAfter offsets are staged from the correct closed bar timestamp", plan.stages.map((stage) => stage.runAfter), [
+    "2026-06-17T00:01:00.000Z",
+    "2026-06-17T00:03:00.000Z",
     "2026-06-18T14:05:00.000Z",
     "2026-06-18T14:07:00.000Z",
     "2026-06-18T14:09:00.000Z",
@@ -175,7 +212,9 @@ async function runEnqueueChecks(): Promise<void> {
     now: new Date("2026-06-18T15:05:00.000Z"),
     env: {} as NodeJS.ProcessEnv,
   });
-  eq("first scheduler run enqueues six jobs", first.jobs.map((job) => job.action), [
+  eq("first scheduler run enqueues eight jobs (P10C: incl. daily context)", first.jobs.map((job) => job.action), [
+    "enqueued",
+    "enqueued",
     "enqueued",
     "enqueued",
     "enqueued",
@@ -183,7 +222,7 @@ async function runEnqueueChecks(): Promise<void> {
     "enqueued",
     "enqueued",
   ]);
-  eq("first scheduler run makes six enqueue calls", store.enqueueCalls, 6);
+  eq("first scheduler run makes eight enqueue calls", store.enqueueCalls, 8);
 
   const second = await enqueueScheduledFeed({
     store,
@@ -197,8 +236,10 @@ async function runEnqueueChecks(): Promise<void> {
     "deduped",
     "deduped",
     "deduped",
+    "deduped",
+    "deduped",
   ]);
-  eq("repeated scheduler run avoids new enqueue calls", store.enqueueCalls, 6);
+  eq("repeated scheduler run avoids new enqueue calls", store.enqueueCalls, 8);
 
   for (const job of store.jobs) job.status = "succeeded";
   const third = await enqueueScheduledFeed({
@@ -213,14 +254,66 @@ async function runEnqueueChecks(): Promise<void> {
     "skipped_succeeded",
     "skipped_succeeded",
     "skipped_succeeded",
+    "skipped_succeeded",
+    "skipped_succeeded",
   ]);
+
+  // P10C: daily context stages dedupe against the closed DAILY bar
+  // specifically, independent of the hourly closed bar. Hold closedBarTs
+  // fixed (so the six hourly stages stay skip_succeeded) while advancing
+  // dailyClosedBarTs a few hours later the same UTC day — daily stages must
+  // still skip_succeeded, since the daily bar itself hasn't rolled over.
+  const sameDayLater = await enqueueScheduledFeed({
+    store,
+    now: new Date("2026-06-18T18:05:00.000Z"),
+    closedBarTs: "2026-06-18T14:00:00.000Z",
+    dailyClosedBarTs: "2026-06-17T00:00:00.000Z",
+    env: {} as NodeJS.ProcessEnv,
+  });
+  const dailyStages = sameDayLater.jobs.filter((job) => job.stage.startsWith("daily."));
+  eq(
+    "daily context stages stay skipped_succeeded within the same UTC day",
+    dailyStages.map((job) => job.action),
+    ["skipped_succeeded", "skipped_succeeded"],
+  );
+  eq(
+    "hourly stages also stay skipped_succeeded when the hourly closed bar is unchanged",
+    sameDayLater.jobs.filter((job) => !job.stage.startsWith("daily.")).map((job) => job.action),
+    ["skipped_succeeded", "skipped_succeeded", "skipped_succeeded", "skipped_succeeded", "skipped_succeeded", "skipped_succeeded"],
+  );
+  eq("same-day rerun makes no new enqueue calls", store.enqueueCalls, 8);
+
+  // Now roll ONLY the daily closed bar forward (simulating the next UTC day)
+  // while keeping the hourly closed bar the same, to isolate daily-only
+  // rollover behavior from the hourly rollover that happens every run.
+  const nextDay = await enqueueScheduledFeed({
+    store,
+    now: new Date("2026-06-19T14:05:00.000Z"),
+    closedBarTs: "2026-06-18T14:00:00.000Z",
+    dailyClosedBarTs: "2026-06-18T00:00:00.000Z",
+    env: {} as NodeJS.ProcessEnv,
+  });
+  const nextDayDailyStages = nextDay.jobs.filter((job) => job.stage.startsWith("daily."));
+  eq(
+    "daily context stages enqueue fresh work once the daily bar rolls over",
+    nextDayDailyStages.map((job) => job.action),
+    ["enqueued", "enqueued"],
+  );
+  eq(
+    "hourly stages remain skipped_succeeded while only the daily bar rolled over",
+    nextDay.jobs.filter((job) => !job.stage.startsWith("daily.")).map((job) => job.action),
+    ["skipped_succeeded", "skipped_succeeded", "skipped_succeeded", "skipped_succeeded", "skipped_succeeded", "skipped_succeeded"],
+  );
+  eq("daily rollover run makes exactly two new enqueue calls", store.enqueueCalls, 10);
 
   const dryRun = await enqueueScheduledFeed({
     dryRun: true,
     now: new Date("2026-06-18T15:05:00.000Z"),
     env: {} as NodeJS.ProcessEnv,
   });
-  eq("dry-run plans six jobs without a store", dryRun.jobs.map((job) => job.action), [
+  eq("dry-run plans eight jobs without a store", dryRun.jobs.map((job) => job.action), [
+    "dry_run",
+    "dry_run",
     "dry_run",
     "dry_run",
     "dry_run",

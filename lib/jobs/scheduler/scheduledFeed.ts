@@ -36,7 +36,18 @@ import {
   type SchedulerAuthorizationResult,
 } from "./types";
 
+/**
+ * daily.market.ingest.latest / daily.features.compute keep the 1D higher-
+ * timeframe context (used by regime/strategy/dashboard interpretation) fresh.
+ * They dedupe against the closed DAILY bar, not the closed hourly bar, so on
+ * an hourly cron cadence they only actually do work once per UTC day and
+ * skip_succeeded the rest of the time. They deliberately stop at
+ * features.compute — regime.compute/strategies.evaluate/paper.monitor stay
+ * 1h-only (see ScheduledFeedTimeframe / JobPayload timeframe constraints).
+ */
 const SCHEDULED_STAGE_DEFINITIONS: ScheduledFeedStageDefinition[] = [
+  { stage: "daily.market.ingest.latest", jobType: "market.ingest.latest", priority: 5, offsetMinutes: 1 },
+  { stage: "daily.features.compute", jobType: "features.compute", priority: 7, offsetMinutes: 3 },
   { stage: "market.ingest.latest", jobType: "market.ingest.latest", priority: 10, offsetMinutes: 5 },
   { stage: "features.compute", jobType: "features.compute", priority: 20, offsetMinutes: 7 },
   { stage: "regime.compute", jobType: "regime.compute", priority: 30, offsetMinutes: 9 },
@@ -44,6 +55,11 @@ const SCHEDULED_STAGE_DEFINITIONS: ScheduledFeedStageDefinition[] = [
   { stage: "paper.monitor", jobType: "paper.monitor", priority: 50, offsetMinutes: 13 },
   { stage: "dashboard.snapshot", jobType: "dashboard.snapshot", priority: 60, offsetMinutes: 15 },
 ];
+
+const DAILY_CONTEXT_STAGES: ReadonlySet<ScheduledFeedStageName> = new Set([
+  "daily.market.ingest.latest",
+  "daily.features.compute",
+]);
 
 const EXCHANGES: ScheduledFeedExchange[] = ["COINBASE", "BINANCE", "POLYGON"];
 const SOURCES: ScheduledFeedSource[] = ["coinbase", "polygon"];
@@ -117,6 +133,23 @@ function payloadForStage(
   config: ScheduledFeedConfig,
 ): JobPayload {
   switch (stage) {
+    case "daily.market.ingest.latest":
+      return {
+        jobType: "market.ingest.latest",
+        symbols: config.symbols,
+        exchange: config.exchange,
+        timeframe: "1d",
+        source: config.source,
+        closedBarsOnly: true,
+      };
+    case "daily.features.compute":
+      return {
+        jobType: "features.compute",
+        symbols: config.symbols,
+        exchange: config.exchange,
+        timeframe: "1d",
+        featureVersion: FEATURE_VERSION,
+      };
     case "market.ingest.latest":
       return {
         jobType: "market.ingest.latest",
@@ -173,6 +206,12 @@ function dedupeKeyForStage(
 ): string {
   const suffix = closedBarDedupeSuffix(closedBarTs);
   switch (stage) {
+    case "daily.market.ingest.latest":
+      if (payload.jobType !== "market.ingest.latest") break;
+      return `scheduled:daily.market.ingest.latest:${payload.source}:${payload.exchange}:${payload.timeframe}:${suffix}:${symbolsCsv}`;
+    case "daily.features.compute":
+      if (payload.jobType !== "features.compute") break;
+      return `scheduled:daily.features.compute:${payload.exchange}:${payload.timeframe}:${suffix}:${symbolsCsv}:${payload.featureVersion}`;
     case "market.ingest.latest":
       if (payload.jobType !== "market.ingest.latest") break;
       return `scheduled:market.ingest.latest:${payload.source}:${payload.exchange}:${payload.timeframe}:${suffix}:${symbolsCsv}`;
@@ -202,15 +241,19 @@ export function buildScheduledFeedPlan(input: BuildScheduledFeedPlanInput = {}):
   const closedBarTs = input.closedBarTs
     ? canonicalIso(input.closedBarTs)
     : floorToClosedBar(now, config.timeframe);
+  const dailyClosedBarTs = input.dailyClosedBarTs
+    ? canonicalIso(input.dailyClosedBarTs)
+    : floorToClosedBar(now, "1d");
   const symbolsCsv = csv(config.symbols);
 
   const stages: ScheduledFeedStagePlan[] = SCHEDULED_STAGE_DEFINITIONS.map((definition) => {
     const payload = validateJobPayload(payloadForStage(definition.stage, config));
+    const stageClosedBarTs = DAILY_CONTEXT_STAGES.has(definition.stage) ? dailyClosedBarTs : closedBarTs;
     return {
       ...definition,
       payload,
-      dedupeKey: dedupeKeyForStage(definition.stage, payload, closedBarTs, symbolsCsv),
-      runAfter: closedBarRunAfter(closedBarTs, definition.offsetMinutes),
+      dedupeKey: dedupeKeyForStage(definition.stage, payload, stageClosedBarTs, symbolsCsv),
+      runAfter: closedBarRunAfter(stageClosedBarTs, definition.offsetMinutes),
     };
   });
 
@@ -218,6 +261,7 @@ export function buildScheduledFeedPlan(input: BuildScheduledFeedPlanInput = {}):
     feedName: SCHEDULED_FEED_NAME,
     generatedAt,
     closedBarTs,
+    dailyClosedBarTs,
     symbols: config.symbols,
     exchange: config.exchange,
     timeframe: config.timeframe,
@@ -302,6 +346,7 @@ export async function enqueueScheduledFeed(
     dryRun,
     generatedAt: plan.generatedAt,
     closedBarTs: plan.closedBarTs,
+    dailyClosedBarTs: plan.dailyClosedBarTs,
     symbols: plan.symbols,
     exchange: plan.exchange,
     timeframe: plan.timeframe,
