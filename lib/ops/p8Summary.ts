@@ -7,6 +7,7 @@ import {
   type RecentJobSummary,
   type ScheduledStageSummary,
 } from "./p8Types";
+import { withDbRetry } from "@/lib/storage/dbRetry";
 
 export const P8_TRACKED_SYMBOLS = [
   "BTC-USD",
@@ -556,6 +557,11 @@ export async function loadP8OpsSummary(input: {
   memoryExpiresAt?: number;
   now?: Date;
 }): Promise<P8OpsSummary> {
+  // Wrapped in withDbRetry so a single transient pool-checkout blip doesn't
+  // 503 the ops route — read-only queries are safe to retry wholesale.
+  // Query issuance lives inside the callback (not hoisted) so a retry
+  // actually reissues fresh queries rather than re-awaiting stale promises.
+  return withDbRetry("ops.p8.load", async () => {
   const jobsQuery = input.pool.query<P8OpsJobRow>(
     `select public_id::text, job_type, status, priority, result, dedupe_key,
             run_after, attempts, max_attempts, lease_expires_at, heartbeat_at,
@@ -646,4 +652,5 @@ export async function loadP8OpsSummary(input: {
     memoryResponse: input.memoryResponse,
     memoryExpiresAt: input.memoryExpiresAt,
   });
+  }, { maxAttempts: 2 });
 }

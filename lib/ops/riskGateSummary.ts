@@ -8,6 +8,7 @@
  */
 import type { Pool } from "pg";
 import { RISK_VERSION } from "@/lib/versions";
+import { withDbRetry } from "@/lib/storage/dbRetry";
 
 export interface RiskGateDecisionCountRow {
   approved: boolean;
@@ -157,6 +158,9 @@ export function buildRiskGateSummary(input: RiskGateOpsBuildInput = {}): RiskGat
 }
 
 export async function loadRiskGateSummary(input: { pool: Pool; now?: Date }): Promise<RiskGateOpsSummary> {
+  // See lib/ops/p8Summary.ts loadP8OpsSummary for why this is wrapped in
+  // withDbRetry with query issuance kept inside the callback.
+  return withDbRetry("ops.riskGate.load", async () => {
   const countsQuery = input.pool.query<{ approved: boolean; count: string }>(
     `select approved, count(*)::text as count from risk_decisions group by approved`,
   );
@@ -194,4 +198,5 @@ export async function loadRiskGateSummary(input: { pool: Pool; now?: Date }): Pr
     latestApprovedIntent: approvedIntent.rows[0] ?? null,
     latestRejectedDecision: rejectedDecision.rows[0] ?? null,
   });
+  }, { maxAttempts: 2 });
 }
