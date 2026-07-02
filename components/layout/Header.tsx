@@ -90,7 +90,7 @@ export function Header() {
       {/* Data context tickers */}
       <div className="hidden md:flex items-center gap-5">
         <span className="text-[8px] text-[var(--color-text-dim)] tracking-[.14em] border-r border-[var(--color-border-default)] pr-5">
-          DATA CONTEXT
+          DATA CONTEXT · DISPLAY ONLY
         </span>
         {tickers.map((t) => (
           <div key={t.label} className="flex gap-2 items-baseline">

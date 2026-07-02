@@ -4,13 +4,13 @@ import { formatAge, formatTimestamp, OpsMetric, OpsPanel, OpsStatusPill, shortId
 export function P8QueueHealth({ data }: { data: P8OpsSummary }) {
   const { counts } = data.queue;
   return (
-    <OpsPanel title="Queue Health" eyebrow={`Succeeded and failed use a ${data.queue.recentWindowHours}h window`} className="xl:col-span-2">
+    <OpsPanel title="Queue Health" eyebrow={`Succeeded, failed, and dead use a ${data.queue.recentWindowHours}h window`} className="xl:col-span-2">
       <div className="grid grid-cols-2 border-b border-[var(--color-border-subtle)] sm:grid-cols-4 lg:grid-cols-8">
         <OpsMetric label="Queued" value={counts.queued} />
         <OpsMetric label="Running" value={counts.running} />
         <OpsMetric label="Succeeded" value={counts.succeeded} />
         <OpsMetric label="Failed" value={counts.failed} />
-        <OpsMetric label="Dead" value={counts.dead} />
+        <OpsMetric label={`Dead (${data.queue.recentWindowHours}h)`} value={counts.dead} detail={`${data.queue.deadTotal} all time`} />
         <OpsMetric label="Oldest queued" value={formatAge(data.queue.oldestQueuedAgeSeconds)} />
         <OpsMetric label="Expired leases" value={data.queue.expiredLeaseCount} />
         <OpsMetric label="Latest event" value={formatTimestamp(data.queue.latestJobEventAt)} />

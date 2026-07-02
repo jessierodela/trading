@@ -1,26 +1,26 @@
 /**
  * app/dashboard/page.tsx
- * Architecture-focused market intelligence dashboard.
- * No buy/sell controls. No brokerage widgets. No live trading implied.
+ * Operations-state dashboard: what the platform is, what is running, what is
+ * stale or blocked, and what happens next.
  *
- * Layout: Header + full-width scrollable content.
- * All sections use typed static data (lib/dashboard/dashboardArchitecture.ts)
- * ready to be replaced with live API calls as each layer matures.
+ * Layout:
+ *  1. PlatformOverview        — what this system does, current phase (static copy, code-level facts)
+ *  2–8. SystemStateConsole    — live sections fed by one /api/ops/system-state poll:
+ *       flow map, operations state, jobs & pipeline, data truthfulness,
+ *       research live state, risk/execution safety, what needs attention
+ *  ·  PaperTradingPanel       — real persisted simulated positions and PnL
+ *  ·  ArchitectureReference   — static design/research documentation, explicitly labeled
+ *  9. HowToReadPanel          — glossary and trust rules
+ *
+ * Read-only. No order entry, no broker actions, no live trading.
  */
 
-import { Header }                  from "@/components/layout/Header";
-import { DashboardHero }           from "@/components/dashboard/DashboardHero";
-import { P8OperationsConsole }     from "@/components/dashboard/ops/P8OperationsConsole";
-import { ArchitecturePipeline }    from "@/components/dashboard/ArchitecturePipeline";
-import { SystemStatusGrid }        from "@/components/dashboard/SystemStatusGrid";
-import { AgentStackOverview }      from "@/components/dashboard/AgentStackOverview";
-import { RegimeIntelligencePanel } from "@/components/dashboard/RegimeIntelligencePanel";
-import { StrategyResearchPanel }   from "@/components/dashboard/StrategyResearchPanel";
-import { MultiAssetCoveragePanel } from "@/components/dashboard/MultiAssetCoveragePanel";
-import { DataHealthPanel }         from "@/components/dashboard/DataHealthPanel";
-import { PaperTradingPanel }       from "@/components/dashboard/PaperTradingPanel";
-import { ExecutionReadinessPanel } from "@/components/dashboard/ExecutionReadinessPanel";
-import { SystemEventLog }          from "@/components/dashboard/SystemEventLog";
+import { Header } from "@/components/layout/Header";
+import { PlatformOverview } from "@/components/dashboard/PlatformOverview";
+import { SystemStateConsole } from "@/components/dashboard/ops/SystemStateConsole";
+import { PaperTradingPanel } from "@/components/dashboard/PaperTradingPanel";
+import { ArchitectureReference } from "@/components/dashboard/ArchitectureReference";
+import { HowToReadPanel } from "@/components/dashboard/HowToReadPanel";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -31,18 +31,11 @@ export default function DashboardPage() {
       <Header />
 
       <main className="flex-1 overflow-y-auto bg-[var(--color-surface-base)]">
-        <DashboardHero />
-        <P8OperationsConsole />
-        <ArchitecturePipeline />
-        <SystemStatusGrid />
-        <AgentStackOverview />
-        <RegimeIntelligencePanel />
-        <StrategyResearchPanel />
-        <MultiAssetCoveragePanel />
-        <DataHealthPanel />
+        <PlatformOverview />
+        <SystemStateConsole />
         <PaperTradingPanel />
-        <ExecutionReadinessPanel />
-        <SystemEventLog />
+        <ArchitectureReference />
+        <HowToReadPanel />
       </main>
     </div>
   );

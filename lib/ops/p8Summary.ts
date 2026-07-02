@@ -69,6 +69,8 @@ export interface P8OpsBuildInput {
   schedulerSecretPresent?: boolean;
   jobs?: P8OpsJobRow[];
   counts?: Partial<Record<P8JobStatus, number>>;
+  /** All-time dead job count; counts.dead is windowed to the recent window. */
+  deadTotal?: number;
   oldestQueuedAgeSeconds?: number | null;
   expiredLeaseCount?: number;
   latestJobEventAt?: Date | string | null;
@@ -85,6 +87,7 @@ interface QueueMetricsRow {
   failed: number | string;
   cancelled: number | string;
   dead: number | string;
+  dead_total: number | string;
   oldest_queued_age_seconds: number | string | null;
   expired_lease_count: number | string;
 }
@@ -513,6 +516,7 @@ export function buildP8OpsSummary(input: P8OpsBuildInput = {}): P8OpsSummary {
     },
     queue: {
       counts,
+      deadTotal: Math.max(numeric(input.deadTotal), counts.dead),
       recentWindowHours: RECENT_WINDOW_HOURS,
       oldestQueuedAgeSeconds: input.oldestQueuedAgeSeconds ?? null,
       expiredLeaseCount: numeric(input.expiredLeaseCount),
@@ -573,7 +577,11 @@ export async function loadP8OpsSummary(input: {
            and failed_at >= now() - interval '24 hours'
        )::int as failed,
        count(*) filter (where status = 'cancelled')::int as cancelled,
-       count(*) filter (where status = 'dead')::int as dead,
+       count(*) filter (
+         where status = 'dead'
+           and failed_at >= now() - interval '24 hours'
+       )::int as dead,
+       count(*) filter (where status = 'dead')::int as dead_total,
        extract(epoch from (now() - min(created_at) filter (where status = 'queued')))
          as oldest_queued_age_seconds,
        count(*) filter (
@@ -627,6 +635,7 @@ export async function loadP8OpsSummary(input: {
       cancelled: numeric(metric.cancelled),
       dead: numeric(metric.dead),
     } : undefined,
+    deadTotal: numeric(metric?.dead_total),
     oldestQueuedAgeSeconds: metric?.oldest_queued_age_seconds === null
       ? null
       : numeric(metric?.oldest_queued_age_seconds),

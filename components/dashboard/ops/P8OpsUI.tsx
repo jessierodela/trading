@@ -11,10 +11,10 @@ const toneClass: Record<Tone, string> = {
 };
 
 export function toneForStatus(status: string): Tone {
-  if (["healthy", "succeeded", "pass", "idle", "recently_active"].includes(status)) return "good";
-  if (["active", "running"].includes(status)) return "active";
-  if (["queued", "stale", "partial", "attention"].includes(status)) return "warn";
-  if (["blocked", "failed", "dead", "not_configured"].includes(status)) return "bad";
+  if (["healthy", "succeeded", "pass", "idle", "recently_active", "real"].includes(status)) return "good";
+  if (["active", "running", "display_only"].includes(status)) return "active";
+  if (["queued", "stale", "partial", "attention", "warning", "mock"].includes(status)) return "warn";
+  if (["blocked", "failed", "dead", "not_configured", "critical", "missing"].includes(status)) return "bad";
   return "neutral";
 }
 
