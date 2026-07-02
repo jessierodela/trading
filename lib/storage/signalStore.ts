@@ -83,6 +83,7 @@ export class PgSignalStore implements SignalStore {
          reasons, features_snapshot,
          strategy_version, feature_version, source_lineage)
        values ($1,$2,$3,$4, $5,$6,$7,$8, $9,$10,$11,$12, $13,$14, $15,$16,$17)
+       on conflict on constraint strategy_signals_unique do nothing
        returning *`,
       [
         s.symbol, s.exchange, s.timeframe, s.ts,
@@ -93,6 +94,14 @@ export class PgSignalStore implements SignalStore {
         s.strategyVersion, s.featureVersion, JSON.stringify(s.sourceLineage ?? {}),
       ],
     );
+    if (!rows[0]) {
+      const err = new Error("duplicate signal ignored by strategy_signals_unique");
+      Object.assign(err, {
+        code: "23505",
+        constraint: "strategy_signals_unique",
+      });
+      throw err;
+    }
     return rowToSignal(rows[0]);
   }
 
@@ -156,7 +165,12 @@ export class InMemorySignalStore implements SignalStore {
   async insert(s: StrategySignal): Promise<StrategySignal & { id: number }> {
     const k = this.key(s);
     if (this.rows.some((r) => this.key(r) === k && r.deletedAt === null)) {
-      throw new Error(`duplicate signal: ${k}`);
+      const err = new Error(`duplicate signal: ${k}`);
+      Object.assign(err, {
+        code: "23505",
+        constraint: "strategy_signals_unique",
+      });
+      throw err;
     }
     const row = { id: this.nextId++, deletedAt: null as string | null, ...s };
     this.rows.push(row);
