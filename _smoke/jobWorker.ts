@@ -25,9 +25,9 @@ import { isActionableTriggerSignal, runScheduledRiskGate } from "@/lib/jobs/hand
 import { buildDashboardMarketContext } from "@/lib/pipeline";
 import type { Bar, FeatureSnapshot, RegimeContext, StrategySignal } from "@/lib/quant/types";
 import type { RegimeSnapshotRow } from "@/lib/storage";
-import { InMemoryTradeIntentStore, type TradeIntent, type TradeIntentListFilter, type TradeIntentStore } from "@/lib/tradeIntent";
+import { createTradeIntent, InMemoryTradeIntentStore, type TradeIntent, type TradeIntentListFilter, type TradeIntentStore } from "@/lib/tradeIntent";
 import { InMemoryRiskDecisionStore } from "@/lib/risk/riskDecisionStore";
-import type { RiskConfig } from "@/lib/risk/types";
+import type { RiskConfig, RiskDecision } from "@/lib/risk/types";
 import { FEATURE_VERSION, RISK_VERSION, STRATEGY_VERSIONS } from "@/lib/versions";
 
 let failed = 0;
@@ -263,7 +263,13 @@ class DedupingTradeIntentStore implements TradeIntentStore {
   private readonly seenKeys = new Set<string>();
 
   async insertIntent(intent: TradeIntent): Promise<TradeIntent> {
-    if (intent.sourceSignalIds.length > 0) {
+    // Mirrors the partial unique index added in 0005_risk_decisions.sql:
+    //   where cardinality(source_signal_ids) > 0
+    //     and metadata->>'source' = 'strategies.evaluate'
+    // Only scheduled-path intents are deduped; manual/API paper-workflow
+    // intents (no metadata.source, or a different sourceSignalIds shape)
+    // never collide with this constraint.
+    if (intent.sourceSignalIds.length > 0 && intent.metadata?.source === "strategies.evaluate") {
       const key = `${intent.sourceSignalIds.join(",")}|${intent.riskDecision.riskVersion}`;
       if (this.seenKeys.has(key)) {
         throw new Error('duplicate key value violates unique constraint "trade_intents_signal_risk_version_unique"');
@@ -392,6 +398,7 @@ async function runStrategiesRiskGateChecks(): Promise<void> {
     const decisions = await services.riskDecisionStore.listDecisions();
     eq("approved trigger persists exactly one risk decision", decisions.length, 1);
     assert("persisted decision is marked approved", decisions[0].decision.approved === true, decisions[0]);
+    eq("approved decision back-links to the created trade intent id", decisions[0].tradeIntentId, intents[0].id);
   }
 
   {
@@ -408,6 +415,7 @@ async function runStrategiesRiskGateChecks(): Promise<void> {
     const decisions = await services.riskDecisionStore.listDecisions();
     eq("rejected trigger still persists a risk decision", decisions.length, 1);
     assert("rejected decision preserves blockedBy reasons", decisions[0].decision.blockedBy.includes("REGIME_BLOCKED"), decisions[0]);
+    eq("rejected decision trade_intent_id stays null", decisions[0].tradeIntentId, null);
   }
 
   {
@@ -485,6 +493,58 @@ async function runStrategiesRiskGateChecks(): Promise<void> {
     eq("rerun does not duplicate risk decisions", decisions.length, 1);
     const intents = await services.intentStore.listIntents();
     eq("rerun does not duplicate approved trade intents", intents.length, 1);
+    eq("rerun preserves the original trade_intent_id link", decisions[0].tradeIntentId, intents[0].id);
+
+    // A second, independent decision row's link should never be disturbed by
+    // linking a different signal's intent.
+    await services.riskDecisionStore.linkTradeIntent(901, RISK_VERSION, "some-other-intent-id");
+    const afterForeignLinkAttempt = await services.riskDecisionStore.listDecisions();
+    eq(
+      "linkTradeIntent is write-once and never overwrites an existing link",
+      afterForeignLinkAttempt[0].tradeIntentId,
+      intents[0].id,
+    );
+  }
+
+  {
+    // Manual / API-driven paper workflow intents (lib/execution/paperTradingWorkflow.ts)
+    // never set metadata.source = "strategies.evaluate", so even if two of them
+    // shared a sourceSignalIds + riskVersion pair, the scheduled-path partial
+    // unique index (and this fake's mirror of it) must not treat them as duplicates.
+    const intentStore = new DedupingTradeIntentStore();
+    const manualDecision: RiskDecision = {
+      approved: true,
+      reason: "manual paper workflow entry",
+      sizeMultiplier: 1,
+      maxRiskUsd: 100,
+      positionSize: 1,
+      stopLoss: 98,
+      takeProfit: 104,
+      blockedBy: [],
+      warnings: [],
+      riskVersion: RISK_VERSION,
+    };
+    const manualSignal = gateSignal({}, 1001);
+    const manualIntentInput = {
+      signal: manualSignal,
+      riskDecision: manualDecision,
+      entryPrice: 100,
+      entryLogic: "Manual paper workflow entry",
+      sourceSignalIds: ["1001"],
+      metadata: { paperOnly: true, paperWorkflow: "P7E" },
+    };
+    await intentStore.insertIntent(createTradeIntent({ ...manualIntentInput, nowTs: "2026-06-20T12:01:00.000Z" }));
+    let threw = false;
+    try {
+      await intentStore.insertIntent(createTradeIntent({ ...manualIntentInput, nowTs: "2026-06-20T12:05:00.000Z" }));
+    } catch {
+      threw = true;
+    }
+    assert(
+      "manual/API paper-workflow intents are unaffected by the scheduled-path unique index",
+      !threw,
+    );
+    eq("both manual intents with the same signal/riskVersion persist independently", (await intentStore.listIntents()).length, 2);
   }
 }
 

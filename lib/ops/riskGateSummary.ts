@@ -70,7 +70,12 @@ export interface RiskGateOpsSummary {
     riskVersion: string;
     createdAt: string | null;
   } | null;
-  latestRejectedIntent: {
+  /**
+   * Rejected scheduled signals never create a trade intent — this is the
+   * latest rejected risk decision, not an intent. Named accordingly so the
+   * ops summary doesn't imply an intent exists where none was created.
+   */
+  latestRejectedDecision: {
     riskDecisionId: string;
     signalId: number;
     symbol: string;
@@ -137,7 +142,7 @@ export function buildRiskGateSummary(input: RiskGateOpsBuildInput = {}): RiskGat
       riskVersion: approvedIntent.risk_version,
       createdAt: nullableIso(approvedIntent.created_at),
     },
-    latestRejectedIntent: rejectedDecision === null ? null : {
+    latestRejectedDecision: rejectedDecision === null ? null : {
       riskDecisionId: rejectedDecision.public_id,
       signalId: numeric(rejectedDecision.signal_id),
       symbol: rejectedDecision.symbol,

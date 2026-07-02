@@ -41,6 +41,14 @@ export interface RiskDecisionStore {
   insertDecision(decision: PersistedRiskDecision): Promise<PersistedRiskDecision>;
   findBySignalAndVersion(signalId: number, riskVersion: string): Promise<PersistedRiskDecision | null>;
   listDecisions(filter?: RiskDecisionListFilter): Promise<PersistedRiskDecision[]>;
+
+  /**
+   * Back-links an approved decision to the trade intent it produced, for
+   * audit traceability. Only ever sets a previously-null trade_intent_id —
+   * a decision's link is write-once, so a rerun can never overwrite an
+   * already-linked intent with a different one.
+   */
+  linkTradeIntent(signalId: number, riskVersion: string, tradeIntentId: string): Promise<void>;
 }
 
 interface RiskDecisionRow {
@@ -135,6 +143,15 @@ export class PostgresRiskDecisionStore implements RiskDecisionStore {
     return rows[0] ? rowToDecision(rows[0]) : null;
   }
 
+  async linkTradeIntent(signalId: number, riskVersion: string, tradeIntentId: string): Promise<void> {
+    await this.pool.query(
+      `update risk_decisions
+       set trade_intent_id = $3
+       where signal_id = $1 and risk_version = $2 and trade_intent_id is null`,
+      [signalId, riskVersion, tradeIntentId],
+    );
+  }
+
   async listDecisions(filter: RiskDecisionListFilter = {}): Promise<PersistedRiskDecision[]> {
     const clauses: string[] = [];
     const values: unknown[] = [];
@@ -176,6 +193,11 @@ export class InMemoryRiskDecisionStore implements RiskDecisionStore {
   async findBySignalAndVersion(signalId: number, riskVersion: string): Promise<PersistedRiskDecision | null> {
     const found = this.rows.find((row) => row.signalId === signalId && row.decision.riskVersion === riskVersion);
     return found ? structuredClone(found) : null;
+  }
+
+  async linkTradeIntent(signalId: number, riskVersion: string, tradeIntentId: string): Promise<void> {
+    const row = this.rows.find((r) => r.signalId === signalId && r.decision.riskVersion === riskVersion);
+    if (row && row.tradeIntentId === null) row.tradeIntentId = tradeIntentId;
   }
 
   async listDecisions(filter: RiskDecisionListFilter = {}): Promise<PersistedRiskDecision[]> {

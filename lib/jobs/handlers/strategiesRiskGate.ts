@@ -122,8 +122,23 @@ export async function runScheduledRiskGate(
       nowTs,
     });
     try {
-      await services.intentStore.insertIntent(tradeIntent);
+      const inserted = await services.intentStore.insertIntent(tradeIntent);
       intentCreated = true;
+      // Back-link for audit traceability. Only reachable on the run whose
+      // insertIntent() call actually succeeds (not the duplicate-key catch
+      // below), so this never overwrites an existing link, and
+      // linkTradeIntent() itself only ever sets a null trade_intent_id —
+      // belt and suspenders against concurrent reruns.
+      //
+      // Known limitation: if a prior run's insertIntent() succeeded but the
+      // process crashed before this link ran, a rerun will hit the
+      // duplicate-key catch below (intentCreated stays false) and this link
+      // step is skipped again — the decision row's trade_intent_id stays
+      // null even though the intent exists. Both rows remain independently
+      // correct and auditable by signalId; resolving the gap would require
+      // a lookup-by-signal query path on TradeIntentStore that doesn't exist
+      // today, which is more surface area than this edge case warrants.
+      if (inserted.id) await services.riskDecisionStore.linkTradeIntent(signal.id, decision.riskVersion, inserted.id);
     } catch (err) {
       if (!isDuplicateKeyError(err)) throw err;
       // Already created by a prior run of this same (signal, risk version) pair.

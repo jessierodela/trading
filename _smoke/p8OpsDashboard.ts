@@ -176,12 +176,12 @@ function runRiskGateOpsChecks(): void {
   const empty = buildRiskGateSummary({ now: new Date("2026-07-01T12:00:00.000Z") });
   eq("empty risk gate summary exposes expected top-level keys", Object.keys(empty), [
     "generatedAt", "riskEngineVersion", "signalsEvaluated", "approvedCount", "rejectedCount",
-    "topBlockedByReasons", "latestApprovedIntent", "latestRejectedIntent",
+    "topBlockedByReasons", "latestApprovedIntent", "latestRejectedDecision",
   ]);
   eq("empty risk gate summary stamps risk engine version", empty.riskEngineVersion, RISK_VERSION);
   eq("empty risk gate summary has zero counts", [empty.signalsEvaluated, empty.approvedCount, empty.rejectedCount], [0, 0, 0]);
   eq("empty risk gate summary has no latest approved intent", empty.latestApprovedIntent, null);
-  eq("empty risk gate summary has no latest rejected intent", empty.latestRejectedIntent, null);
+  eq("empty risk gate summary has no latest rejected decision", empty.latestRejectedDecision, null);
 
   const populated = buildRiskGateSummary({
     now: new Date("2026-07-01T12:00:00.000Z"),
@@ -221,8 +221,9 @@ function runRiskGateOpsChecks(): void {
   ]);
   eq("populated summary exposes latest approved intent symbol", populated.latestApprovedIntent?.symbol, "BTC-USD");
   eq("populated summary exposes latest approved intent sizing", populated.latestApprovedIntent?.suggestedSize, 0.5);
-  eq("populated summary exposes latest rejected intent blockedBy", populated.latestRejectedIntent?.blockedBy, ["REGIME_BLOCKED"]);
-  eq("populated summary exposes latest rejected intent signalId", populated.latestRejectedIntent?.signalId, 42);
+  eq("populated summary exposes latest rejected decision blockedBy", populated.latestRejectedDecision?.blockedBy, ["REGIME_BLOCKED"]);
+  eq("populated summary exposes latest rejected decision signalId", populated.latestRejectedDecision?.signalId, 42);
+  assert("naming does not resurrect latestRejectedIntent", !("latestRejectedIntent" in populated));
 }
 
 function runStaticBoundaryChecks(): void {
