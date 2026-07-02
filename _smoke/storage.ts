@@ -133,6 +133,24 @@ async function runScenarios(
   });
   eq(`${label} signals.fetchBySignature returns null for unknown signature`, missingSignature, null);
 
+  let duplicateSignalThrew = false;
+  try {
+    await signals.insert(makeSignal(1, makeFeature(1, 105_500)));
+  } catch (err) {
+    const duplicateErr = err as Error & { code?: string; constraint?: string };
+    duplicateSignalThrew =
+      err instanceof Error &&
+      /duplicate|strategy_signals_unique/i.test(err.message) &&
+      duplicateErr.code === "23505" &&
+      duplicateErr.constraint === "strategy_signals_unique";
+  }
+  assert(`${label} signals duplicate insert reports idempotent duplicate`, duplicateSignalThrew);
+  eq(
+    `${label} signals duplicate insert does not create a row`,
+    (await signals.fetchActiveByStrategy("momentum_continuation", { startTs: t(-1), endTs: t(10) })).length,
+    3,
+  );
+
   await signals.retract(sig0.id);
   const afterRetract = await signals.fetchActiveByStrategy("momentum_continuation", { startTs: t(-1), endTs: t(10) });
   eq(`${label} signals.retract drops one`, afterRetract.length, 2);
