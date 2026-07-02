@@ -14,13 +14,13 @@ export function toneForStatus(status: string): Tone {
   if (["healthy", "succeeded", "pass", "idle", "recently_active", "real"].includes(status)) return "good";
   if (["active", "running", "display_only"].includes(status)) return "active";
   if (["queued", "stale", "partial", "attention", "warning", "mock"].includes(status)) return "warn";
-  if (["blocked", "failed", "dead", "not_configured", "critical", "missing"].includes(status)) return "bad";
+  if (["blocked", "failed", "dead", "not_configured", "critical", "missing", "disabled"].includes(status)) return "bad";
   return "neutral";
 }
 
 export function OpsStatusPill({ status, label }: { status: string; label?: string }) {
   return (
-    <span className={`inline-flex min-h-5 items-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[9px] uppercase ${toneClass[toneForStatus(status)]}`}>
+    <span className={`inline-flex min-h-5 items-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[.06em] ${toneClass[toneForStatus(status)]}`}>
       {label ?? status.replaceAll("_", " ")}
     </span>
   );
