@@ -7,7 +7,7 @@ import {
   hasRouteDatabaseUrl,
   routeDatabaseUnavailableError,
 } from "@/lib/jobs/routeHelpers";
-import { getPgPool } from "@/lib/storage";
+import { getPgPool, isTransientDbError, withDbRetry } from "@/lib/storage";
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -36,13 +36,23 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const store = dryRun ? undefined : new PostgresJobStore(getPgPool());
-    const result = await enqueueScheduledFeed({
-      store,
-      dryRun,
-      env: process.env,
-      now: new Date(),
-    });
+    // enqueueScheduledFeed() dedupes every stage against active/succeeded
+    // jobs before enqueueing, so retrying the whole call from scratch after
+    // a transient failure mid-loop resumes cleanly — already-enqueued
+    // stages are found and skipped, never duplicated.
+    const result = await withDbRetry(
+      "jobs.schedule.enqueue",
+      async () => {
+        const store = dryRun ? undefined : new PostgresJobStore(getPgPool());
+        return enqueueScheduledFeed({
+          store,
+          dryRun,
+          env: process.env,
+          now: new Date(),
+        });
+      },
+      { maxAttempts: 2 },
+    );
 
     return NextResponse.json(
       {
@@ -52,9 +62,16 @@ export async function GET(req: NextRequest) {
       { status: dryRun ? 200 : 202 },
     );
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("[api/jobs/schedule] enqueue failed:", message);
+    const transient = isTransientDbError(err);
     return NextResponse.json(
-      { success: false, error: err instanceof Error ? err.message : String(err) },
-      { status: 500 },
+      {
+        success: false,
+        error: message,
+        generatedAt: new Date().toISOString(),
+      },
+      { status: transient ? 503 : 500, headers: { "Cache-Control": "no-store" } },
     );
   }
 }

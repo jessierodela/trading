@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { withPooledClient } from "@/lib/storage/clients";
 import {
   type EnqueueJobOptions,
   type JobEventRecord,
@@ -129,18 +130,17 @@ export class PostgresJobStore implements JobStore {
   constructor(private readonly pool: Pool) {}
 
   private async tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      const result = await fn(client);
-      await client.query("commit");
-      return result;
-    } catch (err) {
-      await client.query("rollback");
-      throw err;
-    } finally {
-      client.release();
-    }
+    return withPooledClient(this.pool, async (client) => {
+      try {
+        await client.query("begin");
+        const result = await fn(client);
+        await client.query("commit");
+        return result;
+      } catch (err) {
+        await client.query("rollback");
+        throw err;
+      }
+    });
   }
 
   async enqueueJob(payload: JobPayload, options: EnqueueJobOptions = {}): Promise<JobRecord> {

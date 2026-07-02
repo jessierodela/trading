@@ -79,7 +79,29 @@ export function parseJobWorkerArgs(argv: string[]): CliArgs {
   };
 }
 
+/**
+ * Last-resort safety net, not a substitute for handling pool/client errors
+ * directly (see lib/storage/clients.ts pool.on("error") and
+ * withPooledClient, and lib/jobs/worker.ts's DB-retry-wrapped claim/
+ * heartbeat/finalize calls). If something still slips through as an
+ * unhandled rejection or exception, log it with full context and exit
+ * deliberately rather than let Node crash silently or hang in an
+ * undefined state — systemd then restarts cleanly from a known point.
+ */
+function installProcessSafetyNet(): void {
+  process.on("unhandledRejection", (reason) => {
+    console.error("[worker:jobs] unhandled promise rejection:", reason);
+    process.exit(1);
+  });
+  process.on("uncaughtException", (err) => {
+    console.error("[worker:jobs] uncaught exception:", err);
+    process.exit(1);
+  });
+}
+
 async function main(): Promise<void> {
+  installProcessSafetyNet();
+
   let args: CliArgs;
   try {
     args = parseJobWorkerArgs(process.argv.slice(2));
@@ -96,7 +118,10 @@ async function main(): Promise<void> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  const pool = getPgPool();
+  // Explicit runtime hint: this is the long-running Linux worker process,
+  // not a Vercel serverless invocation — see lib/storage/clients.ts for why
+  // that distinguishes pool sizing (small fixed pool vs max:1 fail-fast).
+  const pool = getPgPool({ runtime: "worker" });
   try {
     const options = createPostgresJobWorkerOptions({
       pool,

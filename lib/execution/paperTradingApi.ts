@@ -1,4 +1,4 @@
-import { getPgPool } from "@/lib/storage";
+import { getPgPool, withPooledClient } from "@/lib/storage";
 import { PostgresTradeIntentStore, type TradeIntent, type TradeIntentStore } from "@/lib/tradeIntent";
 import { createPaperOrder } from "./orderManager";
 import { openPaperPosition, updatePaperPositionWithBar } from "./paperPosition";
@@ -441,21 +441,19 @@ export async function listPaperPositions(
 export async function withPostgresPaperTradingContext<T>(
   fn: (ctx: PaperTradingApiContext) => Promise<T>,
 ): Promise<T> {
-  const pool = getPgPool();
-  const client = await pool.connect();
-  try {
-    await client.query("begin");
-    const result = await fn({
-      intentStore: new PostgresTradeIntentStore(client),
-      paperStore: new PostgresPaperTradingStore(client),
-      env: process.env,
-    });
-    await client.query("commit");
-    return result;
-  } catch (err) {
-    await client.query("rollback").catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
+  return withPooledClient(getPgPool(), async (client) => {
+    try {
+      await client.query("begin");
+      const result = await fn({
+        intentStore: new PostgresTradeIntentStore(client),
+        paperStore: new PostgresPaperTradingStore(client),
+        env: process.env,
+      });
+      await client.query("commit");
+      return result;
+    } catch (err) {
+      await client.query("rollback").catch(() => undefined);
+      throw err;
+    }
+  });
 }

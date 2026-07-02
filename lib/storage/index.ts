@@ -6,9 +6,20 @@
 
 export * from "./interfaces";
 
-export { getPgPool, closePgPool } from "./clients";
+export {
+  getPgPool,
+  closePgPool,
+  withPooledClient,
+  detectPgPoolRuntime,
+  resolvePgPoolConfig,
+  type PgPoolRuntime,
+  type ResolvedPgPoolConfig,
+  type GetPgPoolOptions,
+} from "./clients";
 
 export { validateBar, validateFeatureSnapshot, ValidationError } from "./validators";
+
+export { withDbRetry, isTransientDbError, type DbRetryOptions } from "./dbRetry";
 
 export { PgBarStore,      InMemoryBarStore }      from "./barStore";
 export { PgFeatureStore,  InMemoryFeatureStore }  from "./featureStore";
