@@ -116,8 +116,24 @@ export interface FeatureStore {
 
 // ─── SignalStore ───────────────────────────────────────────────────────────
 
+export interface SignalSignature {
+  symbol:           string;
+  exchange:         Exchange;
+  timeframe:        Timeframe;
+  ts:               string;
+  strategyId:       string;
+  strategyVersion:  string;
+}
+
 export interface SignalStore {
   insert(signal: StrategySignal): Promise<StrategySignal & { id: number }>;
+
+  /**
+   * Look up a signal by its unique persistence key (matches the
+   * strategy_signals_unique constraint). Used to resolve the persisted id
+   * when insert() rejects a duplicate on a scheduled worker rerun.
+   */
+  fetchBySignature(signature: SignalSignature): Promise<(StrategySignal & { id: number }) | null>;
 
   /** Soft-delete (sets deleted_at). Idempotent — re-retracting is a no-op. */
   retract(id: number, reason?: string): Promise<void>;

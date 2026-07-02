@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import type {
   StrategySignal, Exchange, Timeframe, StrategySignalType, Direction,
 } from "@/lib/quant/types";
-import type { SignalStore, InstrumentFilter, TimeRange } from "./interfaces";
+import type { SignalStore, SignalSignature, InstrumentFilter, TimeRange } from "./interfaces";
 
 interface SignalRow {
   id:                 number;
@@ -96,6 +96,17 @@ export class PgSignalStore implements SignalStore {
     return rowToSignal(rows[0]);
   }
 
+  async fetchBySignature(sig: SignalSignature): Promise<(StrategySignal & { id: number }) | null> {
+    const { rows } = await this.pool.query<SignalRow>(
+      `select * from strategy_signals
+       where symbol = $1 and exchange = $2 and timeframe = $3 and ts = $4
+         and strategy_id = $5 and strategy_version = $6 and deleted_at is null
+       limit 1`,
+      [sig.symbol, sig.exchange, sig.timeframe, sig.ts, sig.strategyId, sig.strategyVersion],
+    );
+    return rows[0] ? rowToSignal(rows[0]) : null;
+  }
+
   async retract(id: number, _reason?: string): Promise<void> {
     // reason is accepted but not persisted as a column today. Stash in an
     // event log when one exists.
@@ -150,6 +161,14 @@ export class InMemorySignalStore implements SignalStore {
     const row = { id: this.nextId++, deletedAt: null as string | null, ...s };
     this.rows.push(row);
     const { deletedAt: _, ...visible } = row;
+    return visible;
+  }
+
+  async fetchBySignature(sig: SignalSignature): Promise<(StrategySignal & { id: number }) | null> {
+    const k = this.key(sig);
+    const found = this.rows.find((r) => this.key(r) === k && r.deletedAt === null);
+    if (!found) return null;
+    const { deletedAt: _, ...visible } = found;
     return visible;
   }
 
