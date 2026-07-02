@@ -184,21 +184,35 @@ export function getPgPool(options: GetPgPoolOptions = {}): Pool {
  * caller is actively holding. This wraps checkout, attaches a listener for
  * the lifetime of the checkout, and always releases — try/finally, so a
  * thrown error from fn() can never leak the client.
+ *
+ * Not crashing is only half the fix: a client that errored while checked
+ * out (or whose use threw) may be in an indeterminate connection/session
+ * state. Returning it to the pool as if nothing happened risks handing a
+ * poisoned connection to the next caller. release(err) tells node-postgres
+ * to destroy the client instead of pooling it — see PoolClient.release in
+ * @types/pg.
  */
 export async function withPooledClient<T>(
   pool: Pool,
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await pool.connect();
+  let clientError: Error | undefined;
+
   const onError = (err: Error) => {
+    clientError = err;
     console.error("[storage/clients] checked-out client error:", err.message);
   };
   client.on("error", onError);
+
   try {
     return await fn(client);
+  } catch (err) {
+    if (err instanceof Error) clientError = clientError ?? err;
+    throw err;
   } finally {
     client.off("error", onError);
-    client.release();
+    client.release(clientError);
   }
 }
 

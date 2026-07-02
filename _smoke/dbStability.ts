@@ -105,6 +105,7 @@ interface FakeErrorEmitter {
 function fakeClient(events: FakeErrorEmitter) {
   return {
     released: false,
+    releasedWith: undefined as Error | undefined,
     on(event: string, listener: (err: Error) => void) {
       if (event === "error") events.errorListeners.push(listener);
       return this;
@@ -116,8 +117,9 @@ function fakeClient(events: FakeErrorEmitter) {
       }
       return this;
     },
-    release(this: { released: boolean }) {
+    release(this: { released: boolean; releasedWith: Error | undefined }, err?: Error) {
       this.released = true;
+      this.releasedWith = err;
     },
   };
 }
@@ -137,22 +139,49 @@ async function runWithPooledClientChecks(): Promise<void> {
   eq("withPooledClient returns fn()'s result", result, "ok");
   eq("error listener attached during checkout", listenerCountDuringUse, 1);
   assert("client released after successful use", client.released, client);
+  eq("clean checkout releases with no error (returned to the pool)", client.releasedWith, undefined);
   eq("error listener removed after release", events.errorListeners.length, 0);
 
   const failingEvents: FakeErrorEmitter = { errorListeners: [] };
   const failingClient = fakeClient(failingEvents);
   const failingPool = { async connect() { return failingClient; } } as unknown as Pool;
+  const thrown = new Error("boom");
   let threw = false;
   try {
     await withPooledClient(failingPool, async () => {
-      throw new Error("boom");
+      throw thrown;
     });
   } catch {
     threw = true;
   }
   assert("withPooledClient rethrows errors from fn()", threw);
   assert("client is released even when fn() throws", failingClient.released, failingClient);
+  eq(
+    "fn() throwing releases the client as errored (destroyed, not pooled)",
+    failingClient.releasedWith,
+    thrown,
+  );
   eq("error listener removed even when fn() throws", failingEvents.errorListeners.length, 0);
+
+  // A connection-level "error" event during use (not a thrown fn() error)
+  // must also poison the release — this is the exact EDBHANDLEREXITED
+  // scenario: the checked-out client drops mid-use.
+  const droppedEvents: FakeErrorEmitter = { errorListeners: [] };
+  const droppedClient = fakeClient(droppedEvents);
+  const droppedPool = { async connect() { return droppedClient; } } as unknown as Pool;
+  const connectionError = Object.assign(new Error("connection to database closed"), { code: "EDBHANDLEREXITED" });
+  const droppedResult = await withPooledClient(droppedPool, async () => {
+    // Simulate the pg driver emitting "error" on the checked-out client
+    // mid-use, then the caller's own query still resolving successfully.
+    for (const listener of droppedEvents.errorListeners) listener(connectionError);
+    return "still resolved";
+  });
+  eq("fn() can still succeed after an in-flight client error", droppedResult, "still resolved");
+  assert(
+    "a client-level error event during use also poisons the release, even though fn() did not throw",
+    droppedClient.releasedWith === connectionError,
+    droppedClient,
+  );
 }
 
 // ─── Transient DB error classification ─────────────────────────────────────
