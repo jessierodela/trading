@@ -42,6 +42,7 @@ const OLD = "2026-07-01T08:00:00.000Z";   // 4.5 hours before NOW
 function opsSummary(overrides: {
   stageStatus?: Partial<Record<string, { status: string; completedAt?: string | null; failedAt?: string | null; error?: string | null }>>;
   counts?: Partial<Record<string, number>>;
+  deadTotal?: number;
   secretPresent?: boolean;
   snapshot?: { generatedAt: string; isExpired: boolean } | null;
   staleSymbols?: string[];
@@ -78,6 +79,7 @@ function opsSummary(overrides: {
         cancelled: overrides.counts?.cancelled ?? 0,
         dead: overrides.counts?.dead ?? 0,
       },
+      deadTotal: overrides.deadTotal ?? overrides.counts?.dead ?? 0,
       recentWindowHours: 24,
       oldestQueuedAgeSeconds: null,
       expiredLeaseCount: 0,
@@ -280,6 +282,33 @@ function runDegradedChecks(): void {
   assert(
     "dead jobs raise critical attention",
     brokenState.attention.some((item) => item.severity === "critical" && item.title.includes("dead-lettered")),
+  );
+
+  // Historical vs active dead-letter classification: a backlog older than the
+  // recent window is reported separately at info severity — visible, never
+  // hidden, but not presented as an active incident.
+  const backlogState = buildSystemState({
+    now: NOW,
+    ops: opsSummary({ counts: { dead: 0 }, deadTotal: 132 }),
+    riskGate: buildRiskGateSummary({ now: NOW }),
+  });
+  assert(
+    "historical backlog with zero recent deaths is info, not critical",
+    backlogState.attention.some((item) => item.severity === "info" && item.title.includes("132 historical dead-lettered")) &&
+      !backlogState.attention.some((item) => item.severity === "critical"),
+    backlogState.attention.map((item) => `[${item.severity}] ${item.title}`),
+  );
+
+  const mixedState = buildSystemState({
+    now: NOW,
+    ops: opsSummary({ counts: { dead: 15 }, deadTotal: 132 }),
+    riskGate: buildRiskGateSummary({ now: NOW }),
+  });
+  assert(
+    "recent deaths stay critical while backlog is classified separately",
+    mixedState.attention.some((item) => item.severity === "critical" && item.title.includes("15 jobs dead-lettered in the last 24h")) &&
+      mixedState.attention.some((item) => item.severity === "info" && item.title.includes("117 historical")),
+    mixedState.attention.map((item) => `[${item.severity}] ${item.title}`),
   );
 }
 

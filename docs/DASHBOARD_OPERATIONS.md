@@ -69,6 +69,32 @@ These are enforced by construction and covered by `npm run smoke:system-state`:
    every response regardless of database availability.
 6. **No new paid dependencies, no OpenAI requirement.** The dashboard renders
    fully without `OPENAI_API_KEY`. Header tickers are labeled display-only.
+7. **Active incidents and historical records are classified separately.**
+   `queue.counts.dead` is windowed to `recentWindowHours` (like succeeded and
+   failed); `queue.deadTotal` is the all-time count. Recent deaths raise a
+   critical attention item (active incident); the older backlog raises a
+   separate info item. Neither is hidden — dead jobs are terminal audit
+   records and stay queryable in the `jobs` table.
+
+## SCHEDULER_SECRET scope
+
+`SCHEDULER_SECRET` is read in exactly one place: `authorizeSchedulerRequest`
+(`lib/jobs/scheduler/scheduledFeed.ts`), guarding `POST /api/jobs/schedule`.
+
+- **Secret set** (deployment env + the Linux host's scheduler env file):
+  requests must present `Authorization: Bearer <secret>` (or the legacy
+  `?secret=` query param, which logs a warning). This is the intended
+  production configuration — see `docs/P8_LINUX_SCHEDULER.md`.
+- **Secret unset**: only requests with a `vercel-cron` user agent (legacy
+  fallback) or non-production `?dryRun=1` calls are authorized. Scheduling
+  still works through the fallback, but the route is not properly
+  authenticated — treat this as a hardening gap, not an outage.
+- **Dashboard impact**: none functionally. `schedulerSecretPresent` reflects
+  the environment serving the ops API (your local `.env.local` when running
+  `npm run dev`, the Vercel env in production), which is why local runs warn
+  even when production scheduling is healthy. The scheduled feed itself is
+  the ground truth — if hourly feeds appear in the pipeline tracker, the
+  scheduler is authenticating successfully.
 
 ## Validation
 

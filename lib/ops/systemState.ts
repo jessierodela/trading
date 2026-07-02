@@ -480,9 +480,19 @@ function buildAttention(input: {
     if (counts.dead > 0) {
       items.push({
         severity: "critical",
-        title: `${counts.dead} dead-lettered job${counts.dead === 1 ? "" : "s"}`,
-        detail: "Jobs exhausted their retries in the recent window. Inspect the queue health panel for the failing job types.",
-        source: "queue counts",
+        title: `${counts.dead} job${counts.dead === 1 ? "" : "s"} dead-lettered in the last ${ops.queue.recentWindowHours}h`,
+        detail: "Jobs exhausted their retries recently — this is an active incident. Inspect the queue health panel for the failing job types and errors.",
+        source: "queue counts (recent window)",
+      });
+    }
+
+    const historicalDead = ops.queue.deadTotal - counts.dead;
+    if (historicalDead > 0) {
+      items.push({
+        severity: "info",
+        title: `${historicalDead} historical dead-lettered job${historicalDead === 1 ? "" : "s"}`,
+        detail: `Terminal records of past incidents older than ${ops.queue.recentWindowHours}h. They are not retried and do not affect current runs, but remain queryable in the jobs table for audit. Investigate before purging.`,
+        source: "queue counts (all time)",
       });
     }
     if (counts.failed > 0) {

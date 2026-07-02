@@ -70,7 +70,10 @@ export interface P8OpsSummary {
   };
 
   queue: {
+    /** succeeded, failed, and dead are windowed to recentWindowHours; queued/running are live states. */
     counts: Record<P8JobStatus, number>;
+    /** All-time dead job count, including historical incidents outside the window. */
+    deadTotal: number;
     recentWindowHours: number;
     oldestQueuedAgeSeconds: number | null;
     expiredLeaseCount: number;
