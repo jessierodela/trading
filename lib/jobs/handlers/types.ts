@@ -17,6 +17,8 @@ import type {
 import type { CacheSnapshot } from "@/lib/indicatorCache";
 import type { CacheSnapshot1d } from "@/lib/indicatorCache1d";
 import type { FeatureStore, RegimeStore, SignalStore, BarStore } from "@/lib/storage";
+import type { TradeIntentStore } from "@/lib/tradeIntent";
+import type { RiskDecisionStore } from "@/lib/risk/riskDecisionStore";
 
 export interface JobHandlerServices {
   pool?: Pool;
@@ -25,6 +27,8 @@ export interface JobHandlerServices {
   regimeStore?: RegimeStore;
   signalStore?: SignalStore;
   paperStore?: PaperTradingStore;
+  intentStore?: TradeIntentStore;
+  riskDecisionStore?: RiskDecisionStore;
   dashboardSnapshotStore?: DashboardSnapshotStore;
   runDashboardRefreshPipeline?: (
     input?: DashboardRefreshPipelineInput,

@@ -17,15 +17,21 @@ import {
   sourceLineageFromFeature,
   sourceLineageQualityReport,
 } from "@/lib/market/sourceLineage";
-import type { Exchange } from "@/lib/quant/types";
+import type { Exchange, StrategySignal } from "@/lib/quant/types";
 import { getStrategyById } from "@/lib/strategies/strategyRegistry";
 import { runStrategyWindow } from "@/lib/strategies/runStrategyWindow";
+import {
+  isActionableTriggerSignal,
+  runScheduledRiskGate,
+  type StrategiesRiskGateServices,
+} from "./strategiesRiskGate";
 import {
   handlerSuccess,
   invalidPayload,
   requireService,
   retryableFailure,
   type JobHandler,
+  type JobHandlerContext,
 } from "./types";
 
 const LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -37,6 +43,25 @@ function isExchange(value: string): value is Exchange {
 
 function isDuplicateInsert(err: unknown): boolean {
   return err instanceof Error && /duplicate|unique|strategy_signals_unique/i.test(err.message);
+}
+
+/**
+ * Lazily resolves the P11 risk-gate services so jobs that never emit a
+ * trigger signal (e.g. all-setup windows) never require paperStore /
+ * intentStore / riskDecisionStore to be wired.
+ */
+function makeRiskGateServicesResolver(context: JobHandlerContext): () => StrategiesRiskGateServices {
+  let cached: StrategiesRiskGateServices | null = null;
+  return () => {
+    if (!cached) {
+      cached = {
+        paperStore: requireService(context.services, "paperStore"),
+        intentStore: requireService(context.services, "intentStore"),
+        riskDecisionStore: requireService(context.services, "riskDecisionStore"),
+      };
+    }
+    return cached;
+  };
 }
 
 type StrategiesPayload = Extract<JobPayload, { jobType: "strategies.evaluate" }>;
@@ -63,9 +88,15 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
   let signalsEvaluated = 0;
   let inserted = 0;
   let duplicatesSkipped = 0;
+  let riskEvaluated = 0;
+  let riskApproved = 0;
+  let riskRejected = 0;
+  let riskDuplicateDecisions = 0;
+  let tradeIntentsCreated = 0;
   const byStrategy: Record<string, number> = {};
   const symbols: Record<string, unknown> = {};
   const dataQualityReports: DataQualityReport[] = [];
+  const getRiskGateServices = makeRiskGateServicesResolver(context);
 
   try {
     for (const symbol of payload.symbols) {
@@ -237,17 +268,55 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
       }));
       let insertedForSymbol = 0;
       let duplicatesForSymbol = 0;
+      let riskEvaluatedForSymbol = 0;
+      let riskApprovedForSymbol = 0;
+      let riskRejectedForSymbol = 0;
+      let tradeIntentsCreatedForSymbol = 0;
       for (const signal of lineagedSignals) {
+        let persistedSignal: (StrategySignal & { id: number }) | null = null;
         try {
-          await signalStore.insert(signal);
+          persistedSignal = await signalStore.insert(signal);
           inserted++;
           insertedForSymbol++;
         } catch (err) {
           if (!isDuplicateInsert(err)) throw err;
           duplicatesSkipped++;
           duplicatesForSymbol++;
+          persistedSignal = await signalStore.fetchBySignature({
+            symbol: signal.symbol,
+            exchange: signal.exchange,
+            timeframe: signal.timeframe,
+            ts: signal.ts,
+            strategyId: signal.strategyId,
+            strategyVersion: signal.strategyVersion,
+          });
         }
         byStrategy[signal.strategyId] = (byStrategy[signal.strategyId] ?? 0) + 1;
+
+        if (persistedSignal && isActionableTriggerSignal(persistedSignal)) {
+          const gate = await runScheduledRiskGate(
+            persistedSignal,
+            usableRegime,
+            getRiskGateServices(),
+            { now: context.now },
+          );
+          if (gate.evaluated) {
+            riskEvaluated++;
+            riskEvaluatedForSymbol++;
+            if (!gate.isNewDecision) riskDuplicateDecisions++;
+            if (gate.approved === true) {
+              riskApproved++;
+              riskApprovedForSymbol++;
+            } else if (gate.approved === false) {
+              riskRejected++;
+              riskRejectedForSymbol++;
+            }
+            if (gate.intentCreated) {
+              tradeIntentsCreated++;
+              tradeIntentsCreatedForSymbol++;
+            }
+          }
+        }
       }
       featuresRead += result.featuresRead;
       signalsEvaluated += lineagedSignals.length;
@@ -260,6 +329,12 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
         skipped: false,
         reducedDailyContext: dailyContextBlocked,
         dataQuality: symbolDataQuality,
+        riskGate: {
+          evaluated: riskEvaluatedForSymbol,
+          approved: riskApprovedForSymbol,
+          rejected: riskRejectedForSymbol,
+          tradeIntentsCreated: tradeIntentsCreatedForSymbol,
+        },
       };
     }
   } catch (err) {
@@ -289,6 +364,13 @@ export const handleStrategiesEvaluate: JobHandler<StrategiesPayload> = async (pa
     duplicatesSkipped,
     byStrategy,
     dataQuality,
+    riskGate: {
+      evaluated: riskEvaluated,
+      approved: riskApproved,
+      rejected: riskRejected,
+      duplicateDecisionsSkipped: riskDuplicateDecisions,
+      tradeIntentsCreated,
+    },
     symbols,
   });
 };

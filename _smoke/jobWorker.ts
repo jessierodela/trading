@@ -21,9 +21,14 @@ import { handleMarketIngestLatest } from "@/lib/jobs/handlers/marketIngestLatest
 import { handlePaperMonitor } from "@/lib/jobs/handlers/paperMonitor";
 import { handleRegimeCompute } from "@/lib/jobs/handlers/regimeCompute";
 import { handleTelegramRefresh } from "@/lib/jobs/handlers/telegramRefresh";
+import { isActionableTriggerSignal, runScheduledRiskGate } from "@/lib/jobs/handlers/strategiesRiskGate";
 import { buildDashboardMarketContext } from "@/lib/pipeline";
-import type { Bar, FeatureSnapshot } from "@/lib/quant/types";
+import type { Bar, FeatureSnapshot, RegimeContext, StrategySignal } from "@/lib/quant/types";
 import type { RegimeSnapshotRow } from "@/lib/storage";
+import { createTradeIntent, InMemoryTradeIntentStore, type TradeIntent, type TradeIntentListFilter, type TradeIntentStore } from "@/lib/tradeIntent";
+import { InMemoryRiskDecisionStore } from "@/lib/risk/riskDecisionStore";
+import type { RiskConfig, RiskDecision } from "@/lib/risk/types";
+import { FEATURE_VERSION, RISK_VERSION, STRATEGY_VERSIONS } from "@/lib/versions";
 
 let failed = 0;
 
@@ -244,6 +249,303 @@ function fakePaperStore(): NonNullable<JobHandlerServices["paperStore"]> {
       return [];
     },
   } as unknown as NonNullable<JobHandlerServices["paperStore"]>;
+}
+
+// ─── P11 scheduled risk gate fixtures ──────────────────────────────────────
+
+/**
+ * Mirrors the Postgres partial unique index added in 0005_risk_decisions.sql
+ * (source_signal_ids, risk_version) so the idempotency smoke coverage below
+ * exercises the same duplicate-key catch path the real worker relies on.
+ */
+class DedupingTradeIntentStore implements TradeIntentStore {
+  private readonly inner = new InMemoryTradeIntentStore();
+  private readonly seenKeys = new Set<string>();
+
+  async insertIntent(intent: TradeIntent): Promise<TradeIntent> {
+    // Mirrors the partial unique index added in 0005_risk_decisions.sql:
+    //   where cardinality(source_signal_ids) > 0
+    //     and metadata->>'source' = 'strategies.evaluate'
+    // Only scheduled-path intents are deduped; manual/API paper-workflow
+    // intents (no metadata.source, or a different sourceSignalIds shape)
+    // never collide with this constraint.
+    if (intent.sourceSignalIds.length > 0 && intent.metadata?.source === "strategies.evaluate") {
+      const key = `${intent.sourceSignalIds.join(",")}|${intent.riskDecision.riskVersion}`;
+      if (this.seenKeys.has(key)) {
+        throw new Error('duplicate key value violates unique constraint "trade_intents_signal_risk_version_unique"');
+      }
+      this.seenKeys.add(key);
+    }
+    return this.inner.insertIntent(intent);
+  }
+
+  async fetchIntent(id: string): Promise<TradeIntent | null> {
+    return this.inner.fetchIntent(id);
+  }
+
+  async listIntents(filter?: TradeIntentListFilter): Promise<TradeIntent[]> {
+    return this.inner.listIntents(filter);
+  }
+}
+
+function gateRiskConfig(overrides: Partial<RiskConfig> = {}): RiskConfig {
+  return {
+    enabled: true,
+    maxRiskPerTradePct: 0.01,
+    maxDailyLossPct: 0.03,
+    maxWeeklyLossPct: 0.08,
+    maxOpenPositions: 3,
+    maxSymbolExposurePct: 1,
+    maxPortfolioExposurePct: 1,
+    minRegimeReliability: 0.5,
+    blockedRegimes: [],
+    allowLong: true,
+    allowShort: true,
+    allowDefaultStopFallback: true,
+    defaultStopLossPct: 0.02,
+    defaultTakeProfitPct: 0.04,
+    maxLeverage: 1,
+    staleSignalMaxAgeMs: 60 * 60 * 1000,
+    duplicateCooldownMs: 0,
+    maxConsecutiveLosses: 3,
+    highVolSizeMultiplier: 0.5,
+    chopSizeMultiplier: 0.25,
+    newsShockBlocksTrading: true,
+    killSwitchEnabled: false,
+    ...overrides,
+  };
+}
+
+function gateSignal(overrides: Partial<StrategySignal> = {}, id: number): StrategySignal & { id: number } {
+  const ts = overrides.ts ?? "2026-06-20T12:00:00.000Z";
+  return {
+    id,
+    symbol: "BTC-USD",
+    exchange: "COINBASE",
+    timeframe: "1h",
+    ts,
+    strategyId: "momentum_continuation",
+    signalType: "trigger",
+    direction: "long",
+    confidence: 0.9,
+    invalidationPrice: 98,
+    stopLoss: 98,
+    takeProfit: 104,
+    features: {
+      symbol: "BTC-USD",
+      exchange: "COINBASE",
+      timeframe: "1h",
+      ts,
+      close: 100,
+      featureVersion: FEATURE_VERSION,
+    },
+    reasons: ["P11 risk gate smoke trigger"],
+    strategyVersion: STRATEGY_VERSIONS.momentumContinuation,
+    featureVersion: FEATURE_VERSION,
+    ...overrides,
+  };
+}
+
+function gateRegime(overrides: Partial<RegimeContext> = {}): RegimeContext {
+  return { regime: "TREND_UP", reliability: 0.9, ts: "2026-06-20T12:00:00.000Z", ...overrides };
+}
+
+function gateServices(intentStore: TradeIntentStore = new InMemoryTradeIntentStore()) {
+  return {
+    paperStore: fakePaperStore(),
+    intentStore,
+    riskDecisionStore: new InMemoryRiskDecisionStore(),
+  };
+}
+
+async function runStrategiesRiskGateChecks(): Promise<void> {
+  console.log("\n=== P11 scheduled risk gate ===");
+  const now = () => new Date("2026-06-20T12:01:00.000Z");
+  const baseOptions = { now, riskConfig: gateRiskConfig(), accountEquity: 10_000 };
+
+  {
+    const setupSignal = gateSignal({ signalType: "setup" }, 101);
+    const exitSignal = gateSignal({ signalType: "exit" }, 102);
+    const invalidatedSignal = gateSignal({ signalType: "invalidated" }, 103);
+    assert("setup signal is not classified as actionable trigger", !isActionableTriggerSignal(setupSignal));
+    assert("exit signal is not classified as actionable trigger", !isActionableTriggerSignal(exitSignal));
+    assert("invalidated signal is not classified as actionable trigger", !isActionableTriggerSignal(invalidatedSignal));
+    assert("trigger signal is classified as actionable", isActionableTriggerSignal(gateSignal({}, 104)));
+
+    const services = gateServices();
+    const result = await runScheduledRiskGate(setupSignal, gateRegime(), services, baseOptions);
+    eq("non-trigger setup signal skips risk evaluation entirely", result, {
+      evaluated: false, isNewDecision: false, approved: null, intentCreated: false, decision: null,
+    });
+    eq("non-trigger setup signal creates no trade intent", (await services.intentStore.listIntents()).length, 0);
+    eq("non-trigger setup signal creates no risk decision", (await services.riskDecisionStore.listDecisions()).length, 0);
+  }
+
+  {
+    const services = gateServices();
+    const signal = gateSignal({}, 201);
+    const result = await runScheduledRiskGate(signal, gateRegime(), services, baseOptions);
+    assert("approved trigger is evaluated and approved", result.evaluated && result.approved === true, result);
+    assert("approved trigger creates a trade intent", result.intentCreated, result);
+
+    const intents = await services.intentStore.listIntents();
+    eq("approved trigger creates exactly one trade intent", intents.length, 1);
+    eq("approved intent uses risk_approved status", intents[0].status, "risk_approved");
+    eq("approved intent preserves risk version", intents[0].riskDecision.riskVersion, RISK_VERSION);
+    assert("approved intent preserves sizing fields", intents[0].suggestedSize > 0 && intents[0].maxRiskUsd > 0, intents[0]);
+    assert("approved intent preserves stop/take-profit from risk decision", intents[0].stopLoss === 98 && intents[0].takeProfit === 104, intents[0]);
+
+    const decisions = await services.riskDecisionStore.listDecisions();
+    eq("approved trigger persists exactly one risk decision", decisions.length, 1);
+    assert("persisted decision is marked approved", decisions[0].decision.approved === true, decisions[0]);
+    eq("approved decision back-links to the created trade intent id", decisions[0].tradeIntentId, intents[0].id);
+  }
+
+  {
+    const services = gateServices();
+    const signal = gateSignal({}, 301);
+    const result = await runScheduledRiskGate(signal, gateRegime(), services, {
+      ...baseOptions,
+      riskConfig: gateRiskConfig({ blockedRegimes: ["TREND_UP"] }),
+    });
+    assert("rejected trigger is evaluated and rejected", result.evaluated && result.approved === false, result);
+    assert("rejected trigger reports no intent created", !result.intentCreated, result);
+    eq("rejected trigger creates zero trade intents", (await services.intentStore.listIntents()).length, 0);
+
+    const decisions = await services.riskDecisionStore.listDecisions();
+    eq("rejected trigger still persists a risk decision", decisions.length, 1);
+    assert("rejected decision preserves blockedBy reasons", decisions[0].decision.blockedBy.includes("REGIME_BLOCKED"), decisions[0]);
+    eq("rejected decision trade_intent_id stays null", decisions[0].tradeIntentId, null);
+  }
+
+  {
+    const services = gateServices();
+    const signal = gateSignal({
+      ts: "2026-06-20T10:00:00.000Z",
+      features: {
+        symbol: "BTC-USD", exchange: "COINBASE", timeframe: "1h",
+        ts: "2026-06-20T10:00:00.000Z", close: 100, featureVersion: FEATURE_VERSION,
+      },
+    }, 401);
+    const result = await runScheduledRiskGate(signal, gateRegime({ ts: "2026-06-20T10:00:00.000Z" }), services, baseOptions);
+    assert("stale signal is rejected", result.approved === false && !!result.decision?.blockedBy.includes("SIGNAL_STALE"), result);
+  }
+
+  {
+    const services = gateServices();
+    const signal = gateSignal({ invalidationPrice: null, stopLoss: null }, 501);
+    const result = await runScheduledRiskGate(signal, gateRegime(), services, {
+      ...baseOptions,
+      riskConfig: gateRiskConfig({ allowDefaultStopFallback: false, defaultStopLossPct: 0 }),
+    });
+    assert(
+      "missing stop/invalidation without fallback is rejected",
+      result.approved === false && !!result.decision?.blockedBy.includes("STOP_LOSS_MISSING"),
+      result,
+    );
+  }
+
+  {
+    const services = gateServices();
+    const signal = gateSignal({ invalidationPrice: null, stopLoss: null }, 601);
+    const result = await runScheduledRiskGate(signal, gateRegime(), services, baseOptions);
+    assert(
+      "missing stop/invalidation with fallback allowed produces an explicit warning",
+      !!result.decision?.warnings.includes("DEFAULT_STOP_FALLBACK_USED"),
+      result,
+    );
+  }
+
+  {
+    const services = gateServices();
+    const signal = gateSignal({}, 701);
+    const result = await runScheduledRiskGate(signal, gateRegime({ regime: "CHOP" }), services, baseOptions);
+    assert(
+      "CHOP regime is respected: approved with reduced size and explicit warning",
+      result.approved === true && !!result.decision?.warnings.includes("CHOP_SIZE_REDUCED"),
+      result,
+    );
+  }
+
+  {
+    const services = gateServices();
+    const signal = gateSignal({}, 801);
+    const result = await runScheduledRiskGate(signal, gateRegime({ regime: "NEWS_SHOCK" }), services, baseOptions);
+    assert(
+      "NEWS_SHOCK regime is respected and blocks trading",
+      result.approved === false && !!result.decision?.blockedBy.includes("NEWS_SHOCK_BLOCKED"),
+      result,
+    );
+  }
+
+  {
+    const services = gateServices(new DedupingTradeIntentStore());
+    const signal = gateSignal({}, 901);
+    const first = await runScheduledRiskGate(signal, gateRegime(), services, baseOptions);
+    const second = await runScheduledRiskGate(signal, gateRegime(), services, baseOptions);
+
+    assert("first run of a signal persists a new risk decision", first.isNewDecision, first);
+    assert("rerun of the same signal + risk version reuses the persisted decision", !second.isNewDecision, second);
+    assert("rerun still reports the original approval outcome", second.approved === true, second);
+    assert("rerun does not report a newly created intent", !second.intentCreated, second);
+
+    const decisions = await services.riskDecisionStore.listDecisions();
+    eq("rerun does not duplicate risk decisions", decisions.length, 1);
+    const intents = await services.intentStore.listIntents();
+    eq("rerun does not duplicate approved trade intents", intents.length, 1);
+    eq("rerun preserves the original trade_intent_id link", decisions[0].tradeIntentId, intents[0].id);
+
+    // A second, independent decision row's link should never be disturbed by
+    // linking a different signal's intent.
+    await services.riskDecisionStore.linkTradeIntent(901, RISK_VERSION, "some-other-intent-id");
+    const afterForeignLinkAttempt = await services.riskDecisionStore.listDecisions();
+    eq(
+      "linkTradeIntent is write-once and never overwrites an existing link",
+      afterForeignLinkAttempt[0].tradeIntentId,
+      intents[0].id,
+    );
+  }
+
+  {
+    // Manual / API-driven paper workflow intents (lib/execution/paperTradingWorkflow.ts)
+    // never set metadata.source = "strategies.evaluate", so even if two of them
+    // shared a sourceSignalIds + riskVersion pair, the scheduled-path partial
+    // unique index (and this fake's mirror of it) must not treat them as duplicates.
+    const intentStore = new DedupingTradeIntentStore();
+    const manualDecision: RiskDecision = {
+      approved: true,
+      reason: "manual paper workflow entry",
+      sizeMultiplier: 1,
+      maxRiskUsd: 100,
+      positionSize: 1,
+      stopLoss: 98,
+      takeProfit: 104,
+      blockedBy: [],
+      warnings: [],
+      riskVersion: RISK_VERSION,
+    };
+    const manualSignal = gateSignal({}, 1001);
+    const manualIntentInput = {
+      signal: manualSignal,
+      riskDecision: manualDecision,
+      entryPrice: 100,
+      entryLogic: "Manual paper workflow entry",
+      sourceSignalIds: ["1001"],
+      metadata: { paperOnly: true, paperWorkflow: "P7E" },
+    };
+    await intentStore.insertIntent(createTradeIntent({ ...manualIntentInput, nowTs: "2026-06-20T12:01:00.000Z" }));
+    let threw = false;
+    try {
+      await intentStore.insertIntent(createTradeIntent({ ...manualIntentInput, nowTs: "2026-06-20T12:05:00.000Z" }));
+    } catch {
+      threw = true;
+    }
+    assert(
+      "manual/API paper-workflow intents are unaffected by the scheduled-path unique index",
+      !threw,
+    );
+    eq("both manual intents with the same signal/riskVersion persist independently", (await intentStore.listIntents()).length, 2);
+  }
 }
 
 async function runRegistryChecks(): Promise<void> {
@@ -629,6 +931,7 @@ async function main(): Promise<void> {
   await runRegistryChecks();
   await runHandlerChecks();
   await runWorkerChecks();
+  await runStrategiesRiskGateChecks();
   runStaticChecks();
 
   console.log(`\n${failed === 0 ? "all checks passed" : `${failed} check(s) failed`}`);

@@ -122,9 +122,25 @@ async function runScenarios(
   const active = await signals.fetchActiveByStrategy("momentum_continuation", { startTs: t(-1), endTs: t(10) });
   eq(`${label} signals.fetchActiveByStrategy count`, active.length, 3);
 
+  const bySignature = await signals.fetchBySignature({
+    symbol: SYM, exchange: EX, timeframe: TF, ts: t(1),
+    strategyId: "momentum_continuation", strategyVersion: sig0.strategyVersion,
+  });
+  eq(`${label} signals.fetchBySignature resolves persisted id`, bySignature?.ts, t(1));
+  const missingSignature = await signals.fetchBySignature({
+    symbol: SYM, exchange: EX, timeframe: TF, ts: t(99),
+    strategyId: "momentum_continuation", strategyVersion: sig0.strategyVersion,
+  });
+  eq(`${label} signals.fetchBySignature returns null for unknown signature`, missingSignature, null);
+
   await signals.retract(sig0.id);
   const afterRetract = await signals.fetchActiveByStrategy("momentum_continuation", { startTs: t(-1), endTs: t(10) });
   eq(`${label} signals.retract drops one`, afterRetract.length, 2);
+  const afterRetractSignature = await signals.fetchBySignature({
+    symbol: SYM, exchange: EX, timeframe: TF, ts: t(0),
+    strategyId: "momentum_continuation", strategyVersion: sig0.strategyVersion,
+  });
+  eq(`${label} signals.fetchBySignature excludes retracted rows`, afterRetractSignature, null);
 
   // ── RegimeStore ──────────────────────────────────────────────────────────
   const reg: RegimeSnapshotRow = {

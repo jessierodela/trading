@@ -5,6 +5,8 @@ import {
   type P8OpsJobRow,
   type P8OpsSnapshotRow,
 } from "@/lib/ops/p8Summary";
+import { buildRiskGateSummary } from "@/lib/ops/riskGateSummary";
+import { RISK_VERSION } from "@/lib/versions";
 
 let failed = 0;
 
@@ -169,6 +171,61 @@ function runSnapshotAndReadinessChecks(): void {
   assert("readiness never claims every item passes", summary.readiness.some((item) => item.status !== "pass"));
 }
 
+function runRiskGateOpsChecks(): void {
+  console.log("\n=== P11 risk gate ops summary ===");
+  const empty = buildRiskGateSummary({ now: new Date("2026-07-01T12:00:00.000Z") });
+  eq("empty risk gate summary exposes expected top-level keys", Object.keys(empty), [
+    "generatedAt", "riskEngineVersion", "signalsEvaluated", "approvedCount", "rejectedCount",
+    "topBlockedByReasons", "latestApprovedIntent", "latestRejectedDecision",
+  ]);
+  eq("empty risk gate summary stamps risk engine version", empty.riskEngineVersion, RISK_VERSION);
+  eq("empty risk gate summary has zero counts", [empty.signalsEvaluated, empty.approvedCount, empty.rejectedCount], [0, 0, 0]);
+  eq("empty risk gate summary has no latest approved intent", empty.latestApprovedIntent, null);
+  eq("empty risk gate summary has no latest rejected decision", empty.latestRejectedDecision, null);
+
+  const populated = buildRiskGateSummary({
+    now: new Date("2026-07-01T12:00:00.000Z"),
+    counts: [{ approved: true, count: 3 }, { approved: false, count: 2 }],
+    blockedByRows: [
+      { blocked_by: ["REGIME_BLOCKED", "SIGNAL_STALE"] },
+      { blocked_by: ["REGIME_BLOCKED"] },
+    ],
+    latestApprovedIntent: {
+      public_id: "11111111-1111-4111-8111-111111111111",
+      symbol: "BTC-USD",
+      exchange: "COINBASE",
+      direction: "long",
+      suggested_size: "0.5",
+      entry_price: "100",
+      stop_loss: "98",
+      take_profit: "104",
+      risk_version: RISK_VERSION,
+      created_at: "2026-07-01T11:00:00.000Z",
+    },
+    latestRejectedDecision: {
+      public_id: "22222222-2222-4222-8222-222222222222",
+      signal_id: 42,
+      symbol: "ETH-USD",
+      exchange: "COINBASE",
+      reason: "Current regime is blocked",
+      blocked_by: ["REGIME_BLOCKED"],
+      warnings: [],
+      risk_version: RISK_VERSION,
+      evaluated_at: "2026-07-01T11:05:00.000Z",
+    },
+  });
+  eq("populated summary sums approved+rejected into signalsEvaluated", populated.signalsEvaluated, 5);
+  eq("populated summary reports top blockedBy reasons ranked by frequency", populated.topBlockedByReasons, [
+    { code: "REGIME_BLOCKED", count: 2 },
+    { code: "SIGNAL_STALE", count: 1 },
+  ]);
+  eq("populated summary exposes latest approved intent symbol", populated.latestApprovedIntent?.symbol, "BTC-USD");
+  eq("populated summary exposes latest approved intent sizing", populated.latestApprovedIntent?.suggestedSize, 0.5);
+  eq("populated summary exposes latest rejected decision blockedBy", populated.latestRejectedDecision?.blockedBy, ["REGIME_BLOCKED"]);
+  eq("populated summary exposes latest rejected decision signalId", populated.latestRejectedDecision?.signalId, 42);
+  assert("naming does not resurrect latestRejectedIntent", !("latestRejectedIntent" in populated));
+}
+
 function runStaticBoundaryChecks(): void {
   console.log("\n=== read-only route boundaries ===");
   const route = readText("app/api/ops/p8/route.ts");
@@ -188,6 +245,21 @@ function runStaticBoundaryChecks(): void {
     "from regime_snapshots",
   ].every((fragment) => service.includes(fragment)));
 
+  const riskGateRoute = readText("app/api/ops/risk-gate/route.ts");
+  const riskGateService = readText("lib/ops/riskGateSummary.ts");
+  assert("risk gate ops route exports GET", riskGateRoute.includes("export async function GET"));
+  assert("risk gate ops route does not export a mutation handler", !/export async function (POST|PUT|PATCH|DELETE)/.test(riskGateRoute));
+  for (const forbiddenImport of ["lib/jobs/worker", "lib/jobs/handlers", "enqueueScheduledFeed", "enqueueJob", "claimNextJob"]) {
+    assert(`risk gate ops route does not reference ${forbiddenImport}`, !riskGateRoute.includes(forbiddenImport));
+  }
+  for (const mutation of ["insert into", "update ", "delete from", "truncate "]) {
+    assert(`risk gate ops query service does not contain ${mutation}`, !riskGateService.toLowerCase().includes(mutation));
+  }
+  assert("risk gate ops query service reads only risk_decisions and trade_intents", [
+    "from risk_decisions",
+    "from trade_intents",
+  ].every((fragment) => riskGateService.includes(fragment)));
+
   const signalsRoute = readText("app/api/signals/route.ts");
   assert("signals route adds backward-compatible source metadata", signalsRoute.includes("source: result.source"));
 }
@@ -196,6 +268,7 @@ function main(): void {
   runShapeAndEmptyChecks();
   runWorkerAndSchedulerChecks();
   runSnapshotAndReadinessChecks();
+  runRiskGateOpsChecks();
   runStaticBoundaryChecks();
   console.log(`\n${failed === 0 ? "all checks passed" : `${failed} check(s) failed`}`);
   process.exit(failed === 0 ? 0 : 1);

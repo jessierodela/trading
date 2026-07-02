@@ -21,6 +21,8 @@ import {
   PgSignalStore,
 } from "@/lib/storage";
 import { PostgresPaperTradingStore } from "@/lib/execution";
+import { PostgresTradeIntentStore } from "@/lib/tradeIntent";
+import { PostgresRiskDecisionStore } from "@/lib/risk/riskDecisionStore";
 
 export interface JobWorkerLogger {
   info(message: string, metadata?: unknown): void;
@@ -158,6 +160,8 @@ export function createJobWorkerServices(pool: Pool): JobHandlerServices {
     regimeStore: new PgRegimeStore(pool),
     signalStore: new PgSignalStore(pool),
     paperStore: new PostgresPaperTradingStore(pool),
+    intentStore: new PostgresTradeIntentStore(pool),
+    riskDecisionStore: new PostgresRiskDecisionStore(pool),
     dashboardSnapshotStore: new DashboardSnapshotStore(pool),
     runDashboardRefreshPipeline,
     runMarketIngestLatestPipeline,
